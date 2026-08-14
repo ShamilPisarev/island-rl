@@ -84,6 +84,7 @@ class ConstructionConfig:
     material_capacity: int = 2      # carried wood+stone combined
     # shelter sites
     num_sites: int = 3
+    sites_at_clusters: bool = False  # place shelter sites on the berry clusters
     site_wood_cost: int = 4         # delivered units to complete a site
     site_stone_cost: int = 2
     build_radius: float = 2.5

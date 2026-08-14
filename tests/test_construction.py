@@ -396,3 +396,21 @@ def test_construction_world_is_deterministic(m4):
         return out
     a, b = run(), run()
     assert all(np.array_equal(x[i], y[i]) for x, y in zip(a, b) for i in range(3))
+
+
+def test_sites_at_clusters_places_shelters_on_the_bushes(m4):
+    """The M4b siting: shelters sit on the berry clusters agents already live at,
+    which deletes the unrewarded approach walk rather than paying more for it."""
+    scattered = World(m4, seed=60)
+    clustered = World(m4.replace(**{"construction.sites_at_clusters": True}), seed=60)
+
+    def mean_dist_to_nearest_bush(w):
+        d = np.hypot(w.bush_x[None, :] - w.site_x[:, None],
+                     w.bush_z[None, :] - w.site_z[:, None])
+        return d.min(axis=1).mean()
+
+    assert mean_dist_to_nearest_bush(clustered) < mean_dist_to_nearest_bush(scattered)
+    assert mean_dist_to_nearest_bush(clustered) < m4.bushes.cluster_std * 2
+    assert len(clustered.site_x) == m4.construction.num_sites
+    # and the bushes themselves are unchanged, so the food economy is identical
+    assert np.allclose(scattered.bush_x, clustered.bush_x)

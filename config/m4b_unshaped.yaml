@@ -1,0 +1,8 @@
+# Matched control for m4b.yaml: same siting, every shaping term at zero.
+extends: m4b.yaml
+
+reward:
+  wood: 0.0
+  stone: 0.0
+  build: 0.0
+  complete: 0.0

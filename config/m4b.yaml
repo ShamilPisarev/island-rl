@@ -1,0 +1,19 @@
+# Milestone 4, second siting: shelters ON the berry clusters.
+#
+# The first M4 pair trained 400 updates and produced 0.012 shelters an episode
+# shaped, 0.003 unshaped -- construction did not emerge, though the shaping did
+# lift material activity ~3.5x, so the chain was being learned right up until
+# the part that pays.
+#
+# The missing leg is the walk. With sites scattered independently of the bushes,
+# an agent carrying wood must cross open ground to a place it otherwise never
+# goes, and that leg earns nothing at all -- it is the uncreditable step, exactly
+# like the doomed gathers that trapped M3 until action masking removed them.
+# So remove it: put the sites where the agents already spend their lives.
+#
+# This is a WORLD change, not a reward change. The shaping is untouched, and
+# m4b_unshaped.yaml is the matched control.
+extends: m4.yaml
+
+construction:
+  sites_at_clusters: true

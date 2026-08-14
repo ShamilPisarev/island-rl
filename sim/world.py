@@ -122,6 +122,7 @@ class World:
         limit = self.cfg.world.island_radius * 0.97
         cx, cz = self._sample_in_disc(self.cfg.world.island_radius * bc.cluster_radius_frac,
                                       bc.num_clusters)
+        self._cluster_centres = (cx.copy(), cz.copy())
         xs, zs = [], []
         for c in range(bc.num_clusters):
             for _ in range(bc.bushes_per_cluster):
@@ -164,7 +165,20 @@ class World:
             self.tree_wood = np.full(cc.num_trees, cc.tree_wood, dtype=np.int64)
             self.rock_x, self.rock_z = self._scatter(cc.num_rocks)
             self.rock_stone = np.full(cc.num_rocks, cc.rock_stone, dtype=np.int64)
-            self.site_x, self.site_z = self._scatter(cc.num_sites, margin=0.7)
+            if cc.sites_at_clusters:
+                # Put the shelters where the agents already are. The approach walk
+                # to a scattered site is the part of the build chain nothing pays
+                # for and PPO cannot credit; agents live at the bush clusters, so
+                # siting there removes that leg entirely. Same shape of fix as the
+                # M3 action mask -- delete the uncreditable step rather than pay
+                # more for it.
+                ccx, ccz = self._cluster_centres
+                pick = np.arange(cc.num_sites) % len(ccx)
+                jitter = self.rng.normal(0.0, 1.5, size=(2, cc.num_sites))
+                self.site_x = ccx[pick] + jitter[0]
+                self.site_z = ccz[pick] + jitter[1]
+            else:
+                self.site_x, self.site_z = self._scatter(cc.num_sites, margin=0.7)
             self.site_wood_needed = np.full(cc.num_sites, cc.site_wood_cost, dtype=np.int64)
             self.site_stone_needed = np.full(cc.num_sites, cc.site_stone_cost, dtype=np.int64)
         else:
