@@ -287,6 +287,40 @@ same ground. Territoriality appeared as inequality instead — lifespan spread w
 from 0 to 144 ticks, a dominant pair holding bushes 1.5 units away and living ~390
 ticks while the excluded sit 3–5 units out and starve around 250.
 
+### Milestone 4 — multi-resource and construction
+
+Wood, stone, communal shelter sites, and a day/night cycle where anyone caught
+outside drains hunger at 3×. The food economy is sized so shelter is load-bearing:
+supply (64 berries) sits between what a sheltered population needs (48) and what
+one sleeping rough needs (72).
+
+This is the milestone the brief says needs reward shaping, so it ships as a
+shaped run *and* an unshaped control, compared on the terminal metric:
+
+| policy | lifespan | deaths/ep | shelters/ep | nights indoors |
+|---|---|---|---|---|
+| scripted builder | **529.8** | 2.05 | **1.9** | **92%** |
+| scripted forager | 457.6 | 3.12 | 0 | 0% |
+| **learned, shaped** | **393.5** | 4.70 | 0.1 | **22%** |
+| learned, unshaped control | 362.5 | 5.05 | 0.0 | 2% |
+
+**Construction partially emerged.** The shaped run beat its control by 31 ticks of
+life with 22% of night ticks under shelter against 2% — the opposite of the M3
+ablation, where shaping bought the behaviour and cost survival. Here it bought a
+real outcome.
+
+**But agents do not finish.** They deliver materials and huddle under half-built
+walls; completed shelters run at 0.1 per episode against the scripted builder's
+1.9, and the learned policy stays well below that reference. That is the honest
+headline, and it is the failure the brief predicted for this milestone.
+
+Getting even that far took two fixes, neither of which touched the shaping
+coefficients — both were the move that solved M3, reshaping the problem rather
+than paying more at the summit. Siting shelters on the berry clusters deleted an
+approach walk that earned nothing (deliveries ×3.6), and making protection scale
+with build progress removed a cliff where three of every four delivered units
+were invisible to the value function (nights sheltered ×6).
+
 ## Configuration
 
 Everything tunable lives in `config/default.yaml` — world size, hunger rates,
