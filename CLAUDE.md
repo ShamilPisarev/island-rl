@@ -710,6 +710,36 @@ An earlier sizing (6-unit sites, shaping 0.3/0.5/2.0) produced *zero* completion
 in 200 updates; CSVs in `runs/_m4_probe1`. At 0.3 a material action loses to a
 +1.0 gather everywhere the two compete.
 
+### The annealing test — the shaping was a real bootstrap
+
+The brief asks whether M4's shaping can be annealed away once it has done its
+job. `config/m4c_anneal.yaml` continues the shaped policy for 200 more updates
+with all four shaping terms at 0.0, changing nothing else.
+
+| | deliveries/ep | shelters/ep | nights indoors | lifespan |
+|---|---|---|---|---|
+| m4c shaped | 1.94 | 0.064 | 16.1% | 377.6 |
+| **m4c annealed (nothing paid)** | **2.21** | **0.091** | **18.0%** | **382.3** |
+| m4c unshaped control | 0.73 | 0.011 | 4.7% | 368.8 |
+
+**The behaviour survived, and slightly improved.** Two hundred updates with
+nothing paying for wood, stone, delivery or completion, and construction stayed
+at the shaped level rather than decaying toward the control. Final evaluation:
+403.1 lifespan, 17% of nights sheltered — the best M4 number of any run.
+
+So the shaping here was genuine scaffolding that could be removed, not a
+subsidy the behaviour depended on. Once the policy has *found* shelter, the
+survival benefit alone sustains it — which is the answer the brief was asking
+for, and the reason the shaping is defensible.
+
+**Read this against the M3 shaping ablation, which went the other way.** Paying
+for theft produced 4.8× the theft and *worse* survival, because stealing moves
+food without creating any. Paying for construction produced building that pays
+for itself and persists unpaid, because a shelter genuinely reduces the drain.
+The difference is not the shaping technique — it is whether the shaped behaviour
+was actually worth doing. That is the test, and only the terminal metric
+answers it.
+
 ### What is left
 
 The remaining gap is the last unit. Even with a continuous gradient, finishing a
