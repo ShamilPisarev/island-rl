@@ -23,8 +23,8 @@ import yaml
 from .config import Config, load_config
 from .evaluate import baselines, evaluate, load_checkpoint, make_act_fn, policy_act_fn
 from .metrics import MetricsLogger
-from .agents import num_actions
-from .policy import Brain, PolicyGroup, build_policy, grow_policy
+from .agents import action_names, num_actions, observation_layout
+from .policy import Brain, PolicyGroup, build_policy, column_map, grow_policy
 from .ppo import PPOTrainer
 from .replay import record_episode
 from .world import VecWorld
@@ -54,17 +54,25 @@ def fork_from_checkpoint(policy: Brain, cfg: Config, obs_dim: int) -> Brain:
     case, but shared->shared (warm start) and individual->individual (resume with
     a fresh optimiser) both work.
     """
-    source, _, blob = load_checkpoint(cfg.policy.init_from, device=cfg.ppo.device)
+    source, source_world_cfg, blob = load_checkpoint(cfg.policy.init_from, device=cfg.ppo.device)
     source_cfg = source.config_dict()
     target_actions = num_actions(cfg)
     where = f"{cfg.policy.init_from} ({source_cfg['mode']}, update {blob.get('update', '?')})"
 
     # A later milestone may widen the observation or add an action. Grow into the
     # new shape with zeroed new weights rather than refusing or retraining blind.
+    #
+    # The maps are built from the two configs' feature layouts, NOT positionally:
+    # optional channels are inserted mid-vector, so a positional copy would hand
+    # trained weights the wrong inputs and say nothing about it.
     if source_cfg["obs_dim"] != obs_dim or source_cfg["n_actions"] != target_actions:
-        source = grow_policy(source, obs_dim, target_actions, cfg.world.num_agents)
+        obs_map = column_map(observation_layout(source_world_cfg), observation_layout(cfg))
+        act_map = column_map(action_names(source_world_cfg), action_names(cfg))
+        source = grow_policy(source, obs_dim, target_actions, obs_map, act_map)
+        moved = sum(1 for i, j in enumerate(obs_map) if i != j)
         print(f"grew {where} from obs_dim {source_cfg['obs_dim']}->{obs_dim}, "
-              f"actions {source_cfg['n_actions']}->{target_actions} (new weights zeroed)")
+              f"actions {source_cfg['n_actions']}->{target_actions} "
+              f"({moved} feature columns remapped, new weights zeroed)")
         where = f"the grown {source_cfg['mode']} policy"
 
     source_mode = source.config_dict()["mode"]

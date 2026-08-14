@@ -181,44 +181,81 @@ class PolicyGroup(nn.Module):
 Brain = ActorCritic | PolicyGroup
 
 
-def grow_actor_critic(source: ActorCritic, obs_dim: int, n_actions: int) -> ActorCritic:
+def column_map(source_names: Sequence[str], target_names: Sequence[str]) -> list[int]:
+    """For each source column, the index of the same-named target column.
+
+    Raises if a source feature has vanished from the target: dropping a trained
+    input silently is never what anyone meant.
+    """
+    lookup = {name: i for i, name in enumerate(target_names)}
+    missing = [n for n in source_names if n not in lookup]
+    if missing:
+        raise ValueError(f"target layout is missing source features: {missing}")
+    return [lookup[name] for name in source_names]
+
+
+def grow_actor_critic(source: ActorCritic, obs_dim: int, n_actions: int,
+                      obs_map: Sequence[int] | None = None,
+                      action_map: Sequence[int] | None = None) -> ActorCritic:
     """Copy a trained brain into a wider observation and/or action space.
 
-    Milestone 3 adds an observation channel (neighbours' carried food) and an
-    action (steal), so an M2 checkpoint no longer fits. Retraining from scratch
-    would work but throws away competence that took millions of steps to acquire.
+    Milestone 3 adds an observation channel and an action, so an M2 checkpoint no
+    longer fits. Retraining from scratch would work but throws away competence
+    that took millions of steps to acquire.
 
-    Instead: copy every existing weight, and initialise the new ones to **zero**.
-    A zeroed input column contributes nothing, and a zeroed action row gives the
-    new action a logit of 0 alongside trained logits, so the grown policy starts
-    out behaving almost exactly like the one it came from and then learns to use
-    what it has been given. (The new action is reachable from the start rather
-    than masked off, which is what lets PPO discover whether it is worth taking.)
+    Every trained weight is copied to the column/row holding *the same feature* in
+    the target, and everything new is initialised to **zero**. A zeroed input
+    column contributes nothing and a zeroed action row gives the new action a
+    logit of 0 beside trained logits, so the grown policy starts out behaving
+    exactly as it did and then learns to use what it has been given. The new
+    action is reachable rather than masked, which is what lets PPO find out
+    whether it is worth taking.
 
-    Shrinking is refused: dropping trained weights silently is never what anyone
-    meant.
+    ``obs_map``/``action_map`` map source index -> target index; without them the
+    mapping is positional, which is only correct when every new feature is
+    *appended*. Optional observation channels are inserted mid-vector, so callers
+    crossing a milestone boundary must pass a real map built by ``column_map``
+    from ``observation_layout``. Getting this wrong is silent: the policy runs
+    fine and quietly reads its shoreline weights off neighbour data.
     """
     if obs_dim < source.obs_dim or n_actions < source.n_actions:
         raise ValueError(
             f"cannot shrink a policy: source is obs_dim={source.obs_dim}/"
             f"n_actions={source.n_actions}, target is {obs_dim}/{n_actions}"
         )
+    obs_map = list(obs_map) if obs_map is not None else list(range(source.obs_dim))
+    action_map = list(action_map) if action_map is not None else list(range(source.n_actions))
+    if len(obs_map) != source.obs_dim or len(action_map) != source.n_actions:
+        raise ValueError("obs_map/action_map must have one entry per source column/row")
+
     grown = ActorCritic(obs_dim, n_actions, source.hidden_sizes)
+    src, dst = source.state_dict(), grown.state_dict()
     with torch.no_grad():
-        state = source.state_dict()
-        for name, param in grown.state_dict().items():
-            old = state[name]
+        for name, param in dst.items():
+            old = src[name]
             param.zero_()
-            # Copy the old tensor into the top-left corner of the new one.
-            param[tuple(slice(0, s) for s in old.shape)] = old
+            if name == "trunk.0.weight":                 # (hidden, obs_dim)
+                param[:, obs_map] = old
+            elif name == "policy_head.weight":           # (n_actions, hidden)
+                param[action_map, :] = old
+            elif name == "policy_head.bias":             # (n_actions,)
+                param[action_map] = old
+            else:                                        # unchanged shapes
+                param.copy_(old)
+    grown.load_state_dict(dst)
     return grown
 
 
-def grow_policy(source: Brain, obs_dim: int, n_actions: int, num_agents: int) -> Brain:
+def grow_policy(source: Brain, obs_dim: int, n_actions: int,
+                obs_map: Sequence[int] | None = None,
+                action_map: Sequence[int] | None = None) -> Brain:
     """``grow_actor_critic`` for either brain type, preserving the mode."""
     if isinstance(source, PolicyGroup):
-        return PolicyGroup([grow_actor_critic(p, obs_dim, n_actions) for p in source.policies])
-    return grow_actor_critic(source, obs_dim, n_actions)
+        return PolicyGroup([
+            grow_actor_critic(p, obs_dim, n_actions, obs_map, action_map)
+            for p in source.policies
+        ])
+    return grow_actor_critic(source, obs_dim, n_actions, obs_map, action_map)
 
 
 def build_policy(cfg: Config, obs_dim: int, mode: str | None = None) -> Brain:

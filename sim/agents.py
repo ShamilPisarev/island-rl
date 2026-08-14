@@ -110,6 +110,32 @@ def observation_dim(cfg: Config) -> int:
             + neighbour_channels(cfg) * cfg.observation.k_agents + 3)
 
 
+def observation_layout(cfg: Config) -> tuple[str, ...]:
+    """One name per observation column, in order.
+
+    This exists so a policy can be carried across a milestone boundary *by
+    feature* rather than by position. Optional channels are inserted in the
+    middle of the vector (a neighbour's food sits inside the neighbour block),
+    so widening the observation shifts every column after it. Copying weights
+    into the top-left corner of a bigger matrix therefore feeds trained weights
+    the wrong inputs -- which is exactly the bug this replaced: growing an M2
+    brain into an M3 world silently fed its shoreline weights neighbour data.
+
+    Keep this in sync with ``build_observations``; the tests compare the two.
+    """
+    names: list[str] = ["own.hunger", "own.food"]
+    for j in range(cfg.observation.k_bushes):
+        names += [f"bush{j}.dx", f"bush{j}.dz", f"bush{j}.berries"]
+        if bush_channels(cfg) == 4:
+            names.append(f"bush{j}.blocked")
+    for j in range(cfg.observation.k_agents):
+        names += [f"neighbour{j}.dx", f"neighbour{j}.dz", f"neighbour{j}.hunger"]
+        if neighbour_channels(cfg) == 4:
+            names.append(f"neighbour{j}.food")
+    names += ["edge.room", "edge.outward_x", "edge.outward_z"]
+    return tuple(names)
+
+
 def _k_nearest(dist2: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
     """Indices of the k smallest entries per row, plus a validity mask.
 

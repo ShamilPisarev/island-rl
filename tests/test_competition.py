@@ -14,11 +14,13 @@ from sim.agents import (
     action_names,
     num_actions,
     observation_dim,
+    observation_layout,
 )
 from sim.config import load_config
 from sim.policy import (
     ActorCritic,
     build_policy,
+    column_map,
     greedy_thief_actions,
     grow_actor_critic,
     grow_policy,
@@ -451,38 +453,96 @@ def test_scripted_thief_needs_the_food_channel(scarce):
 # --- growing a policy across a milestone boundary ---------------------------
 
 
-def test_grown_policy_behaves_like_its_source_on_shared_inputs(cfg, m3):
-    """The whole point of zero-initialising the new weights: an M2 brain dropped
-    into an M3 world must start out doing exactly what it used to."""
+def maps_between(source_cfg, target_cfg):
+    return (column_map(observation_layout(source_cfg), observation_layout(target_cfg)),
+            column_map(action_names(source_cfg), action_names(target_cfg)))
+
+
+def scatter(source_cfg, target_cfg, obs_old: torch.Tensor) -> torch.Tensor:
+    """Place source observations into target columns *by feature name*."""
+    obs_map, _ = maps_between(source_cfg, target_cfg)
+    obs_new = torch.zeros(obs_old.shape[0], observation_dim(target_cfg))
+    obs_new[:, obs_map] = obs_old
+    return obs_new
+
+
+def test_observation_layout_matches_the_real_observation(cfg, m3):
+    """The layout names are what growing a policy relies on, so they must not be
+    allowed to drift from build_observations."""
+    for c in (cfg, m3, m3.replace(**{"competition.observe_bush_contested": True})):
+        assert len(observation_layout(c)) == observation_dim(c)
+        assert len(set(observation_layout(c))) == observation_dim(c)   # no duplicates
+
+
+def test_milestone_boundary_actually_shifts_columns(cfg, m3):
+    """Guards the premise of the next test. The optional neighbour-food channel is
+    inserted *inside* the neighbour block, so widening the observation renumbers
+    every column after it -- a positional copy is silently wrong."""
+    obs_map, _ = maps_between(cfg, m3)
+    assert obs_map != list(range(observation_dim(cfg)))
+    moved = [i for i, j in enumerate(obs_map) if i != j]
+    assert len(moved) >= 9
+    # the shoreline features in particular must not stay where they were
+    layout_old = observation_layout(cfg)
+    assert obs_map[layout_old.index("edge.room")] != layout_old.index("edge.room")
+
+
+def test_grown_policy_behaves_like_its_source_feature_for_feature(cfg, m3):
+    """An M2 brain dropped into an M3 world must start out doing exactly what it
+    used to when shown the same *features* -- not the same column indices.
+
+    The earlier version of this test fed the old observation into the first N
+    columns of the new one, which is what the buggy positional copy did, so it
+    passed while the grown policy was reading its shoreline weights off a
+    neighbour's carried food.
+    """
     torch.manual_seed(0)
     old = ActorCritic(observation_dim(cfg), num_actions(cfg), (32,))
-    new = grow_actor_critic(old, observation_dim(m3), num_actions(m3))
+    obs_map, act_map = maps_between(cfg, m3)
+    new = grow_actor_critic(old, observation_dim(m3), num_actions(m3), obs_map, act_map)
 
     obs_old = torch.randn(8, observation_dim(cfg))
-    obs_new = torch.zeros(8, observation_dim(m3))
-    obs_new[:, :observation_dim(cfg)] = obs_old
-
     old_logits, old_value = old(obs_old)
-    new_logits, new_value = new(obs_new)
-    assert torch.allclose(old_logits, new_logits[:, :num_actions(cfg)], atol=1e-6)
+    new_logits, new_value = new(scatter(cfg, m3, obs_old))
+
+    assert torch.allclose(old_logits, new_logits[:, act_map], atol=1e-6)
     assert torch.allclose(old_value, new_value, atol=1e-6)
 
 
 def test_grown_policy_starts_the_new_action_at_logit_zero(cfg, m3):
     """Reachable but unpreferred: PPO gets to find out if stealing is worth it."""
     old = ActorCritic(observation_dim(cfg), num_actions(cfg), (32,))
-    new = grow_actor_critic(old, observation_dim(m3), num_actions(m3))
+    obs_map, act_map = maps_between(cfg, m3)
+    new = grow_actor_critic(old, observation_dim(m3), num_actions(m3), obs_map, act_map)
     logits, _ = new(torch.randn(4, observation_dim(m3)))
     assert torch.allclose(logits[:, STEAL], torch.zeros(4), atol=1e-6)
 
 
 def test_growing_ignores_the_new_observation_channels_at_first(cfg, m3):
     old = ActorCritic(observation_dim(cfg), num_actions(cfg), (32,))
-    new = grow_actor_critic(old, observation_dim(m3), num_actions(m3))
+    obs_map, act_map = maps_between(cfg, m3)
+    new = grow_actor_critic(old, observation_dim(m3), num_actions(m3), obs_map, act_map)
+
     base = torch.randn(6, observation_dim(m3))
     perturbed = base.clone()
-    perturbed[:, observation_dim(cfg):] = 1.0   # scribble on the new channels only
+    added = [i for i in range(observation_dim(m3)) if i not in set(obs_map)]
+    assert added, "no new columns to perturb"
+    perturbed[:, added] = 1.0
     assert torch.allclose(new(base)[0], new(perturbed)[0], atol=1e-6)
+
+
+def test_growing_two_channels_at_once_stays_aligned(cfg):
+    """M2 -> a world with both extra channels: two separate insertions, so the
+    column shift compounds."""
+    both = load_config("config/m3.yaml").replace(
+        **{"competition.observe_bush_contested": True})
+    torch.manual_seed(1)
+    old = ActorCritic(observation_dim(cfg), num_actions(cfg), (24,))
+    obs_map, act_map = maps_between(cfg, both)
+    new = grow_actor_critic(old, observation_dim(both), num_actions(both), obs_map, act_map)
+
+    obs_old = torch.randn(5, observation_dim(cfg))
+    assert torch.allclose(old(obs_old)[1], new(scatter(cfg, both, obs_old))[1], atol=1e-6)
 
 
 def test_grow_refuses_to_shrink(cfg, m3):
@@ -491,10 +551,16 @@ def test_grow_refuses_to_shrink(cfg, m3):
         grow_actor_critic(big, observation_dim(cfg), num_actions(cfg))
 
 
+def test_column_map_refuses_to_drop_a_trained_feature(cfg, m3):
+    with pytest.raises(ValueError, match="missing source features"):
+        column_map(observation_layout(m3), observation_layout(cfg))
+
+
 def test_grow_preserves_policy_group_mode(cfg, m3):
     group = PolicyGroup([ActorCritic(observation_dim(cfg), num_actions(cfg), (16,))
                          for _ in range(3)])
-    grown = grow_policy(group, observation_dim(m3), num_actions(m3), 3)
+    obs_map, act_map = maps_between(cfg, m3)
+    grown = grow_policy(group, observation_dim(m3), num_actions(m3), obs_map, act_map)
     assert isinstance(grown, PolicyGroup)
     assert grown.num_agents == 3
     assert grown.obs_dim == observation_dim(m3)
