@@ -1,0 +1,38 @@
+# Milestone 3, second attempt — the world is unchanged, the agents can see more.
+#
+# The first M3 run reached 452 lifespan against a scripted forager's 496 and a
+# scripted thief's 553: the learned policy lost to both hand-written references,
+# which is not a result worth building Milestone 4 on top of.
+#
+# Auditing where its ticks went showed the problem was not capacity but blindness.
+# Of every 100 living agent-ticks it spent:
+#
+#     23 on `gather`, of which under 1 succeeded
+#     13 on `steal`,  of which under 2 succeeded (11 had no victim in reach)
+#
+# against a scripted forager that never once fired an action which could not
+# succeed. And the divergence report showed territory divergence *falling*
+# (0.91 -> 0.36): agents crowded two or three bushes and left the rest unattended,
+# so the population harvested 26 berries of the 48 the island produces where the
+# forager took 38. With `exclusive_bushes` on, crowding directly destroys yield --
+# only the closest agent to a bush may take from it.
+#
+# Both failures share a cause. Whether a bush is harvestable depends on whether a
+# rival is standing nearer to it, and that fact was not in the observation. It is
+# *derivable* from the neighbour and bush offsets, but only through a distance
+# comparison the network has to discover unaided; until it does, a blocked bush
+# looks exactly like a free one and "gather and hope" is the best available policy.
+#
+# So: make the mechanic perceivable, exactly as `observe_neighbour_food` did for
+# theft. A mechanic the policy cannot see is a mechanic it cannot respond to.
+# No reward terms change. No world rules change.
+
+extends: m3.yaml
+
+competition:
+  observe_bush_contested: true   # 29 -> 33 observation dims
+
+ppo:
+  ent_coef: 0.004    # 0.01 held entropy at ~2.13 of a possible 2.40, i.e. the
+                     # policy stayed nearly uniform. Cheap in the abundant M1
+                     # world; expensive here, where a wasted tick can starve you.

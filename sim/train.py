@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import yaml
 
 from .config import Config, load_config
 from .evaluate import baselines, evaluate, load_checkpoint, make_act_fn, policy_act_fn
@@ -27,6 +28,12 @@ from .policy import Brain, PolicyGroup, build_policy, grow_policy
 from .ppo import PPOTrainer
 from .replay import record_episode
 from .world import VecWorld
+
+
+def _coerce(raw: str) -> object:
+    """Parse a --set value as YAML, so ints/floats/bools/null all come through
+    as the type the config dataclass expects rather than as strings."""
+    return yaml.safe_load(raw)
 
 
 def seed_everything(seed: int) -> None:
@@ -102,6 +109,11 @@ def main() -> None:
                         help="shared = M1 parameter sharing; individual = M2, one brain per agent")
     parser.add_argument("--init-from", default=None,
                         help="checkpoint to fork individual brains from (M2)")
+    parser.add_argument("--set", dest="overrides", action="append", default=[],
+                        metavar="SECTION.KEY=VALUE",
+                        help="override any config value, e.g. --set ppo.ent_coef=0.002. "
+                             "Repeatable. For sweeps, so a one-off hyperparameter probe "
+                             "does not need its own YAML file.")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -118,6 +130,11 @@ def main() -> None:
         overrides["policy.mode"] = args.policy_mode
     if args.init_from is not None:
         overrides["policy.init_from"] = args.init_from
+    for item in args.overrides:
+        key, _, raw = item.partition("=")
+        if not raw:
+            parser.error(f"--set expects SECTION.KEY=VALUE, got {item!r}")
+        overrides[key.strip()] = _coerce(raw.strip())
     if overrides:
         cfg = cfg.replace(**overrides)
 

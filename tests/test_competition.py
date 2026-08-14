@@ -104,6 +104,40 @@ def test_neighbour_food_channel_reports_carried_food(m3):
     assert neighbours.reshape(m3.observation.k_agents, 4)[0, 3] == pytest.approx(0.0)
 
 
+def test_contested_flag_marks_the_agent_that_is_not_closest(m3):
+    """With exclusive bushes, whether you may harvest depends on whether a rival
+    stands nearer. That has to be perceivable or the policy can only gather and
+    hope -- the same argument that put neighbours' food in the observation."""
+    cfg = m3.replace(**{"competition.observe_bush_contested": True})
+    w = World(cfg, seed=40)
+    w.pool.x[0], w.pool.z[0] = w.bush_x[0], w.bush_z[0]          # on the bush
+    w.pool.x[1], w.pool.z[1] = w.bush_x[0] + 1.0, w.bush_z[0]    # one unit out
+    w.pool.x[2:], w.pool.z[2:] = 35.0, 0.0
+
+    kb = cfg.observation.k_bushes
+    bushes = w.observations()[:, 2:2 + 4 * kb].reshape(cfg.world.num_agents, kb, 4)
+    assert bushes[0, 0, 3] == pytest.approx(0.0)   # closest: free
+    assert bushes[1, 0, 3] == pytest.approx(1.0)   # further: blocked
+
+
+def test_contested_flag_ignores_dead_rivals(m3):
+    cfg = m3.replace(**{"competition.observe_bush_contested": True})
+    w = World(cfg, seed=41)
+    w.pool.x[0], w.pool.z[0] = w.bush_x[0] + 1.0, w.bush_z[0]
+    w.pool.x[1], w.pool.z[1] = w.bush_x[0], w.bush_z[0]   # nearer, but dead
+    w.pool.alive[1] = False
+    w.pool.x[2:], w.pool.z[2:] = 35.0, 0.0
+
+    kb = cfg.observation.k_bushes
+    bushes = w.observations()[:, 2:2 + 4 * kb].reshape(cfg.world.num_agents, kb, 4)
+    assert bushes[0, 0, 3] == pytest.approx(0.0)
+
+
+def test_contested_flag_widens_the_observation_only_when_enabled(m3):
+    assert observation_dim(m3) == 29
+    assert observation_dim(m3.replace(**{"competition.observe_bush_contested": True})) == 33
+
+
 def test_observation_bounds_still_hold_with_competition_on(m3):
     w = World(m3.replace(**{"world.max_ticks": 10_000}), seed=2)
     rng = np.random.default_rng(0)

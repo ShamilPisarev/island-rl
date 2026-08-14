@@ -88,9 +88,25 @@ def neighbour_channels(cfg: Config) -> int:
     return 4 if cfg.competition.observe_neighbour_food else 3
 
 
+def bush_channels(cfg: Config) -> int:
+    """3 per bush (dx, dz, berries), or 4 with "a rival is closer than me".
+
+    Same principle as ``neighbour_channels``: with ``exclusive_bushes`` on, whether
+    an agent may harvest a bush depends on whether any living rival stands nearer
+    to it. That is *derivable* from the neighbour and bush offsets already in the
+    observation, but only via a comparison of distances the network would have to
+    discover for itself -- and until it does, a blocked bush is indistinguishable
+    from a free one, so the only learnable policy is "gather and hope".
+
+    Making the mechanic directly perceivable is the same call that was made for
+    theft. A mechanic the policy cannot see is a mechanic it cannot respond to.
+    """
+    return 4 if cfg.competition.observe_bush_contested else 3
+
+
 def observation_dim(cfg: Config) -> int:
-    """2 own scalars + K_b bushes x 3 + K_a agents x (3 or 4) + 3 edge features."""
-    return (2 + 3 * cfg.observation.k_bushes
+    """2 own scalars + K_b bushes x (3 or 4) + K_a agents x (3 or 4) + 3 edge."""
+    return (2 + bush_channels(cfg) * cfg.observation.k_bushes
             + neighbour_channels(cfg) * cfg.observation.k_agents + 3)
 
 
@@ -160,13 +176,28 @@ def build_observations(
     bush_dz = bush_z[None, :] - pool.z[:, None]
     bush_d2 = bush_dx**2 + bush_dz**2
     idx, valid = _k_nearest(bush_d2, obs_cfg.k_bushes)
+    bush_ch = bush_channels(cfg)
+    if bush_ch == 4:
+        # For every (agent, bush) pair: is some *other* living agent nearer to that
+        # bush than this one is? Computed once as a matrix rather than per slot.
+        rival_d2 = np.where(alive[:, None], bush_d2, np.inf)
+        best_rival = np.full_like(bush_d2, np.inf)
+        for i in range(n):
+            others = np.ones(n, dtype=bool)
+            others[i] = False
+            if others.any():
+                best_rival[i] = rival_d2[others].min(axis=0)
+        blocked = (best_rival < bush_d2).astype(np.float32)
     for j in range(obs_cfg.k_bushes):
         take = idx[:, j]
         ok = valid[:, j]
-        out[:, col + 0] = np.where(ok, np.clip(bush_dx[np.arange(n), take] / scale, -1.0, 1.0), 0.0)
-        out[:, col + 1] = np.where(ok, np.clip(bush_dz[np.arange(n), take] / scale, -1.0, 1.0), 0.0)
+        rows = np.arange(n)
+        out[:, col + 0] = np.where(ok, np.clip(bush_dx[rows, take] / scale, -1.0, 1.0), 0.0)
+        out[:, col + 1] = np.where(ok, np.clip(bush_dz[rows, take] / scale, -1.0, 1.0), 0.0)
         out[:, col + 2] = np.where(ok, bush_berries[take] / cfg.bushes.capacity, 0.0)
-        col += 3
+        if bush_ch == 4:
+            out[:, col + 3] = np.where(ok, blocked[rows, take], 0.0)
+        col += bush_ch
 
     # --- K nearest living other agents
     agent_dx = pool.x[None, :] - pool.x[:, None]

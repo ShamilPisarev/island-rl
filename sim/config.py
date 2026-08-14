@@ -66,6 +66,7 @@ class CompetitionConfig:
     enable_steal: bool = False     # adds an 11th action: take a berry from a neighbour
     steal_radius: float = 2.5
     observe_neighbour_food: bool = False  # neighbours' carried food enters the observation
+    observe_bush_contested: bool = False  # per bush: is a living rival closer than me?
 
 
 @dataclass(frozen=True)
