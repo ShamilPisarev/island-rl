@@ -192,7 +192,25 @@ class PPOTrainer:
 
     # --- update -----------------------------------------------------------
 
-    def update(self, rollout: Rollout) -> dict[str, float]:
+    def entropy_coef(self, update_index: int) -> float:
+        """Entropy bonus for this update, optionally annealed.
+
+        A fixed bonus sets a floor on how committed the policy may become. In an
+        abundant world that is harmless -- many actions are near-equivalent, so
+        the residual randomness costs nothing. In a scarce one it is a real
+        ceiling on performance: the best available behaviour is "stand on a bush
+        and wait", which means putting most of the probability mass on a single
+        action, and a bonus that keeps entropy near uniform forbids exactly that.
+
+        Annealing keeps the early exploration and then lets the policy commit.
+        """
+        start, end = self.p.ent_coef, self.p.ent_coef_final
+        if end is None or self.p.total_updates <= 1:
+            return start
+        frac = min(max(update_index / (self.p.total_updates - 1), 0.0), 1.0)
+        return start + (end - start) * frac
+
+    def update(self, rollout: Rollout, ent_coef: float | None = None) -> dict[str, float]:
         active = rollout.active.reshape(-1)
         n_active = int(active.sum().item())
         if n_active == 0:
@@ -214,6 +232,7 @@ class PPOTrainer:
         minibatch_size = max(batch_size // self.p.num_minibatches, 1)
         indices = np.arange(batch_size)
 
+        ent_coef = self.p.ent_coef if ent_coef is None else ent_coef
         stats = {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0,
                  "approx_kl": 0.0, "clip_fraction": 0.0}
         n_batches = 0
@@ -251,7 +270,7 @@ class PPOTrainer:
                 ).mean()
 
                 entropy_loss = entropy.mean()
-                loss = policy_loss + self.p.vf_coef * value_loss - self.p.ent_coef * entropy_loss
+                loss = policy_loss + self.p.vf_coef * value_loss - ent_coef * entropy_loss
 
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -293,7 +312,7 @@ class PPOTrainer:
 
         started = time.perf_counter()
         rollout = self.collect()
-        stats = self.update(rollout)
+        stats = self.update(rollout, ent_coef=self.entropy_coef(update_index))
         elapsed = time.perf_counter() - started
         steps = self.p.rollout_ticks * self.num_envs * self.num_agents
 

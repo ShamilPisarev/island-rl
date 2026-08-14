@@ -108,6 +108,7 @@ class PPOConfig:
     clip_coef: float = 0.2
     ent_coef: float = 0.01
     vf_coef: float = 0.5
+    ent_coef_final: float | None = None  # anneal ent_coef to this by the last update
     max_grad_norm: float = 0.5
     device: str = "cpu"
 

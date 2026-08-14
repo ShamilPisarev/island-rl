@@ -375,3 +375,44 @@ def test_training_is_deterministic_under_a_fixed_seed(tiny):
 
     a, b = run(), run()
     assert a == b
+
+
+def test_entropy_coefficient_anneals(cfg):
+    """A fixed entropy bonus is a floor on how committed a policy may become.
+    That is free in an abundant world and a real ceiling in a scarce one, where
+    the best behaviour is to put most of the mass on a single action."""
+    annealed = cfg.replace(**{
+        "ppo.ent_coef": 0.01, "ppo.ent_coef_final": 0.001, "ppo.total_updates": 11,
+        "ppo.num_envs": 2, "ppo.rollout_ticks": 8,
+    })
+    trainer = make_trainer(annealed)
+    assert trainer.entropy_coef(0) == pytest.approx(0.01)
+    assert trainer.entropy_coef(5) == pytest.approx(0.0055)
+    assert trainer.entropy_coef(10) == pytest.approx(0.001)
+    assert trainer.entropy_coef(999) == pytest.approx(0.001)   # clamped past the end
+
+
+def test_entropy_coefficient_is_constant_when_no_final_given(cfg):
+    trainer = make_trainer(cfg.replace(**{
+        "ppo.ent_coef": 0.007, "ppo.ent_coef_final": None,
+        "ppo.num_envs": 2, "ppo.rollout_ticks": 8,
+    }))
+    assert trainer.entropy_coef(0) == pytest.approx(0.007)
+    assert trainer.entropy_coef(200) == pytest.approx(0.007)
+
+
+def test_annealed_entropy_reaches_the_loss(cfg):
+    """The schedule has to actually reach the update, not just be computable."""
+    annealed = cfg.replace(**{
+        "ppo.ent_coef": 0.5, "ppo.ent_coef_final": 0.0, "ppo.total_updates": 2,
+        "ppo.num_envs": 2, "ppo.rollout_ticks": 16, "ppo.num_minibatches": 1,
+        "ppo.epochs": 1, "world.max_ticks": 30,
+    })
+    trainer = make_trainer(annealed)
+    seen = []
+    original = trainer.update
+    trainer.update = lambda rollout, ent_coef=None: (seen.append(ent_coef),
+                                                     original(rollout, ent_coef))[1]
+    trainer.train_update(0)
+    trainer.train_update(1)
+    assert seen == [pytest.approx(0.5), pytest.approx(0.0)]
