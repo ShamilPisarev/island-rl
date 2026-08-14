@@ -6,12 +6,14 @@ you.
 
 ## START HERE — handoff for the next session
 
-**First, check whether the Milestone 4 training pair finished.** It was launched
-from a previous session and its processes do not survive that session ending:
+**M4's first pair is done and construction did NOT emerge** (numbers below). A
+second pair, `m4b`, is testing the fix. Check whether it finished — it was
+launched from a previous session and its processes do not survive that session
+ending:
 
 ```bash
-wc -l runs/m4/metrics.csv runs/m4-unshaped/metrics.csv   # 401 lines each = done
-tail -6 /tmp/m4.log                                       # final evaluation, if it got there
+wc -l runs/m4b/metrics.csv runs/m4b-unshaped/metrics.csv  # 401 lines each = done
+tail -6 /tmp/m4b.log                                       # final evaluation, if it got there
 ```
 
 * **401 lines and a "final evaluation" block in the log** → M4 training is done.
@@ -39,8 +41,8 @@ whole point of this milestone and step 2 is the brief's explicit request.
    are comparable to every other milestone):
 
    ```bash
-   python -m sim.evaluate --checkpoint checkpoints/m4/latest.pt --baselines
-   python -m sim.evaluate --checkpoint checkpoints/m4-unshaped/latest.pt --baselines
+   python -m sim.evaluate --checkpoint checkpoints/m4b/latest.pt --baselines
+   python -m sim.evaluate --checkpoint checkpoints/m4b-unshaped/latest.pt --baselines
    ```
 
    The scripted builder on this world is **510.5 lifespan, 2.0 shelters/episode,
@@ -70,14 +72,21 @@ whole point of this milestone and step 2 is the brief's explicit request.
    `python -m sim.divergence --checkpoint checkpoints/m4/latest.pt` and check
    both viewer pages still render (`make watch`).
 
-**If construction never lifts off** (shelters stay near zero in both runs), that
-is a reportable finding, not a failure to hide — but try this first, because it
-is the same shape of fix that solved M3: **place shelter sites inside the bush
-clusters** rather than scattered independently (`World.reset`, the
-`self.site_x, self.site_z = self._scatter(...)` line). Agents already spend their
-lives at bushes, so the unrewarded approach walk — the part of the chain PPO
-cannot credit — drops to nearly zero. Do not reach for bigger shaping numbers
-first; that is the lever the M3 ablation warns about.
+**What has already been tried, so it is not repeated:**
+
+| attempt | shelters/ep (shaped) | verdict |
+|---|---|---|
+| sites 4 wood + 2 stone, shaping 0.3/0.5/2.0 | 0.000 | too weak; completion never fired |
+| sites 3 wood + 1 stone, shaping 0.5/1.0/3.0 (`m4`) | 0.012 | material activity 3.5× the control, completion still never fired |
+| + sites on the bush clusters (`m4b`) | *in flight* | deletes the unrewarded approach walk |
+
+**If `m4b` still shows nothing**, report the negative result — it is a real
+finding, and the brief predicted this exact milestone would be the hard one.
+Before concluding, the one remaining structural lever (not a bigger number) is to
+make a *partially built* shelter give partial protection, so the reward gradient
+is continuous instead of a cliff at the final unit. Do **not** simply raise the
+shaping coefficients: the M3 ablation showed that buys the behaviour without
+buying the outcome, and `m4` already showed 3.5× the activity with no completions.
 
 ### Then Milestone 5 — exchange
 
