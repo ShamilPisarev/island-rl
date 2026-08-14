@@ -2,6 +2,74 @@
  "schema_version": 1,
  "replays": [
   {
+   "file": "m1_u00200.json",
+   "label": "m1 @ update 200",
+   "source": "train",
+   "schema_version": 1,
+   "ticks": 601,
+   "generated_at": "2026-08-14T12:38:35+00:00",
+   "summary": {
+    "ticks": 600,
+    "deaths": 0,
+    "survivors": 6,
+    "berries_gathered": 66,
+    "meals": 48,
+    "mean_lifespan": 600.0,
+    "mean_final_hunger": 80.0
+   }
+  },
+  {
+   "file": "m1_u00150.json",
+   "label": "m1 @ update 150",
+   "source": "train",
+   "schema_version": 1,
+   "ticks": 601,
+   "generated_at": "2026-08-14T12:37:52+00:00",
+   "summary": {
+    "ticks": 600,
+    "deaths": 0,
+    "survivors": 6,
+    "berries_gathered": 61,
+    "meals": 48,
+    "mean_lifespan": 600.0,
+    "mean_final_hunger": 80.0
+   }
+  },
+  {
+   "file": "m1_u00100.json",
+   "label": "m1 @ update 100",
+   "source": "train",
+   "schema_version": 1,
+   "ticks": 601,
+   "generated_at": "2026-08-14T12:37:09+00:00",
+   "summary": {
+    "ticks": 600,
+    "deaths": 0,
+    "survivors": 6,
+    "berries_gathered": 62,
+    "meals": 48,
+    "mean_lifespan": 600.0,
+    "mean_final_hunger": 80.0
+   }
+  },
+  {
+   "file": "m1_u00050.json",
+   "label": "m1 @ update 50",
+   "source": "train",
+   "schema_version": 1,
+   "ticks": 601,
+   "generated_at": "2026-08-14T12:36:28+00:00",
+   "summary": {
+    "ticks": 600,
+    "deaths": 2,
+    "survivors": 4,
+    "berries_gathered": 37,
+    "meals": 31,
+    "mean_lifespan": 466.33,
+    "mean_final_hunger": 47.5
+   }
+  },
+  {
    "file": "fake_demo.json",
    "label": "scripted demo (2 wanderers)",
    "source": "scripted",

@@ -13,6 +13,7 @@ Two kinds of number get logged and they are easy to confuse:
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -147,8 +148,13 @@ class MetricsLogger:
 
 
 def _width(fmt: str) -> int:
-    digits = "".join(ch for ch in fmt.split(":")[1].split("}")[0] if ch.isdigit())
-    return int(digits[:2]) if digits else 8
+    """Field width out of a format spec like ``{:>7,.0f}``.
+
+    Must not scoop up the precision digits -- a naive digit filter reads that
+    spec as width 70 and prints a table nobody can follow.
+    """
+    match = re.match(r"\{:[<>^=]?[+\- ]?0?(\d+)", fmt)
+    return int(match.group(1)) if match else 8
 
 
 @dataclass
