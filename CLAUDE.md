@@ -4,6 +4,102 @@ Assume you are starting cold with only this file and `PROJECT_BRIEF.md`. This is
 the state of the project, the decisions behind it, and the things that will bite
 you.
 
+## START HERE — handoff for the next session
+
+**First, check whether the Milestone 4 training pair finished.** It was launched
+from a previous session and its processes do not survive that session ending:
+
+```bash
+wc -l runs/m4/metrics.csv runs/m4-unshaped/metrics.csv   # 401 lines each = done
+tail -6 /tmp/m4.log                                       # final evaluation, if it got there
+```
+
+* **401 lines and a "final evaluation" block in the log** → M4 training is done.
+  Go to "Finishing Milestone 4" below.
+* **Fewer lines, no final block** → it was interrupted. Resume from the last
+  checkpoint (written every 25 updates) rather than restarting:
+
+  ```bash
+  python -m sim.train --config config/m4.yaml --run-name m4 --updates 400 \
+      --policy-mode individual --resume checkpoints/m4/latest.pt
+  python -m sim.train --config config/m4_unshaped.yaml --run-name m4-unshaped \
+      --updates 400 --policy-mode individual --resume checkpoints/m4-unshaped/latest.pt
+  ```
+
+  (`--resume` restores weights, optimiser state and the update counter. Note it
+  reuses the *run name*, so the CSV is rewritten from the resume point — keep the
+  old one if you care about the full curve.)
+
+### Finishing Milestone 4
+
+Four steps, in order. None of them is optional — the shaping comparison is the
+whole point of this milestone and step 2 is the brief's explicit request.
+
+1. **Score both runs against the references** (same seed block, so the numbers
+   are comparable to every other milestone):
+
+   ```bash
+   python -m sim.evaluate --checkpoint checkpoints/m4/latest.pt --baselines
+   python -m sim.evaluate --checkpoint checkpoints/m4-unshaped/latest.pt --baselines
+   ```
+
+   The scripted builder on this world is **510.5 lifespan, 2.0 shelters/episode,
+   89% of night ticks indoors**, against the forager's 457.6 — that gap is what
+   shelter is worth, and it is the bar.
+
+2. **Run the annealing test** — the brief asks whether the shaping can be
+   removed once it has done its job:
+
+   ```bash
+   python -m sim.train --config config/m4_anneal.yaml --run-name m4-anneal \
+       --updates 200 --policy-mode individual --init-from checkpoints/m4/latest.pt
+   python -m sim.evaluate --checkpoint checkpoints/m4-anneal/latest.pt --baselines
+   ```
+
+   Same world, every shaping term at zero, continued from the shaped policy. If
+   shelter-building **persists**, the shaping was a genuine bootstrap. If it
+   **decays toward the unshaped control**, the shaping only ever bought the
+   behaviour — which is exactly what the M3 shaping ablation found, and it must
+   be reported that way rather than softened.
+
+3. **Compare on the terminal metric, not the shaped quantity.** Lifespan and
+   deaths decide it; wood/builds/shelters explain it. A shaped run that builds
+   more shelters and survives *less* is a negative result (see the M3 ablation).
+
+4. **Write the results up** in this file and in README.md, then run
+   `python -m sim.divergence --checkpoint checkpoints/m4/latest.pt` and check
+   both viewer pages still render (`make watch`).
+
+**If construction never lifts off** (shelters stay near zero in both runs), that
+is a reportable finding, not a failure to hide — but try this first, because it
+is the same shape of fix that solved M3: **place shelter sites inside the bush
+clusters** rather than scattered independently (`World.reset`, the
+`self.site_x, self.site_z = self._scatter(...)` line). Agents already spend their
+lives at bushes, so the unrewarded approach walk — the part of the chain PPO
+cannot credit — drops to nearly zero. Do not reach for bigger shaping numbers
+first; that is the lever the M3 ablation warns about.
+
+### Then Milestone 5 — exchange
+
+Only after M4 is done and verified. §3 of the brief: agents can transfer items,
+watch for anything resembling trade or specialisation-plus-exchange, and **log
+every transfer so the economics can be analysed after the fact**. Practical
+notes for building it here:
+
+* The machinery is all in place. Add a `give` action the same way `steal` and
+  `chop`/`mine`/`build` were added — **appended, never inserted**, so every
+  earlier checkpoint keeps its meaning — and grow the M4 policy into it with
+  `grow_policy` (which maps weights by feature name, not position).
+* Transfer logging wants its own artefact, not a metrics column: a JSONL of
+  `(tick, giver, receiver, item)` per episode, so the economics can be replayed.
+  `sim/divergence.py` is the model for "analysis tool writes JSON, viewer page
+  renders it".
+* Expect the same credit-assignment wall. Giving costs the giver immediately and
+  pays back only if reciprocated much later, which is a longer and *weaker* chain
+  than theft — and theft needed action masking before PPO would touch it. Budget
+  for the unshaped run finding nothing, and make the shaped/unshaped pair the
+  deliverable rather than a single number.
+
 ## Current state
 
 **Milestones 1, 2 and 3 are complete and verified; M4 is built and training.**
