@@ -26,6 +26,7 @@ from .policy import (
     greedy_builder_actions,
     greedy_forager_actions,
     greedy_thief_actions,
+    greedy_trader_actions,
     policy_from_config_dict,
     random_actions,
 )
@@ -89,6 +90,8 @@ def make_act_fn(kind: str, cfg: Config, policy: Brain | None,
         return lambda obs, mask=None: greedy_thief_actions(obs, cfg)
     if kind == "builder":
         return lambda obs, mask=None: greedy_builder_actions(obs, cfg, mask)
+    if kind == "trader":
+        return lambda obs, mask=None: greedy_trader_actions(obs, cfg, mask)
     if policy is None:
         raise ValueError("a checkpoint is required to evaluate a learned policy")
     return policy_act_fn(policy, deterministic=deterministic, device=device)
@@ -133,6 +136,13 @@ def baselines(cfg: Config, episodes: int, seed: int) -> list[EvalResult]:
             evaluate(cfg, make_act_fn("builder", cfg, None, seed), episodes, seed,
                      "scripted builder")
         )
+    # The trader is the builder plus gifts, so the pair reads as "what does
+    # exchange add?" rather than as a single unanchored number.
+    if cfg.exchange.enabled and cfg.exchange.observe_neighbour_materials:
+        results.append(
+            evaluate(cfg, make_act_fn("trader", cfg, None, seed), episodes, seed,
+                     "scripted trader")
+        )
     return results
 
 
@@ -141,7 +151,9 @@ def main() -> None:
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--config", default=None,
                         help="ignored when --checkpoint is given; the checkpoint carries its own")
-    parser.add_argument("--policy", choices=["learned", "random", "greedy", "thief", "builder"], default=None)
+    parser.add_argument("--policy",
+                        choices=["learned", "random", "greedy", "thief", "builder", "trader"],
+                        default=None)
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--seed", type=int, default=10_000,
                         help="evaluation seeds are offset from training seeds by default")

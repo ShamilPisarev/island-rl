@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Island — behavioural divergence</title>
+<title>Island — exchange</title>
 <style>
   :root {
     --bg: #0d1117;
@@ -43,11 +43,8 @@
     border-radius: 5px; padding: 5px 9px; font: inherit; cursor: pointer;
   }
 
-  /* Milestone 3 adds five theft columns; the table then outgrows a narrow window.
-     It has to scroll inside its own box -- letting the page body scroll sideways
-     drags the headings and every other section off screen with it. */
   .scrollx { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; min-width: 720px;
+  table { border-collapse: collapse; width: 100%; min-width: 760px;
           font-variant-numeric: tabular-nums; }
   th, td { text-align: right; padding: 7px 9px; border-bottom: 1px solid var(--line); }
   th { color: var(--dim); font-weight: 600; font-size: 11px; text-transform: uppercase;
@@ -55,26 +52,21 @@
   td.agent, th.agent { text-align: left; }
   tbody tr:hover { background: var(--panel-2); }
   .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; }
-  .spread { color: var(--accent); }
-
-  .mixrow { display: grid; grid-template-columns: 74px 1fr; gap: 10px; align-items: center;
-            margin-bottom: 7px; }
-  .mixbar { display: flex; height: 17px; border-radius: 4px; overflow: hidden; background: #202b38; }
-  .mixbar > div { height: 100%; }
-  .legend { display: flex; gap: 14px; color: var(--dim); font-size: 11px; margin: 10px 0 0; }
-  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
-
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(178px, 1fr)); gap: 16px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 11px; }
-  .card h3 { margin: 0 0 8px; font-size: 12px; display: flex; align-items: center; }
-  .card canvas { width: 100%; height: auto; display: block; border-radius: 5px; }
-  .card .meta { color: var(--dim); font-size: 10.5px; margin-top: 7px; }
+  .pos { color: var(--good); }
+  .neg { color: var(--warn); }
 
   .matrix { display: inline-grid; gap: 2px; margin-top: 6px; }
-  .matrix div { width: 40px; height: 26px; display: grid; place-items: center;
+  .matrix div { width: 44px; height: 26px; display: grid; place-items: center;
                 font-size: 10.5px; font-variant-numeric: tabular-nums; border-radius: 3px; }
   .matrix .head { background: none; color: var(--dim); font-weight: 600; }
-  .matrices { display: flex; gap: 44px; flex-wrap: wrap; }
+  .matrices { display: flex; gap: 44px; flex-wrap: wrap; align-items: flex-start; }
+
+  .rolerow { display: grid; grid-template-columns: 74px 1fr; gap: 10px; align-items: center;
+             margin-bottom: 7px; }
+  .rolebar { display: flex; height: 17px; border-radius: 4px; overflow: hidden; background: #202b38; }
+  .rolebar > div { height: 100%; }
+  .legend { display: flex; gap: 14px; color: var(--dim); font-size: 11px; margin: 10px 0 0; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
 
   .banner { border-left: 3px solid var(--warn); background: var(--panel);
             padding: 10px 14px; border-radius: 0 6px 6px 0; margin-bottom: 18px;
@@ -89,54 +81,54 @@
 <body>
 <main>
   <header class="top">
-    <h1>ISL<span>A</span>ND — divergence</h1>
+    <h1>ISL<span>A</span>ND — exchange</h1>
     <div class="sub" id="subtitle">no report loaded</div>
     <nav>
       <input type="file" id="fileInput" accept=".json">
-      <a href="./exchange.html">exchange →</a>
+      <a href="./divergence.html">divergence →</a>
       <a href="./index.html">replay viewer →</a>
     </nav>
   </header>
 
   <div id="empty">
-    Run <code>python -m sim.divergence --checkpoint checkpoints/m2/latest.pt</code>,
+    Run <code>python -m sim.exchange --checkpoint checkpoints/m5/latest.pt</code>,
     then serve this folder (<code>python -m http.server</code>) — or drop the report
     JSON anywhere on this page.
   </div>
 
   <div id="content" hidden>
-    <div id="mapWarning" class="banner" hidden></div>
+    <div id="shapedWarning" class="banner" hidden></div>
 
     <div class="kpi" id="kpi"></div>
 
-    <h2>Per-agent behaviour</h2>
-    <p class="note" id="behaviourNote"></p>
-    <div class="scrollx"><table id="statsTable"></table></div>
+    <h2>Who gave, who received</h2>
+    <p class="note" id="ledgerNote"></p>
+    <div class="scrollx"><table id="ledgerTable"></table></div>
 
-    <h2>Action mix</h2>
-    <p class="note">Share of living ticks spent on each kind of action.</p>
-    <div id="mix"></div>
-    <div class="legend">
-      <span><i style="background:#6ec46e"></i>gather</span>
-      <span><i style="background:#6fc3df"></i>travel</span>
-      <span><i style="background:#7c8b9c"></i>idle</span>
-    </div>
-
-    <h2>Territory</h2>
-    <p class="note" id="territoryNote"></p>
-    <div class="grid" id="territory"></div>
-
-    <h2>Pairwise divergence</h2>
+    <h2>Flow</h2>
     <p class="note">
-      Jensen–Shannon divergence in bits; 0 means two agents have identical
-      distributions. Read the action matrix as the real specialisation signal —
-      territory differs even between agents that share one brain, because they
-      spawn apart and each walks to whichever berry cluster is nearest.
+      Row gave to column, counted over the whole block. A one-way column is
+      charity or a relay; a symmetric pair is either mutual aid or a reward farm,
+      and only the utilisation figure above separates those two.
     </p>
     <div class="matrices" id="matrices"></div>
+
+    <h2>Production against exchange</h2>
+    <p class="note">
+      Each agent's share of everything the population harvested, delivered and
+      handed over. Specialisation-plus-exchange looks like one bar dominated by
+      harvesting next to another dominated by delivering — an agent that digs up
+      material it never installs, feeding one that installs material it never dug.
+    </p>
+    <div id="roles"></div>
+    <div class="legend">
+      <span><i style="background:#8a5a2b"></i>harvested</span>
+      <span><i style="background:#e0b83c"></i>delivered</span>
+      <span><i style="background:#6fc3df"></i>given away</span>
+    </div>
   </div>
 </main>
 
-<script src="./divergence.js"></script>
+<script src="./exchange.js"></script>
 </body>
 </html>

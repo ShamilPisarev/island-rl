@@ -1,0 +1,37 @@
+# Milestone 5 — exchange. THE BRIEF-FAITHFUL CONFIG (a gift pays nothing).
+#
+# The M4 annealed world, unchanged, plus the ability to hand things over:
+#
+#   give_food       action 14: one berry to the nearest neighbour in reach who
+#                   has room for it.
+#   give_material   action 15: one wood (else one stone), same rule.
+#   give_radius     2.5, the same reach as a steal, so taking and giving cost
+#                   the same to set up and only the direction differs.
+#   observe_neighbour_materials
+#                   neighbours' carried wood/stone join the observation
+#                   (55 -> 61 dims). Without it an agent cannot tell who has a
+#                   free hand, so it could only learn to give indiscriminately --
+#                   the same argument that put neighbours' food in the M3
+#                   observation before theft was asked to emerge.
+#
+# NOTHING PAYS FOR A GIFT. reward.give is 0.0, exactly as reward.steal is: a
+# transfer creates nothing, it only moves a unit from one agent to another, so it
+# has to earn its place through what the receiver then does with it. That is a
+# longer and weaker credit chain than theft -- theft at least pays the actor
+# immediately in food -- and theft needed action masking before PPO would touch
+# it at all. Budget for this finding nothing; config/m5_shaped.yaml is the
+# labelled ablation, and the pair is the deliverable, not either number alone.
+#
+# Why this parent: m4c_anneal.yaml is the world the best M4 policy actually
+# lives in (403.1 lifespan, 17% of nights sheltered), with every construction
+# shaping term already returned to zero. So an M5 world pays for exactly three
+# things, all of them from Milestone 1: staying alive, gathering, eating.
+#
+#   python -m sim.train --config config/m5.yaml --run-name m5 --updates 200 \
+#       --policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
+extends: m4c_anneal.yaml
+
+exchange:
+  enabled: true
+  give_radius: 2.5
+  observe_neighbour_materials: true

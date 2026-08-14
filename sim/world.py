@@ -4,7 +4,7 @@ One ``World`` is one island with one population. ``VecWorld`` runs many of them
 side by side for PPO throughput and auto-resets finished episodes.
 
 Tick order (fixed, and the tests depend on it):
-  1. decode actions -> move or gather
+  1. decode actions -> move, gather, steal, build, or give
   2. hunger drain
   3. auto-eat
   4. death check
@@ -28,7 +28,12 @@ from .agents import (
     BUILD,
     CHOP,
     GATHER,
+    GIVE_FOOD,
+    GIVE_MATERIAL,
     IDLE,
+    ITEM_FOOD,
+    ITEM_STONE,
+    ITEM_WOOD,
     MINE,
     MOVE_VECTORS,
     N_MOVE_ACTIONS,
@@ -64,6 +69,14 @@ class StepResult:
     stole: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     robbed: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     contested: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    harvested: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    built: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    gave: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    received: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    # (giver, receiver, item) for every transfer that happened this tick, in the
+    # order they resolved. Always populated -- it is at most one row per agent --
+    # while the per-episode ledger in EpisodeStats is opt-in.
+    transfers: list[tuple[int, int, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -83,6 +96,13 @@ class EpisodeStats:
     shelters_completed: int = 0
     night_ticks_sheltered: int = 0
     night_ticks_exposed: int = 0
+    gifts: int = 0
+    food_given: int = 0
+    materials_given: int = 0
+    # (tick, giver, receiver, item) for the whole episode. Empty unless
+    # exchange.log_transfers is on: training runs 32 worlds at once and does not
+    # need the ledger, the analysis tools do.
+    transfers: list[tuple[int, int, int, int]] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -199,6 +219,14 @@ class World:
         self._wood = np.zeros(cfg.world.num_agents, dtype=np.int64)
         self._stone = np.zeros(cfg.world.num_agents, dtype=np.int64)
         self._builds = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self._gave = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self._received = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self._given_by_item = np.zeros(3, dtype=np.int64)
+        self.transfers: list[tuple[int, int, int, int]] = []
+        # Transfers from the most recent step only. The replay recorder reads the
+        # world rather than being handed diffs, and a transfer is the one event
+        # that leaves no trace in the post-step state.
+        self.last_transfers: list[tuple[int, int, int]] = []
         self._completions = 0
         self._night_sheltered = 0
         self._night_exposed = 0
@@ -382,6 +410,63 @@ class World:
                             self._completions += 1
                         break
 
+        # 1e. exchange (Milestone 5). One unit to the nearest neighbour in reach
+        #     who has room for it. Like theft it pays nothing by default: a gift
+        #     costs the giver now and can only repay through what the receiver
+        #     does with it, which is a longer and weaker credit chain than theft
+        #     -- and theft needed action masking before PPO would touch it.
+        #
+        #     Deliberately NOT targeted at whoever needs it most. "Give to the
+        #     hungry" is the behaviour this milestone exists to look for; putting
+        #     it in the transfer rule would mean the world does the trading and
+        #     the policy merely presses a button. The giver chooses when, and
+        #     which economy (food or materials); the receiver is simply whoever
+        #     is standing closest with a free slot.
+        #
+        #     Placed before the drain for the same reason gathering is: a berry
+        #     handed over on an agent's last tick can still save it, which makes
+        #     the give -> eat -> survive chain one tick shorter.
+        gave = np.zeros(n, dtype=np.int64)
+        received = np.zeros(n, dtype=np.int64)
+        transfers: list[tuple[int, int, int]] = []
+        self.last_transfers = transfers
+        if cfg.exchange.enabled:
+            giving = acted & ((actions == GIVE_FOOD) | (actions == GIVE_MATERIAL))
+            for i in (int(v) for v in np.flatnonzero(giving)):
+                if actions[i] == GIVE_FOOD:
+                    if pool.food[i] <= 0:
+                        continue
+                    room = pool.food < cfg.food.capacity
+                elif cc.enabled and pool.wood[i] + pool.stone[i] > 0:
+                    room = (pool.wood + pool.stone) < cc.material_capacity
+                else:
+                    continue
+                d2 = (pool.x - pool.x[i]) ** 2 + (pool.z - pool.z[i]) ** 2
+                cand = np.flatnonzero((d2 <= cfg.exchange.give_radius ** 2) & pool.alive & room)
+                cand = cand[cand != i]
+                if cand.size == 0:
+                    continue
+                j = int(cand[np.argmin(d2[cand])])
+                if actions[i] == GIVE_FOOD:
+                    item = ITEM_FOOD
+                    pool.food[i] -= 1
+                    pool.food[j] += 1
+                elif pool.wood[i] > 0:
+                    item = ITEM_WOOD
+                    pool.wood[i] -= 1
+                    pool.wood[j] += 1
+                else:
+                    item = ITEM_STONE
+                    pool.stone[i] -= 1
+                    pool.stone[j] += 1
+                rewards[i] += cfg.reward.give   # 0.0 unless deliberately shaped
+                gave[i] += 1
+                received[j] += 1
+                self._given_by_item[item] += 1
+                transfers.append((i, j, item))
+            if transfers and cfg.exchange.log_transfers:
+                self.transfers.extend((self.tick, g, r, it) for g, r, it in transfers)
+
         # 2. hunger drain -- multiplied at night for anyone not near a completed
         #    shelter. This is the hazard that makes shelter worth its materials.
         drain = np.full(n, cfg.hunger.drain_per_tick)
@@ -447,6 +532,8 @@ class World:
         self._wood += wood_got
         self._stone += stone_got
         self._builds += built
+        self._gave += gave
+        self._received += received
 
         # 6. bush regrowth: a depleted bush ticks back up one berry at a time
         below = self.bush_berries < cfg.bushes.capacity
@@ -472,6 +559,11 @@ class World:
             stole=stole,
             robbed=robbed,
             contested=contested,
+            harvested=wood_got + stone_got,
+            built=built,
+            gave=gave,
+            received=received,
+            transfers=transfers,
         )
 
     # --- reporting --------------------------------------------------------
@@ -499,6 +591,10 @@ class World:
             shelters_completed=self._completions,
             night_ticks_sheltered=self._night_sheltered,
             night_ticks_exposed=self._night_exposed,
+            gifts=int(self._gave.sum()),
+            food_given=int(self._given_by_item[ITEM_FOOD]),
+            materials_given=int(self._given_by_item[ITEM_WOOD] + self._given_by_item[ITEM_STONE]),
+            transfers=list(self.transfers),
         )
 
 

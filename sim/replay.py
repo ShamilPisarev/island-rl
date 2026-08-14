@@ -1,7 +1,21 @@
 """Replay recording, schema, and the manifest the viewer reads.
 
-REPLAY SCHEMA v1 / v2
-=====================
+REPLAY SCHEMA v1 / v2 / v3
+==========================
+
+v3 (Milestone 5) extends v2 and is emitted only for exchange worlds. It adds one
+optional per-tick field:
+
+    per tick    : g = [[giver, receiver, item], ...] -- every transfer that
+                  resolved during this tick, item being 0 food / 1 wood / 2 stone
+    world block : give_radius
+
+A transfer is the only event that leaves no trace in the post-step state: the
+inventories move, but nothing says who handed what to whom, and "agent 3 gained
+a berry" is indistinguishable from a gather. Hence an explicit list. Ticks with
+no transfers omit the key entirely, so a replay from a world where nobody ever
+gives is the same size as a v2 one.
+
 
 v2 (Milestone 4) extends v1 and is emitted only for construction worlds:
 non-construction worlds keep the v1 encoding unchanged, so every replay written
@@ -66,13 +80,14 @@ from typing import Any
 
 import numpy as np
 
-from .agents import IDLE, action_names
+from .agents import IDLE, ITEM_NAMES, action_names
 from .config import Config
 from .world import World
 
 SCHEMA_VERSION = 1
 SCHEMA_VERSION_CONSTRUCTION = 2
-SUPPORTED_VERSIONS = frozenset({1, 2})
+SCHEMA_VERSION_EXCHANGE = 3
+SUPPORTED_VERSIONS = frozenset({1, 2, 3})
 
 AGENT_FIELDS = ["x", "z", "hunger", "food", "alive", "action"]
 AGENT_FIELDS_V2 = AGENT_FIELDS + ["wood", "stone"]
@@ -138,6 +153,12 @@ class ReplayRecorder:
             tick["r"] = [int(v) for v in self.world.rock_stone]
             tick["s"] = [[int(a), int(b)] for a, b in
                          zip(self.world.site_wood_needed, self.world.site_stone_needed)]
+        # The first snapshot is the pre-action state, so it can carry no
+        # transfers even if the world object still holds some from a previous
+        # episode -- `self.ticks` being empty is the same "before anything
+        # happened" test the action column uses.
+        if self.cfg.exchange.enabled and self.ticks and self.world.last_transfers:
+            tick["g"] = [[int(g), int(r), int(item)] for g, r, item in self.world.last_transfers]
         self.ticks.append(tick)
 
     def to_dict(self) -> dict[str, Any]:
@@ -145,8 +166,14 @@ class ReplayRecorder:
         stats = self.world.stats()
         n = cfg.world.num_agents
         construction = cfg.construction.enabled
+        exchange = cfg.exchange.enabled
+        version = SCHEMA_VERSION
+        if exchange:
+            version = SCHEMA_VERSION_EXCHANGE
+        elif construction:
+            version = SCHEMA_VERSION_CONSTRUCTION
         blob = {
-            "schema_version": SCHEMA_VERSION_CONSTRUCTION if construction else SCHEMA_VERSION,
+            "schema_version": version,
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "label": self.label,
             "source": self.source,
@@ -203,6 +230,14 @@ class ReplayRecorder:
                 "shelters_completed": stats.shelters_completed,
                 "night_ticks_sheltered": stats.night_ticks_sheltered,
                 "night_ticks_exposed": stats.night_ticks_exposed,
+            })
+        if exchange:
+            blob["world"]["give_radius"] = cfg.exchange.give_radius
+            blob["item_names"] = list(ITEM_NAMES)
+            blob["summary"].update({
+                "gifts": stats.gifts,
+                "food_given": stats.food_given,
+                "materials_given": stats.materials_given,
             })
         return blob
 

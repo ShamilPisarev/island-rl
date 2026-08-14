@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // --- replay schema this build can read (see sim/replay.py) ------------------
-const SUPPORTED_SCHEMA = [1, 2];   // v2 = Milestone 4: materials, shelters, night
+const SUPPORTED_SCHEMA = [1, 2, 3];   // v2 = M4 materials/shelters/night, v3 = M5 transfers
 // Column order inside each tick's `a` rows. Cross-checked against the file's
 // own tick_fields on load, so a schema change cannot silently shift a column.
 const A_X = 0, A_Z = 1, A_HUNGER = 2, A_FOOD = 3, A_ALIVE = 4, A_ACTION = 5;
@@ -19,6 +19,9 @@ const EXPECTED_AGENT_FIELDS_V2 = [...EXPECTED_AGENT_FIELDS, 'wood', 'stone'];
 
 const GATHER_COLOR = 0x6ec46e;
 const STEAL_COLOR = 0xe0563c;
+const GIFT_COLORS = [0x8ce08c, 0xe0b83c, 0xbfcbd8];   // food, wood, stone (v3)
+const GIFT_FADE_TICKS = 10;   // how long a transfer line lingers after the tick
+const MAX_GIFT_LINES = 32;
 const BASE_TICKS_PER_SECOND = 12;   // playback rate at 1x
 const SPEEDS = [0.5, 1, 4, 16];
 const DEATH_FADE_TICKS = 14;        // ticks over which a corpse settles
@@ -113,6 +116,8 @@ const state = {
   sites: [],
   actionNames: [],
   construction: false,
+  exchange: false,
+  giftLines: [],      // pooled line segments, reused every frame
 };
 
 function fatal(title, message) {
@@ -122,6 +127,10 @@ function fatal(title, message) {
   state.playing = false;
 }
 function clearFatal() { $('fatal').style.display = 'none'; }
+
+function hasMaterials(replay) {
+  return replay?.config?.construction?.enabled ?? (replay?.schema_version >= 2);
+}
 
 function validate(replay, origin) {
   const v = replay?.schema_version;
@@ -134,7 +143,10 @@ function validate(replay, origin) {
     );
   }
   const fields = replay?.tick_fields?.agent;
-  const expected = replay.schema_version >= 2 ? EXPECTED_AGENT_FIELDS_V2 : EXPECTED_AGENT_FIELDS;
+  // The material columns follow whether the world had construction, not the
+  // schema number: a v3 (exchange) replay from a world without construction
+  // carries the v1 agent columns plus per-tick transfers.
+  const expected = hasMaterials(replay) ? EXPECTED_AGENT_FIELDS_V2 : EXPECTED_AGENT_FIELDS;
   if (!Array.isArray(fields) || fields.length !== expected.length
       || expected.some((f, i) => fields[i] !== f)) {
     throw new Error(
@@ -391,7 +403,9 @@ function loadReplay(replay, origin) {
     return built;
   });
 
-  state.construction = replay.schema_version >= 2;
+  state.construction = hasMaterials(replay);
+  state.exchange = replay.schema_version >= 3;
+  state.giftLines = [];   // the old pool went with the disposed worldGroup
   state.trees = [];
   state.rocks = [];
   state.sites = [];
@@ -501,7 +515,8 @@ function applyTick(t) {
 
       const action = state.actionNames[a0[A_ACTION]];
       const MARKERS = { gather: GATHER_COLOR, steal: STEAL_COLOR,
-                        chop: 0x8a5a2b, mine: 0x9aa7b8, build: 0xe0b83c };
+                        chop: 0x8a5a2b, mine: 0x9aa7b8, build: 0xe0b83c,
+                        give_food: 0x8ce08c, give_material: 0xe0b83c };
       const color = MARKERS[action];
       A.marker.visible = color !== undefined;
       if (color !== undefined) A.marker.material.color.setHex(color);
@@ -560,10 +575,99 @@ function applyTick(t) {
     applyNight(0);
   }
 
+  if (state.exchange) applyTransfers(t);
+
   updateAgentPanel(cur);
   const night = state.construction && nightFactor(t) > 0.5;
   $('tickCount').textContent = `${night ? '\u263e ' : ''}${i0} / ${state.lastTick}`;
   $('scrub').value = String(t);
+}
+
+// --- transfers (schema v3) --------------------------------------------------
+//
+// A transfer leaves no trace in the state either side of it -- two inventories
+// change and nothing says why -- so the replay lists them per tick and this
+// draws each one as a short-lived line between where the two agents stood.
+// Anchored to those positions rather than to the agents, so a gift stays where
+// it happened instead of being dragged around afterwards.
+
+// A transfer covers at most `give_radius` (2.5 units on a 40-unit island), so a
+// straight line between the two agents is shorter than an agent is wide and
+// disappears into their bodies. Drawn as a lobbed arc instead, with the item
+// itself riding along it: legible at island zoom, and it shows the direction,
+// which a symmetric line does not.
+const GIFT_ARC_POINTS = 14;
+const GIFT_ARC_HEIGHT = 3.0;
+
+function giftArcPoint(ax, az, bx, bz, u) {
+  return [
+    ax + (bx - ax) * u,
+    ISLAND_TOP + 2.0 + GIFT_ARC_HEIGHT * 4 * u * (1 - u),   // parabola, 0 at both ends
+    az + (bz - az) * u,
+  ];
+}
+
+function ensureGiftLines() {
+  if (state.giftLines.length) return;
+  const pip = new THREE.SphereGeometry(0.48, 10, 8);
+  for (let i = 0; i < MAX_GIFT_LINES; i++) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position',
+      new THREE.BufferAttribute(new Float32Array(GIFT_ARC_POINTS * 3), 3));
+    const arc = new THREE.Line(geometry, new THREE.LineBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0, depthTest: false,
+    }));
+    arc.frustumCulled = false;
+    const item = new THREE.Mesh(pip, new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0, depthTest: false,
+    }));
+    item.frustumCulled = false;
+    arc.visible = item.visible = false;
+    worldGroup.add(arc);
+    worldGroup.add(item);
+    state.giftLines.push({ arc, item });
+  }
+}
+
+function applyTransfers(t) {
+  ensureGiftLines();
+  const i0 = Math.min(Math.floor(t), state.lastTick);
+  let used = 0;
+  for (let k = Math.max(0, i0 - GIFT_FADE_TICKS); k <= i0 && used < MAX_GIFT_LINES; k++) {
+    const list = state.ticks[k].g;
+    if (!list) continue;
+    const age = Math.min(Math.max((t - k) / GIFT_FADE_TICKS, 0), 1);
+    const rows = state.ticks[k].a;
+    for (const [giver, receiver, item] of list) {
+      if (used >= MAX_GIFT_LINES) break;
+      const slot = state.giftLines[used++];
+      const [ax, az] = [rows[giver][A_X], rows[giver][A_Z]];
+      const [bx, bz] = [rows[receiver][A_X], rows[receiver][A_Z]];
+      const color = GIFT_COLORS[item] ?? 0xffffff;
+
+      const p = slot.arc.geometry.attributes.position.array;
+      for (let j = 0; j < GIFT_ARC_POINTS; j++) {
+        const [x, y, z] = giftArcPoint(ax, az, bx, bz, j / (GIFT_ARC_POINTS - 1));
+        p[j * 3] = x; p[j * 3 + 1] = y; p[j * 3 + 2] = z;
+      }
+      slot.arc.geometry.attributes.position.needsUpdate = true;
+      slot.arc.geometry.computeBoundingSphere();
+      slot.arc.material.color.setHex(color);
+      slot.arc.material.opacity = 0.55 * (1 - age);
+      slot.arc.visible = true;
+
+      // The item flies over the first half of the window, then the arc fades.
+      const [x, y, z] = giftArcPoint(ax, az, bx, bz, Math.min(age * 2, 1));
+      slot.item.position.set(x, y, z);
+      slot.item.material.color.setHex(color);
+      slot.item.material.opacity = 1 - age;
+      slot.item.visible = true;
+    }
+  }
+  for (let i = used; i < state.giftLines.length; i++) {
+    state.giftLines[i].arc.visible = false;
+    state.giftLines[i].item.visible = false;
+  }
 }
 
 // Night as a 0..1 factor with a soft edge either side of the boundary, derived
@@ -648,6 +752,9 @@ function renderSummary() {
     const nights = s.night_ticks_sheltered + s.night_ticks_exposed;
     const pct = nights ? Math.round(100 * s.night_ticks_sheltered / nights) : 0;
     html += ` · <b>${s.shelters_completed}</b> shelters · <b>${pct}%</b> of night indoors`;
+  }
+  if (s.gifts !== undefined) {
+    html += ` · <b>${s.gifts}</b> transfers (${s.food_given ?? 0} food / ${s.materials_given ?? 0} material)`;
   }
   $('summary').innerHTML = html;
 }

@@ -16,6 +16,7 @@ from .config import Config
 # --- Action space -----------------------------------------------------------
 # 0-7: move one `move_step` in a compass direction. 8: idle. 9: gather.
 # 10: steal, present only when `competition.enable_steal` is on (Milestone 3).
+# 11-13: chop/mine/build (Milestone 4). 14-15: give_food/give_material (M5).
 # Compass convention: index 0 is +z ("north"), angle increases clockwise through
 # +x ("east"), matching the viewer's world axes. All eight directions are unit
 # vectors, so diagonal movement is not secretly faster.
@@ -31,6 +32,10 @@ STEAL_ACTION_NAMES: tuple[str, ...] = BASE_ACTION_NAMES + ("steal",)
 # always present (inert if enable_steal is false -- an inert steal is already
 # tested behaviour), so CHOP/MINE/BUILD are stable indices that never shift.
 CONSTRUCTION_ACTION_NAMES: tuple[str, ...] = STEAL_ACTION_NAMES + ("chop", "mine", "build")
+# Milestone 5 appends two more, by the same rule: enabling exchange implies the
+# whole construction block is present (inert if construction is off), so
+# give_food and give_material are fixed indices in every exchange world.
+EXCHANGE_ACTION_NAMES: tuple[str, ...] = CONSTRUCTION_ACTION_NAMES + ("give_food", "give_material")
 N_MOVE_ACTIONS = 8
 IDLE = 8
 GATHER = 9
@@ -38,10 +43,18 @@ STEAL = 10
 CHOP = 11
 MINE = 12
 BUILD = 13
+GIVE_FOOD = 14
+GIVE_MATERIAL = 15
 N_ACTIONS = len(BASE_ACTION_NAMES)
+
+# Item codes for the transfer ledger and the replay's per-tick transfer list.
+ITEM_FOOD, ITEM_WOOD, ITEM_STONE = 0, 1, 2
+ITEM_NAMES: tuple[str, ...] = ("food", "wood", "stone")
 
 
 def action_names(cfg: Config) -> tuple[str, ...]:
+    if cfg.exchange.enabled:
+        return EXCHANGE_ACTION_NAMES
     if cfg.construction.enabled:
         return CONSTRUCTION_ACTION_NAMES
     return STEAL_ACTION_NAMES if cfg.competition.enable_steal else BASE_ACTION_NAMES
@@ -119,14 +132,21 @@ def night_phase(tick: int, cfg: Config) -> tuple[float, bool]:
 
 
 def neighbour_channels(cfg: Config) -> int:
-    """3 per neighbour (dx, dz, hunger), or 4 with their carried food.
+    """3 per neighbour (dx, dz, hunger), +1 for carried food, +2 for wood/stone.
 
-    Milestone 3 needs the fourth: stealing from a neighbour who is carrying
+    Milestone 3 needs the food channel: stealing from a neighbour who is carrying
     nothing is a wasted tick, and a policy that cannot see who has food cannot
     learn to rob selectively -- it could only learn "rob at random", which would
     look like the behaviour without being it.
+
+    Milestone 5 adds the material channels for the mirror-image reason. A gift is
+    only worth making to someone who can use it, and "who can use wood" is
+    exactly "who is carrying none and is standing at a site". Without these the
+    policy could only learn to give indiscriminately, which resembles exchange
+    without being it.
     """
-    return 4 if cfg.competition.observe_neighbour_food else 3
+    return (3 + int(cfg.competition.observe_neighbour_food)
+            + 2 * int(cfg.exchange.observe_neighbour_materials))
 
 
 def bush_channels(cfg: Config) -> int:
@@ -227,6 +247,22 @@ def action_mask(
             can_stone = near & (construction.site_stone_needed[None, :] > 0) & (pool.stone[:, None] > 0)
             mask[:, BUILD] = (can_wood | can_stone).any(axis=1)
 
+    if cfg.exchange.enabled:
+        # A gift needs something to give and someone with room to take it. Note
+        # what is deliberately NOT in here: whether the receiver *needs* it. The
+        # mask says what is possible, never what is worthwhile -- "give to the
+        # hungry" is the behaviour this milestone is trying to observe emerging,
+        # so encoding it in the mask would be answering our own question.
+        d2 = ((pool.x[None, :] - pool.x[:, None]) ** 2
+              + (pool.z[None, :] - pool.z[:, None]) ** 2)
+        np.fill_diagonal(d2, np.inf)
+        near = (d2 <= cfg.exchange.give_radius ** 2) & pool.alive[None, :]
+        mask[:, GIVE_FOOD] = (pool.food > 0) & (near & (pool.food[None, :]
+                                                        < cfg.food.capacity)).any(axis=1)
+        if cfg.construction.enabled:
+            room = (pool.wood + pool.stone) < cfg.construction.material_capacity
+            mask[:, GIVE_MATERIAL] = ((pool.wood + pool.stone) > 0) & (near & room[None, :]).any(axis=1)
+
     mask[~pool.alive] = False
     mask[~pool.alive, IDLE] = True
     return mask
@@ -254,8 +290,10 @@ def observation_layout(cfg: Config) -> tuple[str, ...]:
             names.append(f"bush{j}.blocked")
     for j in range(cfg.observation.k_agents):
         names += [f"neighbour{j}.dx", f"neighbour{j}.dz", f"neighbour{j}.hunger"]
-        if neighbour_channels(cfg) == 4:
+        if cfg.competition.observe_neighbour_food:
             names.append(f"neighbour{j}.food")
+        if cfg.exchange.observe_neighbour_materials:
+            names += [f"neighbour{j}.wood", f"neighbour{j}.stone"]
     if cfg.construction.enabled:
         cc = cfg.construction
         for j in range(cc.k_trees):
@@ -392,14 +430,20 @@ def build_observations(
     np.fill_diagonal(agent_d2, np.inf)    # nor is oneself
     idx, valid = _k_nearest(agent_d2, obs_cfg.k_agents)
     channels = neighbour_channels(cfg)
+    mat_cap = max(cfg.construction.material_capacity, 1)
     for j in range(obs_cfg.k_agents):
         take = idx[:, j]
         ok = valid[:, j]
         out[:, col + 0] = np.where(ok, np.clip(agent_dx[np.arange(n), take] / scale, -1.0, 1.0), 0.0)
         out[:, col + 1] = np.where(ok, np.clip(agent_dz[np.arange(n), take] / scale, -1.0, 1.0), 0.0)
         out[:, col + 2] = np.where(ok, pool.hunger[take] / cfg.hunger.max, 0.0)
-        if channels == 4:
-            out[:, col + 3] = np.where(ok, pool.food[take] / max(cfg.food.capacity, 1), 0.0)
+        extra = col + 3
+        if cfg.competition.observe_neighbour_food:
+            out[:, extra] = np.where(ok, pool.food[take] / max(cfg.food.capacity, 1), 0.0)
+            extra += 1
+        if cfg.exchange.observe_neighbour_materials:
+            out[:, extra + 0] = np.where(ok, pool.wood[take] / mat_cap, 0.0)
+            out[:, extra + 1] = np.where(ok, pool.stone[take] / mat_cap, 0.0)
         col += channels
 
     # --- Milestone 4: material nodes, shelter sites, and the clock

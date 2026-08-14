@@ -101,6 +101,25 @@ class ConstructionConfig:
 
 
 @dataclass(frozen=True)
+class ExchangeConfig:
+    """Milestone 5. Off by default, so M1-M4 worlds are bit-identical.
+
+    Enabling exchange appends two actions, ``give_food`` and ``give_material``.
+    Food and materials are split because they are two different economies -- one
+    keeps an agent alive, the other builds shelter -- and an agent carrying both
+    would otherwise be unable to choose which it is participating in. Wood and
+    stone share one action: both are construction inputs, the receiver's ``build``
+    already resolves which the site needs, and a third give action would be a
+    third thing PPO has to discover the value of.
+    """
+
+    enabled: bool = False
+    give_radius: float = 2.5          # same reach as a steal, so giving is not cheaper
+    observe_neighbour_materials: bool = False  # neighbours' carried wood/stone
+    log_transfers: bool = False       # accumulate a per-episode transfer ledger
+
+
+@dataclass(frozen=True)
 class ObservationConfig:
     k_bushes: int = 4
     k_agents: int = 3
@@ -125,6 +144,11 @@ class RewardConfig:
     stone: float = 0.0
     build: float = 0.0
     complete: float = 0.0  # split among contributors when a shelter completes
+    # Milestone 5. 0.0 is the brief-faithful default, and the same call as
+    # reward.steal: a gift has to pay for itself through what the receiver then
+    # does with it, or it is not exchange, it is us paying agents to hand things
+    # over. config/m5_shaped.yaml raises it as a labelled ablation.
+    give: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -178,6 +202,7 @@ class Config:
     bushes: BushConfig = field(default_factory=BushConfig)
     competition: CompetitionConfig = field(default_factory=CompetitionConfig)
     construction: ConstructionConfig = field(default_factory=ConstructionConfig)
+    exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
@@ -230,6 +255,7 @@ _SECTIONS: dict[str, type] = {
     "bushes": BushConfig,
     "competition": CompetitionConfig,
     "construction": ConstructionConfig,
+    "exchange": ExchangeConfig,
     "observation": ObservationConfig,
     "reward": RewardConfig,
     "policy": PolicyConfig,

@@ -47,6 +47,9 @@ class UpdateMetrics:
     builds: float | None = None
     shelters: float | None = None
     night_sheltered_frac: float | None = None
+    gifts: float | None = None
+    food_given: float | None = None
+    materials_given: float | None = None
 
     # optimisation metrics
     policy_loss: float = 0.0
@@ -70,6 +73,7 @@ def summarise_episodes(episodes: Iterable[EpisodeStats]) -> dict[str, float | No
             "steals": None, "contests_lost": None,
             "wood_gathered": None, "stone_gathered": None, "builds": None,
             "shelters": None, "night_sheltered_frac": None,
+            "gifts": None, "food_given": None, "materials_given": None,
         }
     return {
         "episodes": len(episodes),
@@ -88,6 +92,9 @@ def summarise_episodes(episodes: Iterable[EpisodeStats]) -> dict[str, float | No
             sum(e.night_ticks_sheltered for e in episodes)
             / max(sum(e.night_ticks_sheltered + e.night_ticks_exposed for e in episodes), 1)
         ),
+        "gifts": float(np.mean([e.gifts for e in episodes])),
+        "food_given": float(np.mean([e.food_given for e in episodes])),
+        "materials_given": float(np.mean([e.materials_given for e in episodes])),
     }
 
 
@@ -118,6 +125,7 @@ class MetricsLogger:
         ("steals", "steals", "{:>6.1f}"),
         ("shelters", "shelt", "{:>5.1f}"),
         ("night_sheltered_frac", "night%", "{:>6.2f}"),
+        ("gifts", "gifts", "{:>6.1f}"),
         ("mean_final_hunger", "hunger", "{:>6.1f}"),
         ("mean_reward", "rew/step", "{:>8.4f}"),
         ("entropy", "entropy", "{:>7.3f}"),
@@ -196,6 +204,9 @@ class EvalResult:
     steals: float = 0.0
     shelters: float = 0.0
     night_sheltered_frac: float = 0.0
+    gifts: float = 0.0
+    food_given: float = 0.0
+    materials_given: float = 0.0
 
     @staticmethod
     def from_episodes(label: str, episodes: list[EpisodeStats], max_ticks: int) -> "EvalResult":
@@ -216,6 +227,9 @@ class EvalResult:
                 sum(e.night_ticks_sheltered for e in episodes)
                 / max(sum(e.night_ticks_sheltered + e.night_ticks_exposed for e in episodes), 1)
             ),
+            gifts=float(np.mean([e.gifts for e in episodes])),
+            food_given=float(np.mean([e.food_given for e in episodes])),
+            materials_given=float(np.mean([e.materials_given for e in episodes])),
         )
 
     def line(self) -> str:
@@ -226,4 +240,6 @@ class EvalResult:
             + (f"  steals {self.steals:5.1f}" if self.steals else "")
             + (f"  shelters {self.shelters:3.1f} ({self.night_sheltered_frac * 100:3.0f}% nights in)"
                if self.shelters or self.night_sheltered_frac else "")
+            + (f"  gifts {self.gifts:5.1f} ({self.food_given:.0f} food/{self.materials_given:.0f} mat)"
+               if self.gifts else "")
         )

@@ -31,8 +31,9 @@ import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
-from .agents import (BUILD, CHOP, GATHER, IDLE, MINE, N_ACTIONS,
-                     N_MOVE_ACTIONS, STEAL, num_actions, observation_layout)
+from .agents import (BUILD, CHOP, GATHER, GIVE_FOOD, GIVE_MATERIAL, IDLE, MINE,
+                     N_ACTIONS, N_MOVE_ACTIONS, STEAL, neighbour_channels,
+                     num_actions, observation_layout)
 from .config import Config
 
 
@@ -505,4 +506,111 @@ def greedy_builder_actions(obs: np.ndarray, cfg: Config,
     goal_z = np.where(want_stone, rz, tz)
     ok = walk_material & (np.isfinite(d_tree) | np.isfinite(d_rock))
     actions = np.where(ok, _heading(goal_x, goal_z), actions)
+    return actions
+
+
+def greedy_trader_actions(obs: np.ndarray, cfg: Config,
+                          mask: np.ndarray | None = None) -> np.ndarray:
+    """The Milestone 5 reference: the builder, plus two opportunistic gifts.
+
+    On top of everything ``greedy_builder_actions`` does:
+
+      * **food to the hungry.** Carrying a berry, fed myself, and a neighbour in
+        reach is below the eating threshold *and carrying nothing* -- hand it
+        over. Redistribution, the scripted thief's economics in reverse: it
+        moves a berry to whoever is closest to needing it.
+      * **material to whoever is standing on the site.** Carrying wood or stone,
+        and a neighbour in reach is within build range of the focal site while I
+        am not -- hand it over and go back for more. A relay, which is the
+        simplest thing that deserves the name specialisation-plus-exchange: I
+        harvest, you deliver.
+
+    Both conditions are deliberately narrow. The first draft gave to anyone
+    marginally hungrier and to anyone marginally closer, and produced 107
+    transfers an episode of which ~11% were ever used -- two agents passing a
+    berry back and forth because each was momentarily the hungrier one. A floor
+    made of churn is not a floor. Requiring the receiver to be about to *use* the
+    unit is what makes this a reference worth losing to.
+
+    Both are strictly opportunistic -- it never walks to a recipient, never
+    negotiates, never remembers who gave it anything. So this is a **floor** on
+    what exchange is worth in this world, not a ceiling, exactly like the thief.
+    That floor is the point: if this policy cannot beat the plain builder, then
+    a learned policy failing to trade is telling us about the world, not about
+    PPO.
+
+    Reads only the observation (plus the action mask, as the builder does).
+    A neighbour's distance to a site is computable because both are egocentric
+    offsets from the same origin: ``site_offset - neighbour_offset``.
+    """
+    if not cfg.exchange.enabled:
+        return greedy_builder_actions(obs, cfg, mask)
+    if not cfg.competition.observe_neighbour_food:
+        raise ValueError("greedy_trader needs competition.observe_neighbour_food")
+    if not cfg.exchange.observe_neighbour_materials:
+        raise ValueError("greedy_trader needs exchange.observe_neighbour_materials")
+
+    actions = greedy_builder_actions(obs, cfg, mask)
+    n = obs.shape[0]
+    ka = cfg.observation.k_agents
+    stride = neighbour_channels(cfg)
+    scale = cfg.observation.distance_scale
+    col = {name: i for i, name in enumerate(observation_layout(cfg))}
+    if mask is None:
+        mask = np.ones((n, num_actions(cfg)), dtype=bool)
+
+    start = col["neighbour0.dx"]
+    nb = obs[:, start:start + ka * stride].reshape(n, ka, stride)
+    ndx, ndz = nb[:, :, 0], nb[:, :, 1]
+    n_hunger, n_food = nb[:, :, 2], nb[:, :, 3]
+    n_material = nb[:, :, 4] + nb[:, :, 5]
+    # A zero-padded neighbour slot is all zeros, which would read as "starving,
+    # empty-handed, standing on top of me" -- i.e. the ideal recipient. Living
+    # neighbours always have hunger > 0, so that is the presence test.
+    present = n_hunger > 0.0
+    reach = np.hypot(ndx, ndz) * scale
+    in_reach = present & (reach <= cfg.exchange.give_radius)
+
+    own_hunger = obs[:, col["own.hunger"]]
+    fed = own_hunger > cfg.hunger.eat_threshold / cfg.hunger.max
+
+    def nearest_eligible(room: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(slot, exists) for the neighbour the world would actually hand it to.
+
+        The giver does not choose a recipient: ``give`` transfers to the NEAREST
+        neighbour in reach with room, exactly as ``steal`` takes from the nearest
+        loaded victim. So a script that asks "is anyone here hungry?" mostly ends
+        up feeding somebody else -- measured, 80 food gifts an episode of which 3
+        were eaten. What the giver actually controls is where it stands, so the
+        condition has to be evaluated on that one recipient. Neighbour slots are
+        already ordered by distance, so the first eligible slot is the one.
+        """
+        eligible = in_reach & room
+        return eligible.argmax(axis=1), eligible.any(axis=1)
+
+    # --- material to a neighbour standing nearer the focal site
+    if cfg.construction.enabled:
+        sites = obs[:, col["site0.dx"]:col["site0.dx"] + cfg.construction.k_sites * 5]
+        sites = sites.reshape(n, cfg.construction.k_sites, 5)
+        incomplete = (sites[:, :, 4] < 0.5) & (np.hypot(sites[:, :, 0], sites[:, :, 1]) > 0)
+        remaining = np.where(incomplete, sites[:, :, 2] + sites[:, :, 3], np.inf)
+        j = np.argmin(remaining, axis=1)
+        rows = np.arange(n)
+        has_site = np.isfinite(remaining[rows, j])
+        sx, sz = sites[rows, j, 0:1], sites[rows, j, 1:2]
+        my_d = (np.hypot(sx, sz) * scale).ravel()
+        their_d = np.hypot(sx - ndx, sz - ndz) * scale
+        slot, exists = nearest_eligible(n_material < 1.0 - 1e-6)
+        # They can deliver it this tick and I cannot: that is the whole case for
+        # handing it over rather than walking the last stretch myself.
+        relay = (exists & (their_d[rows, slot] <= cfg.construction.build_radius)
+                 & (my_d > cfg.construction.build_radius))
+        actions = np.where(has_site & relay & mask[:, GIVE_MATERIAL], GIVE_MATERIAL, actions)
+
+    # --- food to someone about to eat it (last, so survival outranks logistics)
+    slot, exists = nearest_eligible(n_food < 1.0 - 1e-6)
+    r = np.arange(n)
+    starving = (exists & (n_hunger[r, slot] < cfg.hunger.eat_threshold / cfg.hunger.max)
+                & (n_food[r, slot] <= 0.0))
+    actions = np.where(fed & starving & mask[:, GIVE_FOOD], GIVE_FOOD, actions)
     return actions

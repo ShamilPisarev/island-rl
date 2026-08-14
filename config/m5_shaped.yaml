@@ -1,0 +1,27 @@
+# The Milestone 5 shaping ablation: a successful gift pays what a gather pays.
+#
+# Same world as m5.yaml, one number changed. This is the exact ablation
+# config/m3_shaped.yaml ran for theft, and it is here for the same reason: to
+# separate "the behaviour did not emerge because it is unrewarded" from "the
+# behaviour did not emerge because it is worthless".
+#
+# THE PREDICTION, WRITTEN DOWN BEFORE THE RUN so the result cannot be explained
+# after the fact. Paying a flat +1.0 per transfer creates a farm: two agents
+# standing next to each other can pass one berry back and forth every tick and
+# collect a gather's worth of reward each time, without a berry ever being
+# created or eaten. The M3 ablation had the identical structure (a paid steal,
+# stealable back) and produced 4.8x the theft with *worse* survival. So the
+# expected outcome is a large gift count, a fall in berries gathered, and
+# lifespan at or below the unpaid run.
+#
+# If that is what happens, it is not a failed experiment. It is the cleanest
+# possible restatement of the M3 lesson: a shaped reward reliably produces the
+# behaviour it pays for, and that is not evidence the behaviour helps. Judge on
+# lifespan and deaths; gifts explain, they do not decide.
+#
+#   python -m sim.train --config config/m5_shaped.yaml --run-name m5-shaped \
+#       --updates 200 --policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
+extends: m5.yaml
+
+reward:
+  give: 1.0

@@ -5,7 +5,8 @@
 PY := .venv/bin/python
 PORT ?= 8000
 
-.PHONY: help venv test watch demo train train-m2 evaluate divergence clean-runs
+.PHONY: help venv test watch demo train train-m2 train-m3 train-m4 train-m5 \
+        evaluate divergence exchange clean-runs
 
 help:
 	@echo "make venv        create .venv and install dependencies"
@@ -16,8 +17,10 @@ help:
 	@echo "make train-m2    fork it into per-agent brains (Milestone 2)"
 	@echo "make train-m3    the competition milestone (Milestone 3)"
 	@echo "make train-m4    construction, shaped + unshaped control (Milestone 4)"
+	@echo "make train-m5    exchange, unpaid + shaped ablation (Milestone 5)"
 	@echo "make evaluate    score the M1 checkpoint against both baselines"
 	@echo "make divergence  measure per-agent behavioural divergence"
+	@echo "make exchange    write the transfer ledger and its report"
 	@echo ""
 	@echo "Override the port with: make watch PORT=8123"
 
@@ -54,11 +57,20 @@ train-m4:
 	$(PY) -m sim.train --config config/m4_unshaped.yaml --run-name m4-unshaped \
 		--updates 400 --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
 
+train-m5:
+	$(PY) -m sim.train --config config/m5.yaml --run-name m5 --updates 200 \
+		--policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
+	$(PY) -m sim.train --config config/m5_shaped.yaml --run-name m5-shaped \
+		--updates 200 --policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
+
 evaluate:
 	$(PY) -m sim.evaluate --checkpoint checkpoints/m1/latest.pt --baselines
 
 divergence:
 	$(PY) -m sim.divergence --checkpoint checkpoints/m2/latest.pt
+
+exchange:
+	$(PY) -m sim.exchange --checkpoint checkpoints/m5/latest.pt
 
 clean-runs:
 	rm -rf runs checkpoints viewer/replays/*.json viewer/reports/*.json
