@@ -89,7 +89,18 @@ Milestone 3 turns the food scarce and lets agents block and rob each other:
 
 Configs are layered — `m3.yaml` extends `scarce.yaml` extends `default.yaml`, each
 overriding only what it restates — so the M1/M2 world stays exactly as it was
-while later milestones change it.
+while later milestones change it. The canonical M3 config is `m3_masked.yaml`
+(see the results section for why masking matters).
+
+Milestone 4 adds wood, stone, communal shelter-building, and a night hazard,
+trained as a shaped run plus an unshaped control:
+
+```bash
+.venv/bin/python -m sim.train --config config/m4.yaml --run-name m4 --updates 400 \
+    --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
+.venv/bin/python -m sim.train --config config/m4_unshaped.yaml --run-name m4-unshaped \
+    --updates 400 --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
+```
 
 ## Measure divergence
 
@@ -158,11 +169,12 @@ was verified before any policy existed.
 .venv/bin/python -m pytest
 ```
 
-112 tests covering world stepping, hunger and death, resource regrowth,
-observation shape and bounds, replay round-trip and schema versioning, seed
-determinism, GAE correctness, dead-agent masking, per-agent brain dispatch and
-gradient isolation, divergence maths, and a PPO smoke test on a task with a
-known optimum.
+191 tests covering world stepping, hunger and death, resource regrowth,
+observation shape and bounds, replay round-trip and schema versioning (v1 and
+v2), seed determinism, GAE correctness, dead-agent masking, action masking,
+per-agent brain dispatch and gradient isolation, cross-milestone policy growth
+by feature name, bush contention and theft, construction and the night hazard,
+divergence maths, and a PPO smoke test on a task with a known optimum.
 
 ## Results
 

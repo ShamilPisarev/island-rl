@@ -14,6 +14,8 @@ help:
 	@echo "make test        run the test suite"
 	@echo "make train       train the shared policy (Milestone 1)"
 	@echo "make train-m2    fork it into per-agent brains (Milestone 2)"
+	@echo "make train-m3    the competition milestone (Milestone 3)"
+	@echo "make train-m4    construction, shaped + unshaped control (Milestone 4)"
 	@echo "make evaluate    score the M1 checkpoint against both baselines"
 	@echo "make divergence  measure per-agent behavioural divergence"
 	@echo ""
@@ -41,6 +43,16 @@ train:
 train-m2:
 	$(PY) -m sim.train --run-name m2 --policy-mode individual \
 		--init-from checkpoints/m1/latest.pt
+
+train-m3:
+	$(PY) -m sim.train --config config/m3_masked.yaml --run-name m3-masked \
+		--policy-mode individual --init-from checkpoints/m2/latest.pt
+
+train-m4:
+	$(PY) -m sim.train --config config/m4.yaml --run-name m4 --updates 400 \
+		--policy-mode individual --init-from checkpoints/m3-masked/latest.pt
+	$(PY) -m sim.train --config config/m4_unshaped.yaml --run-name m4-unshaped \
+		--updates 400 --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
 
 evaluate:
 	$(PY) -m sim.evaluate --checkpoint checkpoints/m1/latest.pt --baselines
