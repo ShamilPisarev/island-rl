@@ -65,7 +65,7 @@ function render(report) {
 
   renderKpis(report);
   renderStats(agents, colors, report.policy_mode, statColumns(report));
-  renderMix(agents, colors, !!report.competition?.enable_steal);
+  renderMix(agents, colors);
   renderTerritory(report, colors);
   renderMatrices(report, colors);
 
@@ -131,31 +131,52 @@ function renderStats(agents, colors, mode, columns) {
     <tr><td class="agent spread">spread</td>${spread}</tr></tbody>`;
 }
 
-function renderMix(agents, colors, showSteal) {
+// Segment palette by action kind; travel aggregates the eight compass moves.
+// Built from the report's own action_mix so new actions (steal in M3, chop/
+// mine/build in M4) appear without this file having to be told about them.
+const MIX_SEGMENTS = [
+  { key: 'gather', color: '#6ec46e' },
+  { key: 'travel', color: '#6fc3df' },
+  { key: 'idle',   color: '#7c8b9c' },
+  { key: 'steal',  color: '#e0563c' },
+  { key: 'chop',   color: '#8a5a2b' },
+  { key: 'mine',   color: '#9aa7b8' },
+  { key: 'build',  color: '#e0b83c' },
+];
+const MOVE_NAMES = new Set(['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']);
+
+function mixShares(agent) {
+  const shares = { travel: 0 };
+  for (const [name, share] of Object.entries(agent.action_mix || {})) {
+    if (MOVE_NAMES.has(name)) shares.travel += share;
+    else shares[name] = (shares[name] || 0) + share;
+  }
+  return shares;
+}
+
+function renderMix(agents, colors) {
   $('mix').innerHTML = agents.map((a, i) => {
-    const g = a.gather_share * 100, t = a.travel_share * 100, idle = a.idle_share * 100;
-    const s = (a.steal_share ?? 0) * 100;
-    const title = `gather ${g.toFixed(1)}% · travel ${t.toFixed(1)}% · idle ${idle.toFixed(1)}%` +
-      (showSteal ? ` · steal ${s.toFixed(1)}%` : '');
+    const shares = mixShares(a);
+    const parts = MIX_SEGMENTS.filter((seg) => (shares[seg.key] || 0) > 0.0005);
+    const title = parts.map((seg) => `${seg.key} ${(shares[seg.key] * 100).toFixed(1)}%`).join(' · ');
     return `<div class="mixrow">
       <div><span class="swatch" style="background:${colors[i]}"></span>agent ${a.agent}</div>
       <div class="mixbar" title="${title}">
-        <div style="width:${g}%;background:#6ec46e"></div>
-        <div style="width:${t}%;background:#6fc3df"></div>
-        <div style="width:${idle}%;background:#7c8b9c"></div>
-        ${showSteal ? `<div style="width:${s}%;background:#e0563c"></div>` : ''}
+        ${parts.map((seg) =>
+          `<div style="width:${shares[seg.key] * 100}%;background:${seg.color}"></div>`).join('')}
       </div></div>`;
   }).join('');
-  const legend = document.querySelector('.legend');
-  const stealLegend = document.getElementById('stealLegend');
-  if (showSteal && !stealLegend) {
-    const span = document.createElement('span');
-    span.id = 'stealLegend';
-    span.innerHTML = '<i style="background:#e0563c"></i>steal';
-    legend.appendChild(span);
-  } else if (!showSteal && stealLegend) {
-    stealLegend.remove();
-  }
+
+  // legend follows whatever actually appears across the population
+  const present = new Set();
+  agents.forEach((a) => {
+    const shares = mixShares(a);
+    MIX_SEGMENTS.forEach((seg) => { if ((shares[seg.key] || 0) > 0.0005) present.add(seg.key); });
+  });
+  document.querySelector('.legend').innerHTML = MIX_SEGMENTS
+    .filter((seg) => present.has(seg.key))
+    .map((seg) => `<span><i style="background:${seg.color}"></i>${seg.key}</span>`)
+    .join('');
 }
 
 // --- territory heatmaps -----------------------------------------------------
