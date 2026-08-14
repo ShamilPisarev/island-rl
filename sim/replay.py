@@ -229,7 +229,8 @@ def record_episode(
 ) -> ReplayRecorder:
     """Run one episode under ``act_fn(obs) -> actions`` and record it.
 
-    ``act_fn`` takes an ``(A, obs_dim)`` array and returns ``(A,)`` int actions.
+    ``act_fn`` takes an ``(A, obs_dim)`` array plus the world's action mask and
+    returns ``(A,)`` int actions.
     Every replay producer in the project (random baseline, scripted forager,
     trained policy) goes through here, so they cannot drift apart.
     """
@@ -239,7 +240,7 @@ def record_episode(
     limit = max_ticks if max_ticks is not None else cfg.world.max_ticks
     obs = world.observations()
     for _ in range(limit):
-        actions = act_fn(obs)
+        actions = act_fn(obs, world.action_mask())
         result = world.step(actions)
         recorder.snapshot()
         obs = result.obs

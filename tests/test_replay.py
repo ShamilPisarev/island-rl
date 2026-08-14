@@ -28,7 +28,7 @@ def short_cfg(cfg):
 
 def random_actor(seed: int, n_agents: int):
     rng = np.random.default_rng(seed)
-    return lambda obs: rng.integers(0, N_ACTIONS, size=obs.shape[0])
+    return lambda obs, mask=None: rng.integers(0, N_ACTIONS, size=obs.shape[0])
 
 
 def test_recorded_replay_has_the_documented_shape(short_cfg):
@@ -174,6 +174,6 @@ def test_scripted_forager_beats_random_survival(cfg):
         ])
 
     seeds = range(4)
-    greedy = run(lambda obs: greedy_forager_actions(obs, cfg), seeds)
-    random_life = run(lambda obs: rng.integers(0, N_ACTIONS, size=obs.shape[0]), seeds)
+    greedy = run(lambda obs, mask=None: greedy_forager_actions(obs, cfg), seeds)
+    random_life = run(lambda obs, mask=None: rng.integers(0, N_ACTIONS, size=obs.shape[0]), seeds)
     assert greedy > random_life * 1.2

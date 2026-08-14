@@ -144,9 +144,9 @@ def test_inactive_transitions_are_dropped_from_the_update(cfg):
     seen = {}
     original = trainer.policy.evaluate_actions
 
-    def spy(obs, actions, agent_ids):
+    def spy(obs, actions, agent_ids, mask=None):
         seen["rows"] = seen.get("rows", 0) + obs.shape[0]
-        return original(obs, actions, agent_ids)
+        return original(obs, actions, agent_ids, mask=mask)
 
     trainer.policy.evaluate_actions = spy
     trainer.update(r)
@@ -273,12 +273,16 @@ class BanditEnv:
     def reset(self) -> np.ndarray:
         return self._obs()
 
+    def action_masks(self) -> np.ndarray:
+        return np.ones((self.num_envs, self.num_agents, N_ACTIONS), dtype=bool)
+
     def step(self, actions: np.ndarray) -> dict[str, np.ndarray]:
         rewards = (actions == self.target).astype(np.float32)
         self.target = self.rng.integers(0, N_ACTIONS, size=(self.num_envs, self.num_agents))
         shape = (self.num_envs, self.num_agents)
         return {
             "obs": self._obs(),
+            "action_mask": self.action_masks(),
             "final_obs": np.zeros((*shape, self.obs_dim), dtype=np.float32),
             "rewards": rewards,
             "terminated": np.zeros(shape, dtype=bool),

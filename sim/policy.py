@@ -69,24 +69,45 @@ class ActorCritic(nn.Module):
         h = self.trunk(obs)
         return self.policy_head(h), self.value_head(h).squeeze(-1)
 
+    @staticmethod
+    def _masked(logits: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
+        """Drive unavailable actions to zero probability.
+
+        A large negative constant rather than -inf: -inf produces NaN gradients
+        if a row ever ends up fully masked, and a silent NaN is far worse to debug
+        than a merely improbable action. World.action_mask guarantees at least
+        `idle` survives, so this is belt and braces.
+        """
+        if mask is None:
+            return logits
+        return logits.masked_fill(~mask, -1e8)
+
     def value(self, obs: torch.Tensor, agent_ids: torch.Tensor | None = None) -> torch.Tensor:
         return self.value_head(self.trunk(obs)).squeeze(-1)
 
     @torch.no_grad()
     def act(self, obs: torch.Tensor, agent_ids: torch.Tensor | None = None,
-            deterministic: bool = False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            deterministic: bool = False, mask: torch.Tensor | None = None
+            ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample (or argmax) actions. Returns (action, log_prob, value)."""
         logits, value = self(obs)
+        logits = self._masked(logits, mask)
         dist = Categorical(logits=logits)
         action = logits.argmax(dim=-1) if deterministic else dist.sample()
         return action, dist.log_prob(action), value
 
     def evaluate_actions(self, obs: torch.Tensor, actions: torch.Tensor,
-                         agent_ids: torch.Tensor | None = None
+                         agent_ids: torch.Tensor | None = None,
+                         mask: torch.Tensor | None = None
                          ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Log-probs, entropy and values for stored transitions (the PPO update)."""
+        """Log-probs, entropy and values for stored transitions (the PPO update).
+
+        The mask must be reapplied here: the ratio compares the current policy
+        against the behaviour policy, and the behaviour policy was masked. Scoring
+        against unmasked logits would make the ratio meaningless.
+        """
         logits, value = self(obs)
-        dist = Categorical(logits=logits)
+        dist = Categorical(logits=self._masked(logits, mask))
         return dist.log_prob(actions), dist.entropy(), value
 
     def clip_grad_norm(self, max_norm: float) -> None:
@@ -149,18 +170,20 @@ class PolicyGroup(nn.Module):
         return self(obs, agent_ids)[1]
 
     @torch.no_grad()
-    def act(self, obs: torch.Tensor, agent_ids: torch.Tensor, deterministic: bool = False
+    def act(self, obs: torch.Tensor, agent_ids: torch.Tensor, deterministic: bool = False,
+            mask: torch.Tensor | None = None
             ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         logits, value = self(obs, agent_ids)
+        logits = ActorCritic._masked(logits, mask)
         dist = Categorical(logits=logits)
         action = logits.argmax(dim=-1) if deterministic else dist.sample()
         return action, dist.log_prob(action), value
 
     def evaluate_actions(self, obs: torch.Tensor, actions: torch.Tensor,
-                         agent_ids: torch.Tensor
+                         agent_ids: torch.Tensor, mask: torch.Tensor | None = None
                          ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         logits, value = self(obs, agent_ids)
-        dist = Categorical(logits=logits)
+        dist = Categorical(logits=ActorCritic._masked(logits, mask))
         return dist.log_prob(actions), dist.entropy(), value
 
     def clip_grad_norm(self, max_norm: float) -> None:

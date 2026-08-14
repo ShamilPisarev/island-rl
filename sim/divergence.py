@@ -144,7 +144,7 @@ def analyse(cfg: Config, act_fn: Callable[[np.ndarray], np.ndarray],
         obs = world.observations()
         for _ in range(cfg.world.max_ticks):
             alive = world.pool.alive.copy()
-            actions = np.asarray(act_fn(obs)).reshape(n)
+            actions = np.asarray(act_fn(obs, world.action_mask())).reshape(n)
 
             x, z = world.pool.x.copy(), world.pool.z.copy()
             d = np.hypot(world.bush_x[None, :] - x[:, None],

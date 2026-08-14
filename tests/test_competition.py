@@ -10,7 +10,9 @@ from sim.agents import (
     BASE_ACTION_NAMES,
     GATHER,
     IDLE,
+    N_MOVE_ACTIONS,
     STEAL,
+    action_mask,
     action_names,
     num_actions,
     observation_dim,
@@ -600,3 +602,121 @@ def test_competition_world_is_deterministic(m3):
 
     a, b = run(), run()
     assert all(np.array_equal(x[i], y[i]) for x, y in zip(a, b) for i in range(3))
+
+
+# --- action masking ---------------------------------------------------------
+
+
+def test_mask_is_all_true_when_disabled(m3):
+    """Callers never branch on the flag, so the mask must be inert by default."""
+    assert m3.competition.mask_invalid_actions is False
+    w = World(m3, seed=50)
+    assert w.action_mask().all()
+    assert w.action_mask().shape == (m3.world.num_agents, num_actions(m3))
+
+
+def test_mask_hides_gather_with_no_berry_in_reach(m3):
+    cfg = m3.replace(**{"competition.mask_invalid_actions": True})
+    w = World(cfg, seed=51)
+    w.pool.x[:], w.pool.z[:] = 35.0, 0.0        # far from every bush
+    mask = w.action_mask()
+    assert not mask[:, GATHER].any()
+    assert mask[:, :N_MOVE_ACTIONS + 1].all()   # moving and idling always allowed
+
+    w.pool.x[0], w.pool.z[0] = w.bush_x[0], w.bush_z[0]
+    w.bush_berries[0] = cfg.bushes.capacity
+    assert w.action_mask()[0, GATHER]
+
+
+def test_mask_hides_gather_at_an_empty_bush_and_when_full(m3):
+    cfg = m3.replace(**{"competition.mask_invalid_actions": True})
+    w = World(cfg, seed=52)
+    w.pool.x[0], w.pool.z[0] = w.bush_x[0], w.bush_z[0]
+
+    w.bush_berries[:] = 0
+    assert not w.action_mask()[0, GATHER], "empty bush should not offer gather"
+
+    w.bush_berries[0] = cfg.bushes.capacity
+    w.pool.food[0] = cfg.food.capacity
+    assert not w.action_mask()[0, GATHER], "full inventory should not offer gather"
+
+
+def test_mask_hides_steal_with_no_loaded_neighbour(m3):
+    cfg = m3.replace(**{"competition.mask_invalid_actions": True})
+    w = World(cfg, seed=53)
+    w.pool.x[:], w.pool.z[:] = 0.0, 0.0     # all together
+    w.pool.food[:] = 0
+    assert not w.action_mask()[:, STEAL].any(), "nobody is carrying anything"
+
+    w.pool.food[1] = 1
+    mask = w.action_mask()
+    assert mask[0, STEAL], "agent 0 can rob the loaded neighbour"
+    assert not mask[1, STEAL], "agent 1 cannot rob itself"
+
+
+def test_mask_never_leaves_a_dead_agent_without_an_action(m3):
+    """A fully masked row makes the action distribution undefined and NaNs
+    propagate silently, so every row must keep at least one action."""
+    cfg = m3.replace(**{"competition.mask_invalid_actions": True})
+    w = World(cfg, seed=54)
+    w.pool.alive[:] = False
+    mask = w.action_mask()
+    assert mask.any(axis=1).all()
+    assert mask[:, IDLE].all()
+    assert mask.sum() == cfg.world.num_agents   # idle and nothing else
+
+
+def test_masked_policy_never_emits_a_masked_action(m3):
+    """End to end through the trainer: the world must never be handed an action
+    its own mask forbade."""
+    cfg = m3.replace(**{
+        "competition.mask_invalid_actions": True,
+        "ppo.num_envs": 3, "ppo.rollout_ticks": 40, "ppo.num_minibatches": 1,
+        "ppo.epochs": 1, "world.max_ticks": 80, "policy.mode": "individual",
+    })
+    torch.manual_seed(0)
+    envs = VecWorld(cfg, seed=0, num_envs=cfg.ppo.num_envs)
+    trainer = PPOTrainer(cfg, build_policy(cfg, envs.obs_dim), envs, device="cpu")
+
+    sent: list = []
+    original = envs.step
+    envs.step = lambda a: (sent.append(a.copy()), original(a))[1]
+    rollout = trainer.collect()
+
+    masks = rollout.masks.numpy()
+    active = rollout.active.numpy()
+    violations = 0
+    for t, actions in enumerate(sent):
+        for e in range(cfg.ppo.num_envs):
+            for i in range(cfg.world.num_agents):
+                if active[t, e, i] and not masks[t, e, i, actions[e, i]]:
+                    violations += 1
+    assert violations == 0
+    assert not masks.all(), "masking never actually bit; the test proves nothing"
+
+
+def test_masking_removes_doomed_attempts_that_go_unmasked(m3):
+    """The point of the mask, measured: under it a uniform-random policy cannot
+    spend a tick on gather/steal that could not succeed, and without it a third
+    of such attempts are doomed. This is the 30% the learned policy was wasting."""
+    def doomed_share(mask_on: bool) -> float:
+        cfg = m3.replace(**{"competition.mask_invalid_actions": mask_on,
+                            "world.max_ticks": 250})
+        rng = np.random.default_rng(0)
+        attempts = doomed = 0
+        for s in range(4):
+            w = World(cfg, seed=s)
+            for _ in range(cfg.world.max_ticks):
+                offered = w.action_mask()
+                truth = action_mask(w.pool, w.bush_x, w.bush_z, w.bush_berries, cfg)
+                a = np.array([rng.choice(np.flatnonzero(offered[i])) for i in range(w.pool.n)])
+                for i in np.flatnonzero(w.pool.alive):
+                    if a[i] in (GATHER, STEAL):
+                        attempts += 1
+                        doomed += int(not truth[i, a[i]])
+                if w.step(a).episode_done:
+                    break
+        return doomed / max(attempts, 1)
+
+    assert doomed_share(True) == pytest.approx(0.0, abs=1e-9)
+    assert doomed_share(False) > 0.3

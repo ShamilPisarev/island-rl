@@ -49,6 +49,7 @@ class Rollout:
     advantages: torch.Tensor   # (T, N, A)
     returns: torch.Tensor      # (T, N, A)
     active: torch.Tensor       # (T, N, A) bool
+    masks: torch.Tensor        # (T, N, A, n_actions) bool
     mean_reward: float
     episodes: list
 
@@ -79,6 +80,8 @@ class PPOTrainer:
         self.num_agents = envs.num_agents
         self.obs_dim = envs.obs_dim
         self.obs = torch.as_tensor(envs.reset(), dtype=torch.float32, device=self.device)
+        self.mask = torch.as_tensor(envs.action_masks(), device=self.device)
+        self.n_actions = self.mask.shape[-1]
         self.agent_alive = torch.ones((self.num_envs, self.num_agents),
                                       dtype=torch.bool, device=self.device)
         self.global_step = 0
@@ -108,14 +111,20 @@ class PPOTrainer:
         raw_rew_buf = torch.zeros((T, N, A), device=dev)
         done_buf = torch.zeros((T, N, A), device=dev)     # 1 = do not bootstrap past here
         active_buf = torch.zeros((T, N, A), dtype=torch.bool, device=dev)
+        # Stored because the PPO ratio compares the new policy against the
+        # behaviour policy, and the behaviour policy was masked. Re-deriving the
+        # mask at update time is not possible: the world has moved on.
+        mask_buf = torch.ones((T, N, A, self.n_actions), dtype=torch.bool, device=dev)
 
         for t in range(T):
             active = self.agent_alive.clone()
             obs_buf[t] = self.obs
             active_buf[t] = active
+            mask_buf[t] = self.mask
 
             action, log_prob, value = self.policy.act(
-                self.obs.reshape(N * A, -1), self.step_agent_ids
+                self.obs.reshape(N * A, -1), self.step_agent_ids,
+                mask=self.mask.reshape(N * A, -1),
             )
             action = action.reshape(N, A)
             act_buf[t] = action
@@ -149,6 +158,7 @@ class PPOTrainer:
             done_buf[t] = (terminated | truncated | episode_done.unsqueeze(1) | ~active).float()
 
             self.obs = torch.as_tensor(step["obs"], dtype=torch.float32, device=dev)
+            self.mask = torch.as_tensor(step["action_mask"], device=dev)
             still_alive = active & ~terminated
             reset = episode_done.unsqueeze(1).expand_as(still_alive)
             self.agent_alive = torch.where(reset, torch.ones_like(still_alive), still_alive)
@@ -166,7 +176,7 @@ class PPOTrainer:
 
         return Rollout(
             obs=obs_buf, actions=act_buf, log_probs=logp_buf, values=val_buf,
-            advantages=advantages, returns=returns, active=active_buf,
+            advantages=advantages, returns=returns, active=active_buf, masks=mask_buf,
             mean_reward=mean_reward, episodes=self.envs.drain_episode_stats(),
         )
 
@@ -227,6 +237,7 @@ class PPOTrainer:
         returns = rollout.returns.reshape(-1)[active]
         old_values = rollout.values.reshape(-1)[active]
         agent_ids = self.rollout_agent_ids[active]
+        masks = rollout.masks.reshape(-1, rollout.masks.shape[-1])[active]
 
         batch_size = n_active
         minibatch_size = max(batch_size // self.p.num_minibatches, 1)
@@ -245,7 +256,7 @@ class PPOTrainer:
                     continue
 
                 log_probs, entropy, values = self.policy.evaluate_actions(
-                    obs[mb], actions[mb], agent_ids[mb]
+                    obs[mb], actions[mb], agent_ids[mb], mask=masks[mb]
                 )
                 ratio = (log_probs - old_log_probs[mb]).exp()
 

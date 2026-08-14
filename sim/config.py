@@ -67,6 +67,7 @@ class CompetitionConfig:
     steal_radius: float = 2.5
     observe_neighbour_food: bool = False  # neighbours' carried food enters the observation
     observe_bush_contested: bool = False  # per bush: is a living rival closer than me?
+    mask_invalid_actions: bool = False    # hide gather/steal when they cannot succeed
 
 
 @dataclass(frozen=True)

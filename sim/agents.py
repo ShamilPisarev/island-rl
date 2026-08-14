@@ -110,6 +110,54 @@ def observation_dim(cfg: Config) -> int:
             + neighbour_channels(cfg) * cfg.observation.k_agents + 3)
 
 
+def action_mask(
+    pool: AgentPool,
+    bush_x: np.ndarray,
+    bush_z: np.ndarray,
+    bush_berries: np.ndarray,
+    cfg: Config,
+) -> np.ndarray:
+    """Which actions can possibly do anything, per agent. Shape ``(A, n_actions)``.
+
+    Moving and idling are always available. ``gather`` is available only with a
+    free inventory slot and a berry-bearing bush in range; ``steal`` only with a
+    free slot and a living neighbour in range who is carrying something.
+
+    This is not a reward change and not a hint about what is *best* -- it is the
+    same kind of information the observation already carries, one step further:
+    the observation says what is there, the mask says what is reachable. Without
+    it, "stand still and mash gather" is a local optimum PPO does not escape,
+    because a doomed gather costs nothing and occasionally a real one pays +1.
+    Measured on the unmasked policy: 30% of every tick it lived went on actions
+    that could not succeed.
+
+    Dead agents get ``idle`` only. A fully-masked row would make the action
+    distribution undefined, and NaN logits propagate silently.
+    """
+    n, n_act = pool.n, num_actions(cfg)
+    mask = np.zeros((n, n_act), dtype=bool)
+    mask[:, :N_MOVE_ACTIONS + 1] = True          # the 8 moves and idle
+
+    has_room = pool.food < cfg.food.capacity
+    if bush_x.size:
+        bush_d2 = ((bush_x[None, :] - pool.x[:, None]) ** 2
+                   + (bush_z[None, :] - pool.z[:, None]) ** 2)
+        reachable = (bush_d2 <= cfg.bushes.gather_radius ** 2) & (bush_berries[None, :] > 0)
+        mask[:, GATHER] = has_room & reachable.any(axis=1)
+
+    if cfg.competition.enable_steal:
+        agent_d2 = ((pool.x[None, :] - pool.x[:, None]) ** 2
+                    + (pool.z[None, :] - pool.z[:, None]) ** 2)
+        np.fill_diagonal(agent_d2, np.inf)
+        victims = ((agent_d2 <= cfg.competition.steal_radius ** 2)
+                   & pool.alive[None, :] & (pool.food[None, :] > 0))
+        mask[:, STEAL] = has_room & victims.any(axis=1)
+
+    mask[~pool.alive] = False
+    mask[~pool.alive, IDLE] = True
+    return mask
+
+
 def observation_layout(cfg: Config) -> tuple[str, ...]:
     """One name per observation column, in order.
 

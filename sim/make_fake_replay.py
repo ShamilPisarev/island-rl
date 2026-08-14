@@ -36,11 +36,11 @@ def main() -> None:
     rng = np.random.default_rng(args.seed)
 
     if args.policy == "random":
-        def act(obs: np.ndarray) -> np.ndarray:
+        def act(obs: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
             return random_actions(obs, rng)
         label, source = "random walk", "random"
     elif args.policy == "greedy":
-        def act(obs: np.ndarray) -> np.ndarray:
+        def act(obs: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
             return greedy_forager_actions(obs, cfg)
         label, source = "scripted forager", "scripted"
     else:
@@ -52,7 +52,7 @@ def main() -> None:
         wanderers = np.zeros(cfg.world.num_agents, dtype=bool)
         wanderers[cfg.world.num_agents - args.wanderers:] = True
 
-        def act(obs: np.ndarray) -> np.ndarray:
+        def act(obs: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
             return np.where(wanderers, random_actions(obs, rng),
                             greedy_forager_actions(obs, cfg))
         label, source = f"scripted demo ({args.wanderers} wanderers)", "scripted"

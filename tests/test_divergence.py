@@ -65,7 +65,7 @@ def test_pairwise_matrix_is_symmetric_with_zero_diagonal():
 
 
 def scripted(cfg):
-    return lambda obs: greedy_forager_actions(obs, cfg)
+    return lambda obs, mask=None: greedy_forager_actions(obs, cfg)
 
 
 def test_report_shape(short_cfg):
@@ -116,7 +116,7 @@ def test_an_idle_only_policy_reports_pure_idle(short_cfg):
     """A degenerate controller pins every share to a known value, which catches
     off-by-one bookkeeping that realistic policies would hide."""
     n = short_cfg.world.num_agents
-    report = analyse(short_cfg, lambda obs: np.full(n, IDLE), episodes=1, seed=5)
+    report = analyse(short_cfg, lambda obs, mask=None: np.full(n, IDLE), episodes=1, seed=5)
     for a in report["agents"]:
         assert a["idle_share"] == pytest.approx(1.0)
         assert a["gather_share"] == pytest.approx(0.0)
@@ -140,7 +140,7 @@ def test_deliberately_split_behaviour_shows_up_as_divergence(short_cfg):
     n = short_cfg.world.num_agents
     half = n // 2
 
-    def split(obs: np.ndarray) -> np.ndarray:
+    def split(obs: np.ndarray, mask=None) -> np.ndarray:
         actions = np.full(n, IDLE)
         actions[:half] = GATHER
         return actions
@@ -157,7 +157,7 @@ def test_territory_follows_position(short_cfg):
     """Agents parked in the corners must light up different cells."""
     n = short_cfg.world.num_agents
 
-    def frozen(obs: np.ndarray) -> np.ndarray:
+    def frozen(obs: np.ndarray, mask=None) -> np.ndarray:
         return np.full(n, IDLE)
 
     report = analyse(short_cfg, frozen, episodes=1, seed=8)

@@ -1,0 +1,18 @@
+# Milestone 3 with invalid actions masked out.
+#
+# The unmasked policy plateaued at ~450 lifespan / 26 berries across eight
+# interventions (alignment fix, extra observation channel, entropy floor and
+# annealing, discount horizon, shared vs per-agent brains, 3.3x the training
+# budget). The imitation diagnostic said why: 30% of every tick it lived went on
+# `gather` or `steal` from positions where neither could possibly succeed. Doomed
+# actions cost nothing and a real gather occasionally pays +1, so "stand still and
+# mash" is a local optimum PPO does not leave.
+#
+# Masking is not a reward term and not a hint about what is best. It is the same
+# kind of information the observation already carries, one step on: the
+# observation says what is there, the mask says what is reachable. Standard
+# practice wherever an action space contains moves that are simply unavailable.
+extends: m3.yaml
+
+competition:
+  mask_invalid_actions: true

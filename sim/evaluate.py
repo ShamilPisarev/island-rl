@@ -64,11 +64,13 @@ def policy_act_fn(policy: Brain, deterministic: bool = False,
     """
     torch_device = torch.device(device)
 
-    def act(obs: np.ndarray) -> np.ndarray:
+    def act(obs: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
         with torch.no_grad():
             tensor = torch.as_tensor(obs, dtype=torch.float32, device=torch_device)
             agent_ids = torch.arange(tensor.shape[0], device=torch_device)
-            action, _, _ = policy.act(tensor, agent_ids, deterministic=deterministic)
+            mask_t = None if mask is None else torch.as_tensor(mask, device=torch_device)
+            action, _, _ = policy.act(tensor, agent_ids, deterministic=deterministic,
+                                      mask=mask_t)
         return action.cpu().numpy()
 
     return act
@@ -79,11 +81,11 @@ def make_act_fn(kind: str, cfg: Config, policy: Brain | None,
     if kind == "random":
         rng = np.random.default_rng(seed)
         n_actions = num_actions(cfg)
-        return lambda obs: random_actions(obs, rng, n_actions)
+        return lambda obs, mask=None: random_actions(obs, rng, n_actions)
     if kind == "greedy":
-        return lambda obs: greedy_forager_actions(obs, cfg)
+        return lambda obs, mask=None: greedy_forager_actions(obs, cfg)
     if kind == "thief":
-        return lambda obs: greedy_thief_actions(obs, cfg)
+        return lambda obs, mask=None: greedy_thief_actions(obs, cfg)
     if policy is None:
         raise ValueError("a checkpoint is required to evaluate a learned policy")
     return policy_act_fn(policy, deterministic=deterministic, device=device)
@@ -96,7 +98,7 @@ def run_episodes(cfg: Config, act_fn: ActFn, episodes: int, seed: int) -> list[E
         world = World(cfg, seed=seed + i)
         obs = world.observations()
         for _ in range(cfg.world.max_ticks):
-            result = world.step(act_fn(obs))
+            result = world.step(act_fn(obs, world.action_mask()))
             obs = result.obs
             if result.episode_done:
                 break

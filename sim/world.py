@@ -31,7 +31,9 @@ from .agents import (
     N_MOVE_ACTIONS,
     STEAL,
     AgentPool,
+    action_mask,
     build_observations,
+    num_actions,
     observation_dim,
 )
 from .config import Config
@@ -154,6 +156,15 @@ class World:
         return build_observations(
             self.pool, self.bush_x, self.bush_z, self.bush_berries, self.cfg
         )
+
+    def action_mask(self) -> np.ndarray:
+        """Which actions could do anything right now, per agent (A, n_actions).
+
+        All-true when masking is disabled, so callers never branch on the flag.
+        """
+        if not self.cfg.competition.mask_invalid_actions:
+            return np.ones((self.pool.n, num_actions(self.cfg)), dtype=bool)
+        return action_mask(self.pool, self.bush_x, self.bush_z, self.bush_berries, self.cfg)
 
     def step(self, actions: np.ndarray) -> StepResult:
         cfg = self.cfg
@@ -360,10 +371,14 @@ class VecWorld:
     def observations(self) -> np.ndarray:
         return np.stack([w.observations() for w in self.worlds])
 
+    def action_masks(self) -> np.ndarray:
+        return np.stack([w.action_mask() for w in self.worlds])
+
     def step(self, actions: np.ndarray) -> dict[str, np.ndarray]:
         n_env, n_agent = self.num_envs, self.num_agents
         obs = np.zeros((n_env, n_agent, self.obs_dim), dtype=np.float32)
         final_obs = np.zeros_like(obs)
+        masks = np.ones((n_env, n_agent, num_actions(self.cfg)), dtype=bool)
         rewards = np.zeros((n_env, n_agent), dtype=np.float32)
         terminated = np.zeros((n_env, n_agent), dtype=bool)
         acted = np.zeros((n_env, n_agent), dtype=bool)
@@ -386,9 +401,11 @@ class VecWorld:
                 obs[e] = world.reset()
             else:
                 obs[e] = res.obs
+            masks[e] = world.action_mask()
 
         return {
             "obs": obs,
+            "action_mask": masks,
             "final_obs": final_obs,
             "rewards": rewards,
             "terminated": terminated,
