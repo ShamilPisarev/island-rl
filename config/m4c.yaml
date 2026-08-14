@@ -1,0 +1,25 @@
+# Milestone 4, third attempt: half-built walls give half the shelter.
+#
+# m4b put the sites on the berry clusters and that worked directionally --
+# deliveries 0.56 -> 2.00 an episode, completions 0.012 -> 0.056 -- but still
+# ~20x short of the scripted builder's 1.9 shelters.
+#
+# What is left is a cliff. A site costs four units and only the fourth buys
+# anything: the first three change nothing an agent can perceive or be rewarded
+# for, so there is no gradient to climb toward a completion that random
+# exploration reaches roughly once every twenty episodes.
+#
+# partial_shelter makes protection scale with build progress, so each delivered
+# unit immediately shaves a little off the night drain. The reward landscape
+# becomes continuous instead of flat-then-spike. This is the same move as siting
+# the shelters on the clusters, and the same move as the M3 action mask: fix the
+# shape of the problem rather than paying more for the summit.
+#
+# Note this genuinely changes what shelter *is* -- a lean-to that helps a bit is
+# a different object from a hut that helps completely. The brief allows it
+# ("shelter, which reduces hunger drain or protects from a periodic hazard"),
+# and m4c_unshaped.yaml is the matched control.
+extends: m4b.yaml
+
+construction:
+  partial_shelter: true

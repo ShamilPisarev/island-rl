@@ -388,13 +388,28 @@ class World:
         if cc.enabled:
             _, is_night = night_phase(self.tick, cfg)
             if is_night:
-                complete = (self.site_wood_needed == 0) & (self.site_stone_needed == 0)
-                sheltered = np.zeros(n, dtype=bool)
-                if complete.any():
-                    d2 = ((self.site_x[None, complete] - pool.x[:, None]) ** 2
-                          + (self.site_z[None, complete] - pool.z[:, None]) ** 2)
-                    sheltered = (d2 <= cc.shelter_radius ** 2).any(axis=1)
-                drain = np.where(sheltered, drain, drain * cc.night_drain_multiplier)
+                # Protection from the best site in range. With partial_shelter on
+                # it scales with build progress, so every delivered unit buys a
+                # little less night drain immediately; off, only a finished
+                # shelter counts and the value is a cliff at the final unit.
+                #
+                # The cliff is what stalled M4: three of four units bought
+                # nothing, so PPO saw no gradient to climb until a completion it
+                # almost never reached by chance (0.056 an episode). This is the
+                # same move as siting shelters on the clusters -- make the reward
+                # landscape continuous rather than paying more at the summit.
+                total = max(cc.site_wood_cost + cc.site_stone_cost, 1)
+                progress = 1.0 - (self.site_wood_needed + self.site_stone_needed) / total
+                if not cc.partial_shelter:
+                    progress = (progress >= 1.0).astype(np.float64)
+                protection = np.zeros(n)
+                if self.site_x.size:
+                    d2 = ((self.site_x[None, :] - pool.x[:, None]) ** 2
+                          + (self.site_z[None, :] - pool.z[:, None]) ** 2)
+                    protection = np.where(d2 <= cc.shelter_radius ** 2,
+                                          progress[None, :], 0.0).max(axis=1)
+                drain = drain * (1.0 + (cc.night_drain_multiplier - 1.0) * (1.0 - protection))
+                sheltered = protection >= 0.5   # "indoors" for the stats
                 self._night_sheltered += int((acted & sheltered).sum())
                 self._night_exposed += int((acted & ~sheltered).sum())
         pool.hunger = np.where(acted, pool.hunger - drain, pool.hunger)

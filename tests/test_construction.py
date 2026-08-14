@@ -414,3 +414,51 @@ def test_sites_at_clusters_places_shelters_on_the_bushes(m4):
     assert len(clustered.site_x) == m4.construction.num_sites
     # and the bushes themselves are unchanged, so the food economy is identical
     assert np.allclose(scattered.bush_x, clustered.bush_x)
+
+
+def test_partial_shelter_scales_protection_with_progress(m4):
+    """Each delivered unit must shave a little off the night drain, so the value
+    landscape is continuous instead of a cliff at the final unit."""
+    cfg = m4.replace(**{"construction.partial_shelter": True,
+                        "construction.sites_at_clusters": True})
+    cc = cfg.construction
+    total = cc.site_wood_cost + cc.site_stone_cost
+
+    def drain_with(wood_needed, stone_needed):
+        w = World(cfg, seed=70)
+        w.tick = ticks_to_night(cfg)
+        w.site_wood_needed[:] = cc.site_wood_cost
+        w.site_stone_needed[:] = cc.site_stone_cost
+        w.site_wood_needed[0] = wood_needed
+        w.site_stone_needed[0] = stone_needed
+        for i in range(cfg.world.num_agents):
+            park(w, i, w.site_x[0], w.site_z[0])
+        h0 = float(w.pool.hunger[0])
+        w.step(idle_all(cfg))
+        return h0 - float(w.pool.hunger[0])
+
+    untouched = drain_with(cc.site_wood_cost, cc.site_stone_cost)
+    half = drain_with(cc.site_wood_cost - total // 2, cc.site_stone_cost)
+    done = drain_with(0, 0)
+
+    assert untouched == pytest.approx(m4.hunger.drain_per_tick * cc.night_drain_multiplier)
+    assert done == pytest.approx(m4.hunger.drain_per_tick)
+    assert done < half < untouched, "partial progress must give partial protection"
+
+
+def test_partial_shelter_off_keeps_the_cliff(m4):
+    """The default stays binary, so every earlier M4 result reproduces."""
+    cfg = m4.replace(**{"construction.sites_at_clusters": True})
+    assert cfg.construction.partial_shelter is False
+    cc = cfg.construction
+    w = World(cfg, seed=71)
+    w.tick = ticks_to_night(cfg)
+    w.site_wood_needed[:] = cc.site_wood_cost
+    w.site_stone_needed[:] = cc.site_stone_cost
+    w.site_wood_needed[0] = 1          # one unit short
+    w.site_stone_needed[0] = 0
+    park(w, 0, w.site_x[0], w.site_z[0])
+    h0 = float(w.pool.hunger[0])
+    w.step(idle_all(cfg))
+    assert h0 - float(w.pool.hunger[0]) == pytest.approx(
+        m4.hunger.drain_per_tick * cc.night_drain_multiplier)

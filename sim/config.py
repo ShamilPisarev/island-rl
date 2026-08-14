@@ -93,6 +93,7 @@ class ConstructionConfig:
     night_cycle: int = 200          # ticks per full day
     night_fraction: float = 0.25    # last quarter of each cycle is night
     night_drain_multiplier: float = 3.0
+    partial_shelter: bool = False    # half-built walls give half the protection
     # observation channels
     k_trees: int = 2
     k_rocks: int = 2
