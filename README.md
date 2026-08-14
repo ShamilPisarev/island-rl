@@ -17,10 +17,42 @@ Training needs millions of steps; rendering needs 30 fps. Trying to do both at
 once gets you neither, so training runs headless and drops replay files that the
 viewer plays back afterwards.
 
-## Install
+## Quickstart
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+make watch
+```
+
+Then open <http://localhost:8000>, pick a replay from the dropdown, and press play.
+Trained replays ship in `viewer/replays/`, so there is nothing to train first.
+
+`make help` lists the rest. If you have no `.venv` yet, run `make venv` once.
+
+> **Everything must run through `.venv/bin/python`, not plain `python`.**
+> A bare `python -m sim.train` will fail with `ModuleNotFoundError: No module
+> named 'torch'`, because `python` on this machine is the conda base environment,
+> which does not have the project's dependencies. Either use the `make` targets,
+> or activate the environment first:
+>
+> ```bash
+> source .venv/bin/activate
+> ```
+>
+> After activating, plain `python -m sim.train` works. Run commands from the repo
+> root — `sim` is imported as a package relative to the working directory.
+
+## Install
+
+The repo already has a `.venv`. To build one from scratch:
+
+```bash
+make venv
+```
+
+or by hand:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 ```
 
 Python 3.11+. Dependencies are `torch`, `numpy`, `pyyaml`, and `pytest`.
