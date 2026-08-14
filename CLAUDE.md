@@ -265,6 +265,35 @@ restates. The chain is `m3.yaml -> scarce.yaml -> default.yaml`. This exists so
 the M1/M2 world stays reproducible instead of being edited out from under the
 results already documented above. Don't collapse it back into one file.
 
+### The M3 world sits at exactly 100% of subsistence
+
+Measured, not estimated (`config/m3.yaml`, 600 ticks):
+
+| | berries |
+|---|---|
+| demand: 8 meals x 6 agents | 48 |
+| supply: 12 initial + 6 bushes x 6 regrowths | 48 |
+
+There is **no slack at all**. Perfect play feeds everyone exactly, and any
+inefficiency starves somebody. The scripted forager harvests 37.4 of the 48 the
+island produces (78%) and still loses 2.2 agents an episode; nothing in this
+world keeps six agents alive.
+
+This was not deliberate — when sizing `scarce.yaml` I estimated 6 meals per agent
+from `eat_restore / drain_per_tick` and the true figure is 8, because an agent
+eats at the *threshold* (60) rather than at empty, so each meal only buys
+`(60 + 35 - 60) / 0.5 = 70` ticks rather than a full tank. Recompute demand with
+`sim` rather than by hand before changing the bush economy again.
+
+Two consequences worth carrying forward:
+
+* **Survival here is dominated by distribution, not production.** That is exactly
+  why the scripted thief beats the scripted forager despite harvesting slightly
+  *less*: theft moves berries to whoever is about to eat one.
+* **It is a knife-edge testbed.** Judge a policy on berries harvested as a share
+  of the 48 the island produces, not on lifespan alone — lifespan compresses
+  every policy into a narrow band because the food simply is not there.
+
 ### The world had to get harder first
 
 M1 and M2 were oversupplied by roughly 7×: ~360 berries against the ~48 six
