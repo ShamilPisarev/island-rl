@@ -149,6 +149,37 @@ python -m sim.train --config config/m4_unshaped.yaml --run-name m4-unshaped \
     --updates 400 --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
 ```
 
+## Compute budget — runs are longer than they need to be
+
+Measured on the shipped configs: the point at which a run's trailing 40-update
+mean is within 3% of where it finishes.
+
+| run | updates used | actually settled by |
+|---|---|---|
+| m1 | 300 | 175 |
+| m3-masked | 300 | 89 |
+| m4c | 400 | 79 |
+
+**200 updates is enough for anything in this project**, and 250 is generous. The
+300/400 figures are historical, not tuned. Cutting to 200 halves the wall-clock
+and the heat for no loss of signal — the curves are flat long before the end.
+
+Two related notes for anyone running this on a laptop:
+
+* **`ppo.threads` defaults to 4, and that is not a compromise.** Measured, 4
+  threads is as fast as 8 (40.0s vs 40.8s over 20 updates): these nets are small
+  enough that the numpy env step dominates, so extra cores produce heat and
+  nothing else. Results are bit-identical at any thread count and a test pins it.
+* **Run experiments sequentially, not in parallel.** Two concurrent runs do not
+  finish sooner in total, they just concentrate the same work into a hotter
+  window — and on a fanless machine, thermal throttling can make the pair slower
+  than running them back to back. Several results in these notes were produced
+  by parallel pairs; that was for my convenience, not because it was faster.
+
+**And do not repeat the long-run experiment.** `scarce-long` deliberately spent
+1000 updates (3.3× budget) to test whether M3 was compute-starved. It was flat
+from update 150. That question is answered; more compute is never the fix here.
+
 ## Layout notes
 
 Built at the repo root rather than in a nested `island/` directory as the brief's

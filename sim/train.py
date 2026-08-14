@@ -112,6 +112,8 @@ def main() -> None:
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--resume", default=None)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--threads", type=int, default=None,
+                        help="cap torch CPU threads (default 4; 0 = all cores)")
     parser.add_argument("--no-baseline", action="store_true")
     parser.add_argument("--policy-mode", choices=["shared", "individual"], default=None,
                         help="shared = M1 parameter sharing; individual = M2, one brain per agent")
@@ -134,6 +136,8 @@ def main() -> None:
         overrides["ppo.num_envs"] = args.num_envs
     if args.device is not None:
         overrides["ppo.device"] = args.device
+    if args.threads is not None:
+        overrides["ppo.threads"] = args.threads or None
     if args.policy_mode is not None:
         overrides["policy.mode"] = args.policy_mode
     if args.init_from is not None:
@@ -151,6 +155,9 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     with open(run_dir / "config.json", "w") as fh:
         json.dump(cfg.to_dict(), fh, indent=2)
+
+    if cfg.ppo.threads:
+        torch.set_num_threads(cfg.ppo.threads)
 
     seed_everything(cfg.seed)
     envs = VecWorld(cfg, seed=cfg.seed, num_envs=cfg.ppo.num_envs)
@@ -171,7 +178,7 @@ def main() -> None:
         print(f"resumed {args.resume} at update {start_update}")
 
     print(f"run        : {run_name}")
-    print(f"device     : {cfg.ppo.device}")
+    print(f"device     : {cfg.ppo.device} ({cfg.ppo.threads or 'all'} threads)")
     print(f"obs dim    : {envs.obs_dim}   agents: {cfg.world.num_agents}   "
           f"envs: {cfg.ppo.num_envs}   rollout: {cfg.ppo.rollout_ticks}")
     print(f"batch      : {cfg.ppo.rollout_ticks * cfg.ppo.num_envs * cfg.world.num_agents:,} "

@@ -68,7 +68,16 @@ update. Checkpoints land in `checkpoints/<run-name>/`, metrics in
 `runs/<name>/metrics.csv`, and replays in `viewer/replays/`. `Ctrl-C` saves a
 checkpoint on the way out, and `--resume checkpoints/m1/latest.pt` picks it back up.
 
-Useful flags: `--updates N`, `--num-envs N`, `--seed N`, `--no-baseline`.
+Useful flags: `--updates N`, `--num-envs N`, `--seed N`, `--no-baseline`,
+`--threads N`.
+
+**On a laptop:** `ppo.threads` defaults to 4, which measures as fast as 8 — these
+nets are small enough that the environment step dominates, so extra cores are
+pure heat. Results are bit-identical at any thread count. And 200 updates is
+enough for every result in this project (the curves settle by update 79–175);
+the 300–400 figures in the reproduce commands are historical. Run experiments
+back to back rather than in parallel — concurrent runs don't finish sooner
+overall, they just make more heat at once.
 
 To give every agent its own brain (Milestone 2), fork a trained shared policy:
 

@@ -151,6 +151,11 @@ class PPOConfig:
     ent_coef_final: float | None = None  # anneal ent_coef to this by the last update
     max_grad_norm: float = 0.5
     device: str = "cpu"
+    threads: int | None = 4   # CPU threads torch may use; null = all cores.
+                              # 4 measured as fast as 8 -- these nets are small
+                              # enough that the env step dominates, so extra
+                              # cores buy heat and nothing else. Bit-identical
+                              # results either way (tested).
 
 
 @dataclass(frozen=True)

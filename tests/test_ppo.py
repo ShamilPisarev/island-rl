@@ -420,3 +420,22 @@ def test_annealed_entropy_reaches_the_loss(cfg):
     trainer.train_update(0)
     trainer.train_update(1)
     assert seen == [pytest.approx(0.5), pytest.approx(0.0)]
+
+
+def test_thread_count_does_not_change_results(cfg):
+    """The thread cap is a heat dial, not a science dial. If this ever fails,
+    the determinism guarantee in the README is no longer true and the default
+    must go back to 'all cores'."""
+    small = cfg.replace(**{"ppo.num_envs": 3, "ppo.rollout_ticks": 16,
+                           "ppo.num_minibatches": 1, "ppo.epochs": 1,
+                           "world.max_ticks": 40})
+    original = torch.get_num_threads()
+    try:
+        results = []
+        for n in (1, 4):
+            torch.set_num_threads(n)
+            trainer = make_trainer(small, seed=5)
+            results.append([trainer.train_update(i).mean_reward for i in range(2)])
+        assert results[0] == results[1]
+    finally:
+        torch.set_num_threads(original)

@@ -82,6 +82,12 @@ ppo:
   max_grad_norm: 0.5
   device: cpu               # these nets are tiny; CPU beats MPS/CUDA here and is
                             # the only device we guarantee bit-exact determinism on
+  threads: 4                # CPU threads torch may use; null = all cores.
+                            # Measured: 4 threads is as fast as 8 (40.0s vs 40.8s
+                            # over 20 updates) because these nets are tiny and the
+                            # env step is the bottleneck -- the extra cores were
+                            # pure heat. Results are bit-identical either way,
+                            # and a test pins that.
 
 logging:
   run_dir: runs
