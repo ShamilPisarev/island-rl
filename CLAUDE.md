@@ -243,12 +243,70 @@ map-independent statistics (action mix, hit rate, bush distance) are fine either
 **Old checkpoints have no `mode` key.** `policy_from_config_dict` defaults them to
 shared, which is what pre-M2 checkpoints are. Do not make the key required.
 
-## What is next (Milestone 3 — competition)
+## Milestone 3 — competition
 
-Agents can steal from or block each other; bushes become contested. No new reward
-terms beyond survival. The M2 divergence tooling is the measuring instrument for
-it — territorial behaviour should show up as territory divergence rising *while
-the action-divergence control stays honest*. Worth considering first: the world is
-currently too easy (everyone survives), so contested resources may need scarcity
-turning up (`bushes.capacity`, `regrow_ticks`) before competition has anything to
-bite on.
+### Configs are layered now
+
+`extends:` in a YAML config inherits from a parent and overrides only the keys it
+restates. The chain is `m3.yaml -> scarce.yaml -> default.yaml`. This exists so
+the M1/M2 world stays reproducible instead of being edited out from under the
+results already documented above. Don't collapse it back into one file.
+
+### The world had to get harder first
+
+M1 and M2 were oversupplied by roughly 7×: ~360 berries against the ~48 six
+agents actually eat. Everything survived, every policy pinned to the 600-tick
+ceiling, and survival stopped being able to register any effect. `scarce.yaml`
+brings supply down to meet demand (6 bushes, capacity 2, regrow 100 → 48 berries)
+and the scripted forager falls from 600 to ~498 with 2.4 deaths per episode. Six
+bushes for six agents is deliberate: one each, if they can hold it.
+
+### Mechanics, and one that did not work
+
+* **`contest_bushes`** — one taker per bush per tick. **Nearly inert on its own**,
+  and this is the interesting part: agents are crowded onto the same bush for
+  ~2500 of 4800 ticks, yet only 3 gather attempts per 8 episodes were ever
+  blocked. In a scarce world bushes are *empty* most of the time, so two agents
+  almost never manage a *successful* gather on the same tick even while both
+  parked on it. What agents actually compete over is who is standing there when a
+  berry regrows.
+* **`exclusive_bushes`** — only the agent closest to a bush may take from it. This
+  is the mechanic with teeth: blocked attempts went from 3 to 1456. Standing on a
+  bush now denies it. Dead agents cannot block (tested — a corpse holding a bush
+  forever would be a nasty silent bug).
+* **`enable_steal`** — action 10, take one berry from a neighbour within
+  `steal_radius` who has some. Appended, never inserted, so every earlier action
+  keeps its index and an M1/M2 checkpoint means the same thing here.
+* **`observe_neighbour_food`** — widens the observation 26 → 29. Required: a policy
+  that cannot tell a loaded neighbour from an empty one could only learn "rob at
+  random", which resembles the behaviour without being it.
+
+**Theft pays no reward.** Gathering pays +1.0, stealing pays 0. The brief allows
+no reward terms beyond survival, so robbery has to earn its keep through the food
+it yields and the eating that food enables — deliberately the harder option. If
+it emerges anyway, it emerged from survival pressure rather than from us paying
+for it. There is a test pinning this; if it ever starts paying out, that test
+should fail loudly.
+
+The `scripted thief` baseline (`policy.greedy_thief_actions`) is the reference:
+opportunistic theft only, never chasing a victim, so it is a floor on what theft
+is worth rather than a ceiling.
+
+### Growing a policy across a milestone boundary
+
+M3's observation and action space are both wider than M2's, so an M2 checkpoint no
+longer fits. `grow_policy` copies every trained weight and **zero-initialises the
+new ones**: a zeroed input column contributes nothing and a zeroed action row
+gives `steal` a logit of 0 beside trained logits, so the grown policy starts out
+behaving as it did and then learns to use what it has been given. The new action
+is reachable rather than masked, which is what lets PPO find out whether it is
+worth taking. Shrinking is refused outright.
+
+## Gotchas (Milestone 3)
+
+**Don't edit `metrics.py` while a run is in flight.** A run holds its CSV header
+from the moment it opens the file, so fields added mid-run are missing from that
+run's CSV and read as blanks forever. Cost me a run.
+
+**`contests_lost ≈ 0` is behavioural, not a broken code path.** It is tested
+directly. See above for why the same-tick rule cannot fire in a scarce world.

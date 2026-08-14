@@ -62,6 +62,7 @@ class CompetitionConfig:
     """Milestone 3. All off by default, so M1/M2 worlds are bit-identical."""
 
     contest_bushes: bool = False   # only one agent may take from a bush per tick
+    exclusive_bushes: bool = False  # ...and only the closest agent may take at all
     enable_steal: bool = False     # adds an 11th action: take a berry from a neighbour
     steal_radius: float = 2.5
     observe_neighbour_food: bool = False  # neighbours' carried food enters the observation

@@ -1,14 +1,23 @@
 # Milestone 3 — competition.
 #
-# The scarce world plus the three things that make bushes genuinely contested:
+# The scarce world plus the things that make bushes genuinely contested:
 #
-#   contest_bushes           only one agent may take from a bush per tick, so
-#                            standing on a bush now denies it to everyone else.
-#                            Losing the race costs the tick.
+#   contest_bushes           only one agent may take from a bush per tick.
+#   exclusive_bushes         and only the agent *closest* to a bush may take from
+#                            it at all, so standing on one denies it to everyone
+#                            else. This is the mechanic with teeth. The same-tick
+#                            rule above turned out to be nearly inert on its own:
+#                            in a scarce world bushes are empty most of the time,
+#                            so two agents almost never manage a successful gather
+#                            on the same tick even while both parked on the bush
+#                            (measured: 3 blocked attempts per 8 episodes, against
+#                            1456 once exclusion is on). What agents actually
+#                            compete over is who is standing there when a berry
+#                            regrows, and that needs exclusion by distance.
 #   enable_steal             an 11th action: take one berry from a neighbour
 #                            within steal_radius who is carrying some.
 #   observe_neighbour_food   neighbours' carried food joins the observation
-#                            (28 -> 29 dims). Without it a policy cannot tell a
+#                            (26 -> 29 dims). Without it a policy cannot tell a
 #                            loaded neighbour from an empty one, so it could only
 #                            ever learn "rob at random" -- which looks like the
 #                            behaviour we are testing for without being it.
@@ -26,6 +35,7 @@ extends: scarce.yaml
 
 competition:
   contest_bushes: true
+  exclusive_bushes: true
   enable_steal: true
   steal_radius: 2.5
   observe_neighbour_food: true

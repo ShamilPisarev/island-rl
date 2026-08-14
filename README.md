@@ -80,6 +80,17 @@ To give every agent its own brain (Milestone 2), fork a trained shared policy:
 Forking rather than starting fresh means each agent begins competent and diverges
 from there, instead of six agents independently rediscovering how to walk to a bush.
 
+Milestone 3 turns the food scarce and lets agents block and rob each other:
+
+```bash
+.venv/bin/python -m sim.train --config config/m3.yaml --run-name m3 \
+    --policy-mode individual --init-from checkpoints/m2/latest.pt
+```
+
+Configs are layered — `m3.yaml` extends `scarce.yaml` extends `default.yaml`, each
+overriding only what it restates — so the M1/M2 world stays exactly as it was
+while later milestones change it.
+
 ## Measure divergence
 
 ```bash
@@ -214,15 +225,21 @@ a cooldown. Agents have `hunger` (0–100), `food_carried`, and an `alive` flag.
 Note that `hunger` counts *down*: it starts at 100, drains every tick, and `<= 0`
 is death. It is a satiety meter despite the name (which the brief fixed).
 
-**Actions** (10, discrete): eight compass directions, `idle`, `gather`. Eating is
-automatic when hunger drops below the threshold and the agent is carrying food.
-That is a deliberate choice — see `sim/world.py` for why an explicit eat action
-would have paid agents to starve themselves.
+**Actions** (10, discrete): eight compass directions, `idle`, `gather`, plus
+`steal` as an 11th in Milestone 3. Eating is automatic when hunger drops below the
+threshold and the agent is carrying food. That is a deliberate choice — see
+`sim/world.py` for why an explicit eat action would have paid agents to starve
+themselves.
 
 **Observations** (26 floats, egocentric, all in [-1, 1]): own hunger and food;
 the four nearest bushes as `(dx, dz, berries)`; the three nearest living agents
 as `(dx, dz, hunger)`; and distance plus direction to the shoreline. No absolute
 coordinates, so nothing can be memorised — only navigated.
+
+**Competition** (Milestone 3, off by default): food supply cut to match demand,
+only the agent closest to a bush may harvest it, and agents can rob a neighbour
+who is carrying berries. Stealing pays **no** reward — it has to be worth taking
+for the food alone.
 
 **Reward:** `+0.01` per tick alive, `+1.0` per gather, `+2.0` for eating scaled
 by how hungry, `-10.0` on death. Nothing else. In particular there is no reward
@@ -240,7 +257,9 @@ treated as truncation — bootstrapped from `V(final_obs)` — rather than as de
 ## Layout
 
 ```
-config/default.yaml   every tunable
+config/default.yaml   every tunable (the M1/M2 world)
+config/scarce.yaml    supply cut to meet demand
+config/m3.yaml        + contested bushes and stealing
 sim/world.py          environment, tick order, resources
 sim/agents.py         agent state, action space, observation construction
 sim/policy.py         the networks (shared + per-agent), plus reference policies

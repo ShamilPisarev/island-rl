@@ -196,6 +196,25 @@ class World:
             if candidates.size == 0:
                 continue
             target = int(candidates[np.argmin(d2[candidates])])
+            if cfg.competition.exclusive_bushes:
+                # Blocking with teeth: only the agent closest to a bush may take
+                # from it, so standing on one denies it to everyone else.
+                #
+                # The same-tick tie-break below is not enough on its own. In a
+                # scarce world bushes are empty most of the time, so two agents
+                # rarely manage a *successful* gather on the same tick even when
+                # they are both parked on the bush -- measured contention was ~0.
+                # What agents actually compete over is who is standing there when
+                # a berry regrows, and that needs exclusion by distance.
+                others = pool.alive.copy()
+                others[i] = False
+                if others.any():
+                    rival_d2 = ((self.bush_x[target] - pool.x) ** 2
+                                + (self.bush_z[target] - pool.z) ** 2)
+                    rival_d2[~others] = np.inf
+                    if rival_d2.min() < d2[target]:
+                        contested[i] = 1
+                        continue
             if cfg.competition.contest_bushes and target in claimed:
                 # Someone earlier in agent order already took this bush's berry
                 # this tick. Losing the race costs the tick, which is what makes a

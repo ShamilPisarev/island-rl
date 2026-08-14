@@ -15,6 +15,8 @@ const SUPPORTED_SCHEMA = [1];
 const A_X = 0, A_Z = 1, A_HUNGER = 2, A_FOOD = 3, A_ALIVE = 4, A_ACTION = 5;
 const EXPECTED_AGENT_FIELDS = ['x', 'z', 'hunger', 'food', 'alive', 'action'];
 
+const GATHER_COLOR = 0x6ec46e;
+const STEAL_COLOR = 0xe0563c;
 const BASE_TICKS_PER_SECOND = 12;   // playback rate at 1x
 const SPEEDS = [0.5, 1, 4, 16];
 const DEATH_FADE_TICKS = 14;        // ticks over which a corpse settles
@@ -238,6 +240,20 @@ function buildAgent(color) {
   bar.add(barFill);
   group.add(bar);
 
+  // Action marker: a disc at the agent's feet, lit while it is gathering or
+  // stealing. Reading the side panel tells you what one agent is doing; this
+  // tells you what all six are doing at once, which is the thing you actually
+  // want when watching for competition.
+  const marker = new THREE.Mesh(
+    new THREE.RingGeometry(1.15, 1.65, 20),
+    new THREE.MeshBasicMaterial({ color: 0x6ec46e, transparent: true, opacity: 0.85,
+                                  side: THREE.DoubleSide }),
+  );
+  marker.rotation.x = -Math.PI / 2;
+  marker.position.y = 0.06;
+  marker.visible = false;
+  group.add(marker);
+
   // Carried berries, shown as little pips under the bar.
   const berries = [];
   const berryGeo = new THREE.SphereGeometry(0.16, 6, 5);
@@ -249,7 +265,7 @@ function buildAgent(color) {
     berries.push(pip);
   }
 
-  return { group, body, nose, material, bar, barFill, fillMat, berries };
+  return { group, body, nose, material, bar, barFill, fillMat, berries, marker };
 }
 
 function loadReplay(replay, origin) {
@@ -369,6 +385,15 @@ function applyTick(t) {
 
       const food = a0[A_FOOD];
       A.berries.forEach((pip, k) => { pip.visible = k < food; });
+
+      const action = state.actionNames[a0[A_ACTION]];
+      const acting = action === 'gather' || action === 'steal';
+      A.marker.visible = acting;
+      if (acting) {
+        A.marker.material.color.setHex(action === 'steal' ? STEAL_COLOR : GATHER_COLOR);
+      }
+    } else {
+      A.marker.visible = false;
     }
   }
 

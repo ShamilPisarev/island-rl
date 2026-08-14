@@ -155,6 +155,78 @@ def test_without_contention_both_agents_take_a_berry(scarce):
     assert res.contested.sum() == 0
 
 
+def test_closest_agent_blocks_the_others(m3):
+    """Exclusive bushes: standing nearest denies the bush to everyone else, which
+    is what makes a bush worth holding rather than merely visiting."""
+    w = World(m3, seed=20)
+    w.bush_berries[:] = m3.bushes.capacity
+    w.pool.hunger[:] = m3.hunger.max
+    # agent 0 right on the bush, agent 1 nearby but further out (still in range)
+    w.pool.x[0], w.pool.z[0] = w.bush_x[0], w.bush_z[0]
+    w.pool.x[1] = w.bush_x[0] + m3.bushes.gather_radius * 0.8
+    w.pool.z[1] = w.bush_z[0]
+    w.pool.x[2:], w.pool.z[2:] = 35.0, 0.0   # everyone else far away
+
+    actions = np.full(m3.world.num_agents, IDLE)
+    actions[0] = actions[1] = GATHER
+    res = w.step(actions)
+
+    assert res.gathered[0] == 1 and int(w.pool.food[0]) == 1
+    assert res.gathered[1] == 0 and int(w.pool.food[1]) == 0
+    assert res.contested[1] == 1
+
+
+def test_exclusion_does_not_block_a_lone_gatherer(m3):
+    w = World(m3, seed=21)
+    w.bush_berries[:] = m3.bushes.capacity
+    w.pool.hunger[:] = m3.hunger.max
+    w.pool.x[0], w.pool.z[0] = w.bush_x[0], w.bush_z[0]
+    w.pool.x[1:], w.pool.z[1:] = 35.0, 0.0
+    actions = np.full(m3.world.num_agents, IDLE)
+    actions[0] = GATHER
+    res = w.step(actions)
+    assert res.gathered[0] == 1
+    assert res.contested.sum() == 0
+
+
+def test_a_dead_agent_cannot_block(m3):
+    """A corpse next to a bush must not hold it forever."""
+    w = World(m3, seed=22)
+    w.bush_berries[:] = m3.bushes.capacity
+    w.pool.hunger[:] = m3.hunger.max
+    w.pool.x[1], w.pool.z[1] = w.bush_x[0], w.bush_z[0]   # closest, but dead
+    w.pool.alive[1] = False
+    w.pool.x[0] = w.bush_x[0] + m3.bushes.gather_radius * 0.5
+    w.pool.z[0] = w.bush_z[0]
+    w.pool.x[2:], w.pool.z[2:] = 35.0, 0.0
+
+    actions = np.full(m3.world.num_agents, IDLE)
+    actions[0] = GATHER
+    res = w.step(actions)
+    assert res.gathered[0] == 1
+
+
+def test_exclusion_is_off_without_the_flag(m3):
+    """The control: same geometry, exclusion disabled, and the further agent gets
+    its berry (subject only to the same-tick rule, which targets a different bush
+    here because the nearest one is claimed)."""
+    lenient = m3.replace(**{"competition.exclusive_bushes": False,
+                            "competition.contest_bushes": False})
+    w = World(lenient, seed=20)
+    w.bush_berries[:] = lenient.bushes.capacity
+    w.pool.hunger[:] = lenient.hunger.max
+    w.pool.x[0], w.pool.z[0] = w.bush_x[0], w.bush_z[0]
+    w.pool.x[1] = w.bush_x[0] + lenient.bushes.gather_radius * 0.8
+    w.pool.z[1] = w.bush_z[0]
+    w.pool.x[2:], w.pool.z[2:] = 35.0, 0.0
+
+    actions = np.full(lenient.world.num_agents, IDLE)
+    actions[0] = actions[1] = GATHER
+    res = w.step(actions)
+    assert res.gathered[0] == 1 and res.gathered[1] == 1
+    assert res.contested.sum() == 0
+
+
 def test_contention_never_overdraws_a_bush(m3):
     """Three agents, one berry: the bush must not go negative."""
     w = World(m3, seed=4)
