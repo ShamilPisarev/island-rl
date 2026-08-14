@@ -6,107 +6,49 @@ you.
 
 ## START HERE — handoff for the next session
 
-**Milestones 1–4 are all trained and written up** (M4's results are in the
-Milestone 4 section below — construction partially emerged; agents shelter under
-half-built walls but almost never finish one). The only thing possibly still in
-flight is the M4 annealing test:
+**Milestones 1–5 are all trained, verified and written up.** Every milestone the
+brief puts in scope for the simulation is done; M6 (an LLM narration layer) is
+explicitly parked by the brief itself, so there is no obvious "next milestone" to
+start. Read the results sections below before touching anything — several of them
+record experiments that cost real time and should not be repeated.
 
-```bash
-wc -l runs/m4c-anneal/metrics.csv     # 201 lines = done
-grep "learned policy" /tmp/m4c-anneal.log | tail -1
-```
+Where each milestone landed, in one line each:
 
-* **Done** → compare it against `m4c` (393.5 lifespan, 22% of nights sheltered)
-  and its unshaped control (362.5, 2%). If the construction behaviour survives
-  with nothing paying for it, the shaping was a genuine bootstrap; if it decays
-  toward the control, it was scaffolding. Write the answer into the Milestone 4
-  section, then **go to Milestone 5**.
-* **Interrupted** → resume from the last checkpoint (written every 25 updates)
-  rather than restarting:
-
-  ```bash
-  python -m sim.train --config config/m4.yaml --run-name m4 --updates 400 \
-      --policy-mode individual --resume checkpoints/m4/latest.pt
-  python -m sim.train --config config/m4_unshaped.yaml --run-name m4-unshaped \
-      --updates 400 --policy-mode individual --resume checkpoints/m4-unshaped/latest.pt
-  ```
-
-  (`--resume` restores weights, optimiser state and the update counter. Note it
-  reuses the *run name*, so the CSV is rewritten from the resume point — keep the
-  old one if you care about the full curve.)
-
-### Finishing Milestone 4
-
-Only the annealing test is outstanding — the brief's explicit request.
-
-1. **The scoring is done** and written up below. The canonical M4 checkpoint is
-   `checkpoints/m4c` (shaped) with `checkpoints/m4c-unshaped` as its control.
-
-2. **The annealing test** — whether the shaping can be removed once it has done
-   its job:
-
-   ```bash
-   python -m sim.train --config config/m4_anneal.yaml --run-name m4-anneal \
-       --updates 200 --policy-mode individual --init-from checkpoints/m4/latest.pt
-   python -m sim.evaluate --checkpoint checkpoints/m4-anneal/latest.pt --baselines
-   ```
-
-   Same world, every shaping term at zero, continued from the shaped policy. If
-   shelter-building **persists**, the shaping was a genuine bootstrap. If it
-   **decays toward the unshaped control**, the shaping only ever bought the
-   behaviour — which is exactly what the M3 shaping ablation found, and it must
-   be reported that way rather than softened.
-
-3. **Compare on the terminal metric, not the shaped quantity.** Lifespan and
-   deaths decide it; wood/builds/shelters explain it. A shaped run that builds
-   more shelters and survives *less* is a negative result (see the M3 ablation).
-
-4. **Write the results up** in this file and in README.md, then run
-   `python -m sim.divergence --checkpoint checkpoints/m4/latest.pt` and check
-   both viewer pages still render (`make watch`).
-
-**What has already been tried, so it is not repeated:**
-
-| attempt | shelters/ep (shaped) | verdict |
+| | result | canonical checkpoint |
 |---|---|---|
-| sites 4 wood + 2 stone, shaping 0.3/0.5/2.0 | 0.000 | too weak; completion never fired |
-| sites 3 wood + 1 stone, shaping 0.5/1.0/3.0 (`m4`) | 0.012 | material activity 3.5× the control, completion still never fired |
-| + sites on the bush clusters (`m4b`) | *in flight* | deletes the unrewarded approach walk |
+| M1 | 1.97× random, at the scripted forager's ceiling | `checkpoints/m1` |
+| M2 | specialisation: action divergence 19× the shared-brain control | `checkpoints/m2` |
+| M3 | 2.11× random; theft emerged *unpaid* after action masking | `checkpoints/m3-masked` |
+| M4 | construction partially emerged; shaping annealed away cleanly | `checkpoints/m4c-anneal` |
+| M5 | exchange did **not** emerge unpaid; paying for it made survival worse | `checkpoints/m5` |
 
-**If `m4b` still shows nothing**, report the negative result — it is a real
-finding, and the brief predicted this exact milestone would be the hard one.
-Before concluding, the one remaining structural lever (not a bigger number) is to
-make a *partially built* shelter give partial protection, so the reward gradient
-is continuous instead of a cliff at the final unit. Do **not** simply raise the
-shaping coefficients: the M3 ablation showed that buys the behaviour without
-buying the outcome, and `m4` already showed 3.5× the activity with no completions.
+### If you are picking this up, the honest open problems
 
-### Then Milestone 5 — exchange
+In rough order of how much they would teach:
 
-Only after M4 is done and verified. §3 of the brief: agents can transfer items,
-watch for anything resembling trade or specialisation-plus-exchange, and **log
-every transfer so the economics can be analysed after the fact**. Practical
-notes for building it here:
+1. **The learned policy still loses to the scripted references in M3–M5.** M1 hit
+   its ceiling; nothing since has. M5's best is 413 lifespan against the scripted
+   trader's 544. The gap is not doomed actions (masking removed those), not
+   entropy, not budget, and not perception of any mechanic we could name — see
+   "Why the learned policy loses to the scripted forager" below for the seven
+   interventions that all came back inside noise. This is the real open problem.
+2. **Nobody finishes a shelter** (0.1 per episode against the builder's 1.9). The
+   untried structural lever is *cheaper sites* (2 units), which makes completion
+   reachable by exploration rather than by plan. Do not raise the shaping.
+3. **Exchange needs a mechanism, not a bigger number.** M5 showed the unpaid
+   chain is too weak and a flat payment produces a gift farm. If you want trade,
+   the thing to change is the *mechanic* — see "What would actually be worth
+   trying" in the Milestone 5 section.
 
-* The machinery is all in place. Add a `give` action the same way `steal` and
-  `chop`/`mine`/`build` were added — **appended, never inserted**, so every
-  earlier checkpoint keeps its meaning — and grow the M4 policy into it with
-  `grow_policy` (which maps weights by feature name, not position).
-* Transfer logging wants its own artefact, not a metrics column: a JSONL of
-  `(tick, giver, receiver, item)` per episode, so the economics can be replayed.
-  `sim/divergence.py` is the model for "analysis tool writes JSON, viewer page
-  renders it".
-* Expect the same credit-assignment wall. Giving costs the giver immediately and
-  pays back only if reciprocated much later, which is a longer and *weaker* chain
-  than theft — and theft needed action masking before PPO would touch it. Budget
-  for the unshaped run finding nothing, and make the shaped/unshaped pair the
-  deliverable rather than a single number.
+Whatever you do next: an experiment here costs about six minutes (200 updates),
+so run the control. Every result in this file that turned out to be wrong was
+wrong because it had no control, and every one that survived had one.
 
 ## Current state
 
-**Milestones 1, 2 and 3 are complete and verified; M4 is built and training.**
-M5–M6 have not been started. Read the shaping ablation and the M4 economy
-sizing notes before touching M4 configs.
+**Milestones 1–5 are complete and verified.** M6 is parked by the brief (an LLM
+narration layer, explicitly out of scope for the simulation loop). Read the M3
+shaping ablation and the M4 economy sizing notes before touching any config.
 
 - M1: survival + foraging, one shared brain. 1.97× the random baseline, at the
   ceiling set by a hand-written forager.
@@ -118,11 +60,17 @@ sizing notes before touching M4 configs.
   actions — still honestly below the scripted forager (495.5). Territoriality
   appeared as inequality rather than as spatial partitioning. Canonical
   checkpoint: `checkpoints/m3-masked`.
-- M4: wood/stone/shelter/night mechanics complete with 30 tests, replay schema
-  v2, viewer support, scripted-builder reference (510.5, 2 shelters/ep, 89% of
-  nights indoors). Shaped + unshaped training pair in flight.
-- `pytest` passes (191 tests).
-- Both viewer pages verified in a browser against real data, including their
+- M4: wood/stone/shelter/night mechanics, day/night hazard, replay schema v2.
+  Construction partially emerged (22% of nights sheltered against a control's 2%)
+  but shelters almost never complete. The shaping annealed away cleanly.
+  Canonical checkpoint: `checkpoints/m4c-anneal`.
+- M5: `give_food`/`give_material`, a transfer ledger, replay schema v3, an
+  exchange analysis tool and viewer page, and a scripted trader reference.
+  **Exchange did not emerge unpaid** — giving was mildly selected *against* — and
+  paying for it produced a gift farm that cost 54 ticks of life. Canonical
+  checkpoint: `checkpoints/m5`.
+- `pytest` passes (230 tests).
+- All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
 Reproduce end to end:
@@ -147,6 +95,14 @@ python -m sim.train --config config/m4.yaml --run-name m4 --updates 400 \
     --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
 python -m sim.train --config config/m4_unshaped.yaml --run-name m4-unshaped \
     --updates 400 --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
+
+# Milestone 5: gifts unpaid (the result) and gifts paid (the ablation), both
+# continued from the annealed M4 policy
+python -m sim.train --config config/m5.yaml --run-name m5 --updates 200 \
+    --policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
+python -m sim.train --config config/m5_shaped.yaml --run-name m5-shaped \
+    --updates 200 --policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
+python -m sim.exchange --checkpoint checkpoints/m5/latest.pt
 ```
 
 ## Compute budget — runs are longer than they need to be
@@ -159,6 +115,11 @@ mean is within 3% of where it finishes.
 | m1 | 300 | 175 |
 | m3-masked | 300 | 89 |
 | m4c | 400 | 79 |
+| m5 | 200 | ~120 |
+
+A 200-update run is **about six minutes** on this laptop (4.9M agent-steps at
+~14k steps/s), which is the number to have in mind when deciding whether to run a
+control. You can always afford the control.
 
 **200 updates is enough for anything in this project**, and 250 is generous. The
 300/400 figures are historical, not tuned. Cutting to 200 halves the wall-clock
@@ -785,6 +746,141 @@ cover. If you pick this up:
 * Longer training is *not* indicated — the M3 investigation burned 3.3× budget
   for nothing, and these curves are flat by update ~250.
 
+## Milestone 5 — exchange
+
+Two appended actions, `give_food` (14) and `give_material` (15), each moving one
+unit to the nearest neighbour in reach with room for it. Observation 55 → 61
+(neighbours' carried wood and stone). Replay schema v3 carries a per-tick list of
+transfers. All off by default, so M1–M4 worlds stay bit-identical.
+
+The world is `m5.yaml` = the annealed M4 world plus exchange, so an M5 world pays
+for exactly three things, all from Milestone 1: staying alive, gathering, eating.
+
+### Design decisions, and why
+
+**Food and materials are separate actions; wood and stone are not.** They are two
+different economies — one keeps you alive, the other builds shelter — and an
+agent carrying both would otherwise be unable to choose which it is taking part
+in. Wood versus stone is a much narrower distinction (the receiver's `build`
+already resolves which the site needs), so collapsing those two saved an action
+slot that PPO would have had to discover the value of separately.
+
+**The giver does not choose the recipient.** A gift goes to the *nearest*
+neighbour with room, exactly as `steal` takes from the nearest loaded victim.
+What the giver actually controls is where it stands, so **positioning is the
+targeting mechanism**. This bit the scripted trader first: a rule that asked "is
+anyone near me hungry?" gave away 80 berries an episode of which 3 were eaten,
+because the berry kept going to somebody else. The rule has to be evaluated on
+the neighbour the *world* would pick.
+
+**Nothing pays for a gift** (`reward.give = 0.0`), the same call as
+`reward.steal`. `m5_shaped.yaml` raises it as a labelled ablation, and its header
+contains the prediction it was run to test, written before the run.
+
+**The transfer ledger is its own artefact.** A per-episode average of "gifts"
+cannot answer who gave to whom or whether it came back, so `sim/exchange.py`
+writes a JSONL of `(episode, tick, giver, receiver, item)` plus an aggregate
+report that `viewer/exchange.html` renders. `exchange.log_transfers` is off by
+default: training runs 32 worlds at once and does not need the ledger.
+
+### Results — exchange did not emerge
+
+20 episodes, seeds 10000+, all on the same islands:
+
+| policy | lifespan | deaths | berries | gifts/ep | nights indoors |
+|---|---|---|---|---|---|
+| random actions | 176.6 | 6.00 | 1.6 | — | — |
+| scripted forager | 463.6 | 3.05 | 50.4 | 0 | 0% |
+| scripted builder | 529.8 | 2.05 | 38.5 | 0 | 92% |
+| **scripted trader** | **543.8** | **1.85** | 38.0 | 8.3 | 93% |
+| M4 policy grown into M5, untrained (control) | 406.4 | 4.60 | 34.9 | 11.3 | 15% |
+| **learned, gifts unpaid (`m5`)** | **413.3** | 4.60 | 34.6 | **7.9** | 20% |
+| learned, gifts paid (`m5-shaped`) | 359.1 | 5.30 | 26.9 | **330.9** | 15% |
+
+**Read the control row.** A grown-but-untrained policy already gives 11.3 times
+an episode, because a zero-initialised action row makes `give` just another thing
+to sample. After 200 updates with nothing paying for it, that fell to 7.9. Giving
+was not merely un-learned — it was mildly selected *against*, which is correct:
+a gift costs a tick and hands the payoff to somebody else.
+
+**The mechanic is not worthless, which is what makes this a finding.** The
+scripted trader beats the scripted builder on the same islands by **+14.0 ± 5.2
+ticks (paired, better on 12 of 20 islands)** and 0.2 fewer deaths, on about
+**eight** well-aimed gifts an episode. So a handful of gifts genuinely buys
+survival, and PPO still cannot find them. This is the credit-assignment wall the
+M4 handoff predicted, arriving exactly where it said it would.
+
+### The shaping ablation — a gift farm, as predicted
+
+`m5_shaped.yaml` pays a successful transfer +1.0, what a gather pays. The
+prediction written into its header beforehand was: many gifts, fewer berries,
+lifespan at or below the unpaid run. All three:
+
+| | unpaid (`m5`) | paid (`m5-shaped`) |
+|---|---|---|
+| gifts / episode | 7.9 | **330.9 (42×)** |
+| berries gathered / ep | 34.6 | 26.9 |
+| **mean lifespan** | **413.3** | **359.1** |
+| deaths / episode | 4.60 | 5.30 |
+
+The ledger says exactly what went wrong, which a lifespan number alone could not:
+
+| ledger (20 episodes) | unpaid | paid |
+|---|---|---|
+| transfers / episode | 11.1 | 355.2 |
+| share of living ticks spent giving | 0.4–1.5% | 16–20% |
+| net flow per agent (gave − received) | −13 … +14 | −23 … +31 of ~1200 |
+| reciprocity | 0.851 | **0.942** |
+| gifted food eaten within 50 ticks | 56% | **5%** |
+| gifted material delivered within 50 ticks | 3% | **0%** |
+
+Every agent gives and receives about 1200 times and ends up net flat, and almost
+nothing gifted is ever used. It is a circulation farm: two agents standing next
+to each other pass a berry back and forth and collect a gather's worth of reward
+each time, without a berry being created or eaten. **A shaped reward reliably
+produces the behaviour it pays for, and that is still not evidence the behaviour
+helps** — the M3 theft ablation, restated with a bigger multiplier.
+
+Note the asymmetry with M4, which is the useful comparison: paying for
+construction produced building that survived annealing, because a shelter really
+does reduce the drain. Paying for gifts produced motion, because a transfer
+creates nothing. The technique did not change; the mechanic did.
+
+### What would actually be worth trying
+
+Not a bigger coefficient, and not more updates (the curves are flat by ~120).
+The unpaid chain is too weak, so change the *mechanic*:
+
+* **Make gifts non-fungible.** If wood could only be harvested by an agent
+  standing far from the sites, and building only worked near them, a relay would
+  be the *cheapest* way to build rather than a nicety. Specialisation would then
+  be forced by geography rather than hoped for.
+* **Let the giver choose the recipient** (nearest is currently forced). Adding a
+  target choice widens the action space, but it is the difference between
+  "positioning as targeting" and actual directed trade.
+* **Pay only gifts the receiver uses** — reward the giver when the receiver eats
+  or delivers within N ticks. That is a much narrower shaping than a flat payment
+  and would answer whether the farm is the only thing a payment can buy. It needs
+  a deferred-reward mechanism the trainer does not currently have.
+
+### Gotchas (Milestone 5)
+
+**A thief can take the berry you were about to hand over.** Theft resolves in
+phase 1c and gifts in 1e, so a robbery lands first and the gift silently does not
+happen — the giver's `gave` stays 0 even though the mask had said yes. This is
+**75% of every failed give the learned policy makes**, and it is not a mask bug:
+you cannot hand over what was just taken from you. Pinned by a test. The other
+failure mode is the same-tick race two givers can have for one free slot, which
+`gather` has had since M3 (the mask is a start-of-tick promise).
+
+**Give hit rate is therefore not a mask-quality metric.** In M3 a low gather hit
+rate meant doomed actions; here a give hit rate of 63–100% is mostly other agents
+acting first. Look at the ledger's utilisation figures instead.
+
+**`reciprocity` near 1.0 is not good news by itself.** Perfectly balanced pairs
+are what both mutual aid and a reward farm look like. Only utilisation separates
+them, which is why the report prints both and the viewer shows them together.
+
 ## Gotchas (Milestone 3)
 
 **Don't edit `metrics.py` while a run is in flight.** A run holds its CSV header
@@ -794,29 +890,27 @@ run's CSV and read as blanks forever. Cost me a run.
 **`contests_lost ≈ 0` is behavioural, not a broken code path.** It is tested
 directly. See above for why the same-tick rule cannot fire in a scarce world.
 
-## What is next (Milestone 4 — multi-resource + construction)
+## The four rules that survived five milestones
 
-Wood and stone, plus shelter that reduces hunger drain or protects from a periodic
-hazard. The brief calls this the milestone that needs reward shaping, and asks for
-the shaping to be documented honestly as a bootstrap and tested for annealing.
-Three things from M3 bear directly on it:
+Written down because each one was learned the expensive way, and because every
+result in this file that ignored one of them turned out to be wrong.
 
-1. **Read the shaping ablation above first.** Paying for a behaviour reliably
-   produces that behaviour and tells you nothing about whether it helps. Every
-   shaped run needs an unshaped control compared on the *terminal* metric, not on
-   the shaped quantity. `reward.steal` is the working example of the pattern to
-   copy: default 0.0 in the milestone config, raised only in a `*_shaped.yaml`
-   that says in its header that it is an ablation.
-2. **Budget for a curriculum, not just compute.** The scarce world was completely
-   unlearnable from scratch and only worked because M1/M2 fed competence into it.
-   Construction is a longer action chain than theft, so plan on `--init-from` from
-   the start, and expect to need intermediate worlds if it stalls. More updates
-   will not fix a policy sitting at 1.00× random.
-3. **`grow_policy` already handles the growth.** Wood, stone and shelter state will
-   widen the observation and add actions; forking with zeroed new weights works and
-   is tested. Don't retrain from scratch out of habit.
-
-One loose end worth knowing about: M3's own headline is *below* both scripted
-references, so unlike M1 there is no "we matched the ceiling" result here. If you
-want the learned policy to beat the scripted thief, that is an open problem in its
-own right and probably wants attention before piling construction on top.
+1. **A shaped reward reliably produces the behaviour it pays for. That is never
+   evidence the behaviour helps.** Theft, paid: 4.8× the theft, worse survival.
+   Gifts, paid: 42× the gifts, 54 fewer ticks of life. Construction, paid: more
+   building *and* better survival, and it survived annealing. Same technique,
+   three different verdicts — decided entirely by whether the shaped behaviour
+   was worth doing. Only the terminal metric can tell you which case you are in,
+   so every shaped run ships with an unshaped control and is read on lifespan.
+2. **Fix the shape of the problem, not the size of the number.** Every real
+   improvement here came from changing what the agent could perceive or reach —
+   action masking (M3), siting shelters where agents already live and making
+   partial walls give partial protection (M4). Every attempt to buy the outcome
+   with a bigger coefficient produced activity without result.
+3. **The milestone chain is load-bearing.** The scarce world is unlearnable from
+   scratch — a from-scratch run lands on *exactly* the random baseline after the
+   full budget. Each milestone works because the previous one transferred
+   competence into it via `--init-from` and `grow_policy`.
+4. **More compute is never the fix.** `scarce-long` spent 3.3× budget and was
+   flat from update 150. Runs settle by ~120–175 updates. If a run is not
+   working, the world or the observation is wrong, not the budget.

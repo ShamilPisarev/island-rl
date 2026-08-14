@@ -111,6 +111,17 @@ trained as a shaped run plus an unshaped control:
     --updates 400 --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
 ```
 
+Milestone 5 lets agents hand food and materials to each other, again as a pair —
+the brief-faithful run where a gift pays nothing, and the ablation where it pays
+what a gather pays:
+
+```bash
+.venv/bin/python -m sim.train --config config/m5.yaml --run-name m5 --updates 200 \
+    --policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
+.venv/bin/python -m sim.train --config config/m5_shaped.yaml --run-name m5-shaped \
+    --updates 200 --policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
+```
+
 ## Measure divergence
 
 ```bash
@@ -124,6 +135,22 @@ pairwise Jensen–Shannon divergence matrices.
 Run it against the shared M1 checkpoint too — that is the control. Six agents
 sharing one brain still occupy different ground, so territory divergence alone
 proves nothing; it is the *action* divergence that has to clear the control.
+
+## Analyse the transfer ledger
+
+```bash
+.venv/bin/python -m sim.exchange --checkpoint checkpoints/m5/latest.pt
+```
+
+Writes `viewer/reports/transfers.jsonl` — one JSON object per transfer,
+`{episode, tick, giver, receiver, item}` — plus `viewer/reports/exchange.json`
+for the exchange view. Prints who gave to whom, how much of what was given got
+*used* (eaten, or delivered to a building site) within a window, and a
+reciprocity score.
+
+Read utilisation next to reciprocity, never on its own: two agents passing one
+berry back and forth score a perfect 1.0 for reciprocity, and it is a reward
+farm, not a trade.
 
 ## Evaluate
 
@@ -156,11 +183,17 @@ Controls: orbit/pan/zoom with the mouse, space to play/pause, arrow keys to step
 a tick, speed buttons for 0.5×–16×, and the scrubber to seek. Click an agent —
 in the scene or in the side panel — to have the camera follow it.
 
-`divergence.html` (linked from the side panel) is the second view: it renders a
+Two more views are linked from the side panel. `divergence.html` renders a
 divergence report as territory heatmaps, action mixes, and divergence matrices.
+`exchange.html` renders a transfer ledger as a flow matrix, a per-agent
+gave/received table, and each agent's share of what the population harvested,
+delivered and handed over.
 
-Both pages refuse to render a file whose schema version they do not recognise,
-rather than drawing something plausible and wrong.
+In a Milestone 5 replay, every transfer is drawn in the scene as the item arcing
+from giver to receiver, colour-coded by what changed hands.
+
+All three pages refuse to render a file whose schema version they do not
+recognise, rather than drawing something plausible and wrong.
 
 To get something to look at before training anything:
 
@@ -178,12 +211,13 @@ was verified before any policy existed.
 .venv/bin/python -m pytest
 ```
 
-191 tests covering world stepping, hunger and death, resource regrowth,
-observation shape and bounds, replay round-trip and schema versioning (v1 and
-v2), seed determinism, GAE correctness, dead-agent masking, action masking,
-per-agent brain dispatch and gradient isolation, cross-milestone policy growth
-by feature name, bush contention and theft, construction and the night hazard,
-divergence maths, and a PPO smoke test on a task with a known optimum.
+230 tests covering world stepping, hunger and death, resource regrowth,
+observation shape and bounds, replay round-trip and schema versioning (v1 to v3),
+seed determinism, GAE correctness, dead-agent masking, action masking, per-agent
+brain dispatch and gradient isolation, cross-milestone policy growth by feature
+name, bush contention and theft, construction and the night hazard, transfers and
+the ledger they leave behind, divergence maths, and a PPO smoke test on a task
+with a known optimum.
 
 ## Results
 
@@ -346,6 +380,55 @@ M3, where the same technique produced 4.8× the theft and *worse* survival. Same
 method, opposite verdict: what differs is whether the shaped behaviour was worth
 doing, and only the terminal metric tells you.
 
+### Milestone 5 — exchange
+
+Agents can hand over one unit of food or material to the nearest neighbour in
+reach. Every transfer is logged so the economics can be read back afterwards.
+A gift pays nothing, exactly as a theft pays nothing: it creates no food and no
+wood, so it has to earn its place through what the receiver does with it.
+
+| policy | lifespan | deaths/ep | berries | gifts/ep |
+|---|---|---|---|---|
+| scripted builder | 529.8 | 2.05 | 38.5 | 0 |
+| **scripted trader** | **543.8** | **1.85** | 38.0 | 8.3 |
+| M4 policy grown into M5, untrained | 406.4 | 4.60 | 34.9 | 11.3 |
+| **learned, gifts unpaid** | **413.3** | 4.60 | 34.6 | 7.9 |
+| learned, gifts paid (ablation) | 359.1 | 5.30 | 26.9 | **330.9** |
+
+**Exchange did not emerge.** The row that makes this readable is the untrained
+control: a policy grown into the wider action space already gives 11.3 times an
+episode just by sampling an action it has no opinion about. Two hundred updates
+later that had fallen to 7.9 — giving was mildly selected *against*, which is the
+correct response to an action that costs you a tick and pays somebody else.
+
+**And it is not because gifts are worthless.** The scripted trader — the builder
+plus two opportunistic rules, hand food to someone about to eat it, hand material
+to someone standing on the site — beats the plain builder by **+14.0 ± 5.2 ticks
+(paired, better on 12 of 20 islands)** on about eight gifts an episode. A few
+well-aimed gifts really do buy survival; PPO just cannot find them through a
+credit chain that runs give → someone else eats → they don't die.
+
+**Paying for gifts produced a farm.** The ablation pays a transfer what a gather
+pays. The prediction was written into the config header before the run, and all
+of it landed: 42× the gifts, fewer berries, and 54 fewer ticks of life. The
+ledger shows what those 355 transfers an episode actually were:
+
+| | unpaid | paid |
+|---|---|---|
+| transfers / episode | 11.1 | 355.2 |
+| ticks spent giving | 0.4–1.5% | 16–20% |
+| reciprocity | 0.851 | 0.942 |
+| gifted food eaten within 50 ticks | 56% | **5%** |
+| gifted material delivered within 50 ticks | 3% | **0%** |
+
+Every agent gives and receives roughly equally and ends net flat, and almost
+nothing handed over is ever used — berries circulating between neighbours for the
+reward, while the population harvests less and starves sooner. That is the M3
+theft ablation again with a bigger multiplier, and the contrast with M4 is the
+whole lesson: paying for construction bought an outcome because a shelter really
+does reduce the drain; paying for gifts bought motion because a transfer creates
+nothing.
+
 ## Configuration
 
 Everything tunable lives in `config/default.yaml` — world size, hunger rates,
@@ -363,11 +446,13 @@ a cooldown. Agents have `hunger` (0–100), `food_carried`, and an `alive` flag.
 Note that `hunger` counts *down*: it starts at 100, drains every tick, and `<= 0`
 is death. It is a satiety meter despite the name (which the brief fixed).
 
-**Actions** (10, discrete): eight compass directions, `idle`, `gather`, plus
-`steal` as an 11th in Milestone 3. Eating is automatic when hunger drops below the
-threshold and the agent is carrying food. That is a deliberate choice — see
-`sim/world.py` for why an explicit eat action would have paid agents to starve
-themselves.
+**Actions** (10, discrete): eight compass directions, `idle`, `gather`. Later
+milestones append and never insert, so an early checkpoint keeps its meaning:
+`steal` is the 11th (M3), `chop`/`mine`/`build` the 12th–14th (M4), and
+`give_food`/`give_material` the 15th–16th (M5). Eating is automatic when hunger
+drops below the threshold and the agent is carrying food. That is a deliberate
+choice — see `sim/world.py` for why an explicit eat action would have paid agents
+to starve themselves.
 
 **Observations** (26 floats, egocentric, all in [-1, 1]): own hunger and food;
 the four nearest bushes as `(dx, dz, berries)`; the three nearest living agents
@@ -378,6 +463,12 @@ coordinates, so nothing can be memorised — only navigated.
 only the agent closest to a bush may harvest it, and agents can rob a neighbour
 who is carrying berries. Stealing pays **no** reward — it has to be worth taking
 for the food alone.
+
+**Exchange** (Milestone 5, off by default): an agent can hand one unit to the
+nearest neighbour in reach with room for it. Like theft it pays nothing, and like
+theft it moves things rather than making them. The giver picks *when* and *what*,
+never *who* — the recipient is whoever is standing closest, so positioning is the
+targeting mechanism.
 
 **Reward:** `+0.01` per tick alive, `+1.0` per gather, `+2.0` for eating scaled
 by how hungry, `-10.0` on death. Nothing else. In particular there is no reward
@@ -398,11 +489,14 @@ treated as truncation — bootstrapped from `V(final_obs)` — rather than as de
 config/default.yaml   every tunable (the M1/M2 world)
 config/scarce.yaml    supply cut to meet demand
 config/m3.yaml        + contested bushes and stealing
+config/m4*.yaml       + wood, stone, shelter, night (and the shaping ablations)
+config/m5.yaml        + giving, with the paid-gift ablation beside it
 sim/world.py          environment, tick order, resources
 sim/agents.py         agent state, action space, observation construction
 sim/policy.py         the networks (shared + per-agent), plus reference policies
 sim/ppo.py            the training algorithm
 sim/divergence.py     per-agent behavioural divergence analysis (M2)
+sim/exchange.py       the transfer ledger and its economics (M5)
 sim/replay.py         replay schema (versioned) and the viewer manifest
 sim/metrics.py        aggregation, CSV, console table
 sim/train.py          training CLI
@@ -411,6 +505,8 @@ viewer/index.html     the replay viewer (static, no build step)
 viewer/main.js
 viewer/divergence.html  the behavioural-divergence view (M2)
 viewer/divergence.js
+viewer/exchange.html    the transfer-ledger view (M5)
+viewer/exchange.js
 tests/
 ```
 
