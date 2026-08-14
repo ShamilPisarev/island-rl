@@ -204,3 +204,17 @@ def test_construction_replay_is_v2_with_material_blocks(cfg):
     assert d1["schema_version"] == 1
     assert len(d1["ticks"][0]["a"][0]) == 6
     assert "trees" not in d1
+
+
+def test_v2_world_block_carries_the_shelter_rules(cfg):
+    """The viewer draws protection from these, so they must travel with the
+    replay rather than being assumed."""
+    from sim.config import load_config
+
+    for name, expected in (("config/m4b.yaml", False), ("config/m4c.yaml", True)):
+        m4 = load_config(name).replace(**{"world.max_ticks": 20})
+        world = record_episode(m4, seed=1, act_fn=random_actor(0, 6),
+                               label="w", source="fake").to_dict()["world"]
+        assert world["partial_shelter"] is expected
+        assert world["shelter_radius"] == m4.construction.shelter_radius
+        assert world["night_cycle"] == m4.construction.night_cycle

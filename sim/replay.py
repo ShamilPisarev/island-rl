@@ -184,6 +184,7 @@ class ReplayRecorder:
                 "night_cycle": cc.night_cycle,
                 "night_fraction": cc.night_fraction,
                 "shelter_radius": cc.shelter_radius,
+                "partial_shelter": cc.partial_shelter,
                 "site_wood_cost": cc.site_wood_cost,
                 "site_stone_cost": cc.site_stone_cost,
                 "material_capacity": cc.material_capacity,

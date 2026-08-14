@@ -548,8 +548,12 @@ function applyTick(t) {
       site.walls.position.y = 1.25 * Math.max(progress, 0.05);   // grow upward
       site.roof.visible = done;
       site.roof.position.y = 2.5 * progress + 0.9;
-      site.halo.material.opacity = done ? night * 0.35 : 0;
-      site.lamp.intensity = done ? night * 1.4 : 0;
+      // Halo and hearth show how much protection this site actually gives. With
+      // partial_shelter a half-built wall really does shelter you halfway, so
+      // drawing nothing until completion would be the viewer telling a lie.
+      const protection = wcfg.partial_shelter ? progress : (done ? 1 : 0);
+      site.halo.material.opacity = night * 0.35 * protection;
+      site.lamp.intensity = night * 1.4 * protection;
     }
     applyNight(night);
   } else {
