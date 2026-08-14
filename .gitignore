@@ -16,3 +16,6 @@ viewer/reports/*
 !viewer/reports/.gitkeep
 
 .DS_Store
+
+# local scratch helpers
+_*.py
