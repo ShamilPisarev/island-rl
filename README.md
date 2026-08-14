@@ -208,6 +208,39 @@ future milestone wanting a survival signal needs a harder world first. And
 brain already score 0.67 bits on it, because they spawn apart and each heads for
 the nearest cluster. Action divergence is the number that clears its control.
 
+### Milestone 3 — competition
+
+Food supply cut to match demand, only the closest agent may harvest a bush, and
+agents can rob each other. Twenty episodes on `config/m3.yaml`:
+
+| policy | mean lifespan | vs random | deaths/ep | steals/ep |
+|---|---|---|---|---|
+| random actions | 223.0 | 1.00× | 5.85 | 0 |
+| **learned (forked from M2)** | **452.1** | **2.03×** | 3.40 | 28.9 |
+| learned (from scratch) | 223.3 | 1.00× | 5.95 | 0.1 |
+| scripted forager | 495.5 | 2.22× | 2.20 | 0 |
+| scripted thief | 553.3 | 2.48× | 1.45 | 1099.3 |
+
+Three findings, two of them negative and worth stating plainly.
+
+**Theft did not emerge.** Stealing pays no reward by design, and PPO never found
+it — 29 steals an episode against the scripted thief's ~1100, finishing below both
+scripted references. Theft is clearly *worth* having (the thief buys 58 ticks of
+life and a death per episode); the problem is credit assignment. Steal → carry →
+auto-eat later → don't starve cannot compete with the +1.0 a gather pays now.
+`config/m3_shaped.yaml` tests the fix by paying for theft, as an explicitly
+labelled bootstrap.
+
+**The scarce world cannot be learned from scratch.** A from-scratch run lands on
+exactly the random baseline after the full 7.4M steps. M3 only works because M1
+and M2 transferred competence into it — the milestone chain is load-bearing.
+
+**Competition produced convergence, not partitioning.** Territory divergence
+*fell* (0.908 → 0.363): with six bushes instead of twenty, every agent wants the
+same ground. Territoriality appeared as inequality instead — lifespan spread went
+from 0 to 144 ticks, a dominant pair holding bushes 1.5 units away and living ~390
+ticks while the excluded sit 3–5 units out and starve around 250.
+
 ## Configuration
 
 Everything tunable lives in `config/default.yaml` — world size, hunger rates,
