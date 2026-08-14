@@ -37,7 +37,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .agents import ACTION_NAMES, GATHER, IDLE, N_ACTIONS, N_MOVE_ACTIONS
+from .agents import GATHER, IDLE, N_MOVE_ACTIONS, STEAL, action_names, num_actions
 from .config import Config, load_config
 from .replay import agent_color
 from .world import World
@@ -64,6 +64,13 @@ class AgentBehaviour:
     mean_dist_to_nearest_bush: float = 0.0
     time_in_gather_range: float = 0.0
     mean_radius: float = 0.0
+    # Milestone 3. Zero throughout when competition is disabled.
+    steal_share: float = 0.0
+    steal_attempts: int = 0
+    steal_successes: int = 0
+    steal_success_rate: float = 0.0
+    times_robbed: int = 0
+    contests_lost: int = 0
     territory: list[list[float]] = field(default_factory=list)
 
 
@@ -103,8 +110,12 @@ def analyse(cfg: Config, act_fn: Callable[[np.ndarray], np.ndarray],
     radius = cfg.world.island_radius
     edges = np.linspace(-radius, radius, TERRITORY_BINS + 1)
 
-    action_counts = np.zeros((n, N_ACTIONS), dtype=np.int64)
+    names = action_names(cfg)
+    action_counts = np.zeros((n, num_actions(cfg)), dtype=np.int64)
     gather_success = np.zeros(n, dtype=np.int64)
+    steal_success = np.zeros(n, dtype=np.int64)
+    times_robbed = np.zeros(n, dtype=np.int64)
+    contests_lost = np.zeros(n, dtype=np.int64)
     territory = np.zeros((n, TERRITORY_BINS, TERRITORY_BINS), dtype=np.float64)
     dist_sum = np.zeros(n)
     in_range = np.zeros(n, dtype=np.int64)
@@ -142,6 +153,11 @@ def analyse(cfg: Config, act_fn: Callable[[np.ndarray], np.ndarray],
 
             result = world.step(actions)
             gather_success += result.gathered
+            if result.stole.size:
+                steal_success += result.stole
+                times_robbed += result.robbed
+            if result.contested.size:
+                contests_lost += result.contested
             obs = result.obs
             if result.episode_done:
                 break
@@ -154,6 +170,7 @@ def analyse(cfg: Config, act_fn: Callable[[np.ndarray], np.ndarray],
         total = max(int(action_counts[i].sum()), 1)
         moves = int(action_counts[i, :N_MOVE_ACTIONS].sum())
         attempts = int(action_counts[i, GATHER])
+        steal_attempts = int(action_counts[i, STEAL]) if action_counts.shape[1] > STEAL else 0
         heat = territory[i] / max(territory[i].sum(), 1.0)
         behaviours.append(AgentBehaviour(
             agent=i,
@@ -162,7 +179,7 @@ def analyse(cfg: Config, act_fn: Callable[[np.ndarray], np.ndarray],
             deaths=int(deaths[i]),
             action_counts=[int(v) for v in action_counts[i]],
             action_mix={name: float(action_counts[i, k]) / total
-                        for k, name in enumerate(ACTION_NAMES)},
+                        for k, name in enumerate(names)},
             gather_share=attempts / total,
             travel_share=moves / total,
             idle_share=float(action_counts[i, IDLE]) / total,
@@ -172,6 +189,12 @@ def analyse(cfg: Config, act_fn: Callable[[np.ndarray], np.ndarray],
             mean_dist_to_nearest_bush=float(dist_sum[i] / max(ticks_alive[i], 1)),
             time_in_gather_range=float(in_range[i] / max(ticks_alive[i], 1)),
             mean_radius=float(radius_sum[i] / max(ticks_alive[i], 1)),
+            steal_share=steal_attempts / total,
+            steal_attempts=steal_attempts,
+            steal_successes=int(steal_success[i]),
+            steal_success_rate=(steal_success[i] / steal_attempts) if steal_attempts else 0.0,
+            times_robbed=int(times_robbed[i]),
+            contests_lost=int(contests_lost[i]),
             territory=[[float(v) for v in row] for row in heat],
         ))
 
@@ -183,9 +206,13 @@ def analyse(cfg: Config, act_fn: Callable[[np.ndarray], np.ndarray],
         "episodes": episodes,
         "seed": seed,
         "fixed_map": fixed_map,
+        "competition": {
+            "contest_bushes": cfg.competition.contest_bushes,
+            "enable_steal": cfg.competition.enable_steal,
+        },
         "island_radius": cfg.world.island_radius,
         "territory_bins": TERRITORY_BINS,
-        "action_names": list(ACTION_NAMES),
+        "action_names": list(names),
         "num_agents": n,
         # Same colours the replay viewer assigns, so an agent looks like itself
         # in both views.
@@ -231,7 +258,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--config", default=None)
-    parser.add_argument("--policy", choices=["learned", "random", "greedy"], default=None)
+    parser.add_argument("--policy", choices=["learned", "random", "greedy", "thief"], default=None)
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--seed", type=int, default=10_000)
     parser.add_argument("--device", default="cpu")

@@ -1,0 +1,31 @@
+# Milestone 3 — competition.
+#
+# The scarce world plus the three things that make bushes genuinely contested:
+#
+#   contest_bushes           only one agent may take from a bush per tick, so
+#                            standing on a bush now denies it to everyone else.
+#                            Losing the race costs the tick.
+#   enable_steal             an 11th action: take one berry from a neighbour
+#                            within steal_radius who is carrying some.
+#   observe_neighbour_food   neighbours' carried food joins the observation
+#                            (28 -> 29 dims). Without it a policy cannot tell a
+#                            loaded neighbour from an empty one, so it could only
+#                            ever learn "rob at random" -- which looks like the
+#                            behaviour we are testing for without being it.
+#
+# NO NEW REWARD TERMS, per the brief. In particular a successful steal pays
+# nothing: gathering pays +1.0, theft pays 0. Theft has to earn its keep purely
+# through the food it yields and the eating that food enables. That deliberately
+# makes it the harder option, which is the point -- if robbery still emerges, it
+# emerged from survival pressure rather than from us paying for it.
+#
+# The `scripted thief` baseline (policy.greedy_thief_actions) shows what
+# opportunistic theft is worth to a hand-written controller, for comparison.
+
+extends: scarce.yaml
+
+competition:
+  contest_bushes: true
+  enable_steal: true
+  steal_radius: 2.5
+  observe_neighbour_food: true

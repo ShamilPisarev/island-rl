@@ -18,6 +18,21 @@ const STAT_COLUMNS = [
   { key: 'mean_radius', label: 'radius', digits: 1 },
 ];
 
+// Milestone 3 only: shown when the report says stealing was enabled.
+const STEAL_COLUMNS = [
+  { key: 'steal_share', label: 'steal %', digits: 1, pct: true },
+  { key: 'steal_success_rate', label: 'theft hit %', digits: 1, pct: true },
+  { key: 'steal_successes', label: 'stole', digits: 0 },
+  { key: 'times_robbed', label: 'robbed', digits: 0 },
+  { key: 'contests_lost', label: 'lost races', digits: 0 },
+];
+
+function statColumns(report) {
+  return report.competition?.enable_steal
+    ? [...STAT_COLUMNS, ...STEAL_COLUMNS]
+    : STAT_COLUMNS;
+}
+
 function fail(message) {
   $('empty').hidden = false;
   $('content').hidden = true;
@@ -49,8 +64,8 @@ function render(report) {
     `${report.episodes} episodes · seed ${report.seed}`;
 
   renderKpis(report);
-  renderStats(agents, colors, report.policy_mode);
-  renderMix(agents, colors);
+  renderStats(agents, colors, report.policy_mode, statColumns(report));
+  renderMix(agents, colors, !!report.competition?.enable_steal);
   renderTerritory(report, colors);
   renderMatrices(report, colors);
 
@@ -88,7 +103,7 @@ const SPREAD_NOTE =
   'answer to whether these agents are doing different things. Hit rate is the share of ' +
   '<code>gather</code> actions that actually took a berry.';
 
-function renderStats(agents, colors, mode) {
+function renderStats(agents, colors, mode, columns) {
   // A shared-brain report is the control, not the experiment; saying otherwise
   // would invite reading its (near-zero) divergence as a finding about six brains.
   $('behaviourNote').innerHTML = (mode === 'individual'
@@ -98,16 +113,16 @@ function renderStats(agents, colors, mode) {
       'is the control: whatever spread appears here is spawn position and sampling noise, ' +
       'not specialisation. ') + SPREAD_NOTE;
 
-  const value = (a, col) => a[col.key] * (col.pct ? 100 : 1);
+  const value = (a, col) => (a[col.key] ?? 0) * (col.pct ? 100 : 1);
   const head = `<thead><tr><th class="agent">agent</th>${
-    STAT_COLUMNS.map((c) => `<th>${c.label}</th>`).join('')}</tr></thead>`;
+    columns.map((c) => `<th>${c.label}</th>`).join('')}</tr></thead>`;
 
   const rows = agents.map((a, i) => `<tr>
     <td class="agent"><span class="swatch" style="background:${colors[i]}"></span>${a.agent}</td>
-    ${STAT_COLUMNS.map((c) => `<td>${value(a, c).toFixed(c.digits)}</td>`).join('')}
+    ${columns.map((c) => `<td>${value(a, c).toFixed(c.digits)}</td>`).join('')}
   </tr>`).join('');
 
-  const spread = STAT_COLUMNS.map((c) => {
+  const spread = columns.map((c) => {
     const vals = agents.map((a) => value(a, c));
     return `<td class="spread">${(Math.max(...vals) - Math.min(...vals)).toFixed(c.digits)}</td>`;
   }).join('');
@@ -116,17 +131,31 @@ function renderStats(agents, colors, mode) {
     <tr><td class="agent spread">spread</td>${spread}</tr></tbody>`;
 }
 
-function renderMix(agents, colors) {
+function renderMix(agents, colors, showSteal) {
   $('mix').innerHTML = agents.map((a, i) => {
     const g = a.gather_share * 100, t = a.travel_share * 100, idle = a.idle_share * 100;
+    const s = (a.steal_share ?? 0) * 100;
+    const title = `gather ${g.toFixed(1)}% · travel ${t.toFixed(1)}% · idle ${idle.toFixed(1)}%` +
+      (showSteal ? ` · steal ${s.toFixed(1)}%` : '');
     return `<div class="mixrow">
       <div><span class="swatch" style="background:${colors[i]}"></span>agent ${a.agent}</div>
-      <div class="mixbar" title="gather ${g.toFixed(1)}% · travel ${t.toFixed(1)}% · idle ${idle.toFixed(1)}%">
+      <div class="mixbar" title="${title}">
         <div style="width:${g}%;background:#6ec46e"></div>
         <div style="width:${t}%;background:#6fc3df"></div>
         <div style="width:${idle}%;background:#7c8b9c"></div>
+        ${showSteal ? `<div style="width:${s}%;background:#e0563c"></div>` : ''}
       </div></div>`;
   }).join('');
+  const legend = document.querySelector('.legend');
+  const stealLegend = document.getElementById('stealLegend');
+  if (showSteal && !stealLegend) {
+    const span = document.createElement('span');
+    span.id = 'stealLegend';
+    span.innerHTML = '<i style="background:#e0563c"></i>steal';
+    legend.appendChild(span);
+  } else if (!showSteal && stealLegend) {
+    stealLegend.remove();
+  }
 }
 
 // --- territory heatmaps -----------------------------------------------------

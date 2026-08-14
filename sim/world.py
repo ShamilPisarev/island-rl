@@ -29,6 +29,7 @@ from .agents import (
     IDLE,
     MOVE_VECTORS,
     N_MOVE_ACTIONS,
+    STEAL,
     AgentPool,
     build_observations,
     observation_dim,
@@ -53,6 +54,9 @@ class StepResult:
     truncated: bool
     gathered: np.ndarray
     ate: np.ndarray
+    stole: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    robbed: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    contested: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
 
 
 @dataclass
@@ -64,6 +68,8 @@ class EpisodeStats:
     mean_lifespan: float = 0.0
     mean_final_hunger: float = 0.0
     survivors: int = 0
+    steals: int = 0
+    contests_lost: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -137,6 +143,9 @@ class World:
         self._alive_ticks = np.zeros(cfg.world.num_agents, dtype=np.int64)
         self._gathered = np.zeros(cfg.world.num_agents, dtype=np.int64)
         self._meals = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self._stole = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self._robbed = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self._contested = np.zeros(cfg.world.num_agents, dtype=np.int64)
         return self.observations()
 
     # --- stepping ---------------------------------------------------------
@@ -176,18 +185,52 @@ class World:
                 pool.z *= shrink
 
         # 1b. gathering (few agents, and the branchy logic is clearer as a loop)
+        claimed: set[int] = set()
+        contested = np.zeros(n, dtype=np.int64)
         for i in np.flatnonzero(acted & (actions == GATHER)):
             if pool.food[i] >= cfg.food.capacity:
                 continue
             d2 = (self.bush_x - pool.x[i]) ** 2 + (self.bush_z - pool.z[i]) ** 2
-            candidates = np.flatnonzero((d2 <= cfg.bushes.gather_radius ** 2) & (self.bush_berries > 0))
+            in_reach = (d2 <= cfg.bushes.gather_radius ** 2) & (self.bush_berries > 0)
+            candidates = np.flatnonzero(in_reach)
             if candidates.size == 0:
                 continue
-            target = candidates[np.argmin(d2[candidates])]
+            target = int(candidates[np.argmin(d2[candidates])])
+            if cfg.competition.contest_bushes and target in claimed:
+                # Someone earlier in agent order already took this bush's berry
+                # this tick. Losing the race costs the tick, which is what makes a
+                # bush worth holding rather than merely visiting.
+                contested[i] = 1
+                continue
+            claimed.add(target)
             self.bush_berries[target] -= 1
             pool.food[i] += 1
             rewards[i] += cfg.reward.gather
             gathered[i] = 1
+
+        # 1c. stealing (Milestone 3). Deliberately pays NO reward: the brief asks
+        #     for no reward terms beyond survival, so theft has to earn its place
+        #     through the food it yields and the eating that food enables. Paying
+        #     the gather bonus for a successful robbery would be rewarding
+        #     aggression directly, which is the thing we want to avoid asserting.
+        stole = np.zeros(n, dtype=np.int64)
+        robbed = np.zeros(n, dtype=np.int64)
+        if cfg.competition.enable_steal:
+            for i in np.flatnonzero(acted & (actions == STEAL)):
+                if pool.food[i] >= cfg.food.capacity:
+                    continue
+                d2 = (pool.x - pool.x[i]) ** 2 + (pool.z - pool.z[i]) ** 2
+                victims = np.flatnonzero(
+                    (d2 <= cfg.competition.steal_radius ** 2) & pool.alive & (pool.food > 0)
+                )
+                victims = victims[victims != i]
+                if victims.size == 0:
+                    continue
+                victim = int(victims[np.argmin(d2[victims])])
+                pool.food[victim] -= 1
+                pool.food[i] += 1
+                stole[i] = 1
+                robbed[victim] = 1
 
         # 2. hunger drain
         pool.hunger = np.where(acted, pool.hunger - cfg.hunger.drain_per_tick, pool.hunger)
@@ -219,6 +262,9 @@ class World:
         rewards += np.where(survived, cfg.reward.alive_per_tick, 0.0)
         self._alive_ticks += survived.astype(np.int64)
         self._gathered += gathered
+        self._stole += stole
+        self._robbed += robbed
+        self._contested += contested
 
         # 6. bush regrowth: a depleted bush ticks back up one berry at a time
         below = self.bush_berries < cfg.bushes.capacity
@@ -241,6 +287,9 @@ class World:
             truncated=truncated and not all_dead,
             gathered=gathered,
             ate=ate,
+            stole=stole,
+            robbed=robbed,
+            contested=contested,
         )
 
     # --- reporting --------------------------------------------------------
@@ -260,6 +309,8 @@ class World:
             mean_lifespan=float(self._alive_ticks.mean()),
             mean_final_hunger=float(pool.hunger.mean()),
             survivors=int(pool.alive.sum()),
+            steals=int(self._stole.sum()),
+            contests_lost=int(self._contested.sum()),
         )
 
 

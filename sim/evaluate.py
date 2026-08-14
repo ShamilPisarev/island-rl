@@ -18,12 +18,13 @@ from typing import Callable
 import numpy as np
 import torch
 
-from .agents import observation_dim
+from .agents import num_actions, observation_dim
 from .config import Config, config_from_dict, load_config
 from .metrics import EvalResult
 from .policy import (
     Brain,
     greedy_forager_actions,
+    greedy_thief_actions,
     policy_from_config_dict,
     random_actions,
 )
@@ -77,9 +78,12 @@ def make_act_fn(kind: str, cfg: Config, policy: Brain | None,
                 seed: int, deterministic: bool = False, device: str = "cpu") -> ActFn:
     if kind == "random":
         rng = np.random.default_rng(seed)
-        return lambda obs: random_actions(obs, rng)
+        n_actions = num_actions(cfg)
+        return lambda obs: random_actions(obs, rng, n_actions)
     if kind == "greedy":
         return lambda obs: greedy_forager_actions(obs, cfg)
+    if kind == "thief":
+        return lambda obs: greedy_thief_actions(obs, cfg)
     if policy is None:
         raise ValueError("a checkpoint is required to evaluate a learned policy")
     return policy_act_fn(policy, deterministic=deterministic, device=device)
@@ -106,11 +110,20 @@ def evaluate(cfg: Config, act_fn: ActFn, episodes: int, seed: int, label: str) -
 
 
 def baselines(cfg: Config, episodes: int, seed: int) -> list[EvalResult]:
-    """Random floor and scripted ceiling, on the same islands as everything else."""
-    return [
+    """Random floor and scripted reference, on the same islands as everything else.
+
+    When stealing is enabled the opportunistic thief joins them, so the learned
+    policy can be read against both an honest and a dishonest reference.
+    """
+    results = [
         evaluate(cfg, make_act_fn("random", cfg, None, seed), episodes, seed, "random actions"),
         evaluate(cfg, make_act_fn("greedy", cfg, None, seed), episodes, seed, "scripted forager"),
     ]
+    if cfg.competition.enable_steal and cfg.competition.observe_neighbour_food:
+        results.append(
+            evaluate(cfg, make_act_fn("thief", cfg, None, seed), episodes, seed, "scripted thief")
+        )
+    return results
 
 
 def main() -> None:
@@ -118,7 +131,7 @@ def main() -> None:
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--config", default=None,
                         help="ignored when --checkpoint is given; the checkpoint carries its own")
-    parser.add_argument("--policy", choices=["learned", "random", "greedy"], default=None)
+    parser.add_argument("--policy", choices=["learned", "random", "greedy", "thief"], default=None)
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--seed", type=int, default=10_000,
                         help="evaluation seeds are offset from training seeds by default")

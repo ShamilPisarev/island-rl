@@ -49,7 +49,7 @@ from typing import Any
 
 import numpy as np
 
-from .agents import ACTION_NAMES, IDLE
+from .agents import IDLE, action_names
 from .config import Config
 from .world import World
 
@@ -134,7 +134,7 @@ class ReplayRecorder:
                 "bush_capacity": cfg.bushes.capacity,
                 "gather_radius": cfg.bushes.gather_radius,
             },
-            "action_names": list(ACTION_NAMES),
+            "action_names": list(action_names(cfg)),
             "agents": [{"id": i, "color": agent_color(i, n)} for i in range(n)],
             "bushes": self.bushes,
             "tick_fields": {"agent": AGENT_FIELDS, "bush": BUSH_FIELDS},

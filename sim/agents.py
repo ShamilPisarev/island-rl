@@ -15,16 +15,31 @@ from .config import Config
 
 # --- Action space -----------------------------------------------------------
 # 0-7: move one `move_step` in a compass direction. 8: idle. 9: gather.
+# 10: steal, present only when `competition.enable_steal` is on (Milestone 3).
 # Compass convention: index 0 is +z ("north"), angle increases clockwise through
 # +x ("east"), matching the viewer's world axes. All eight directions are unit
 # vectors, so diagonal movement is not secretly faster.
-ACTION_NAMES: tuple[str, ...] = (
+#
+# Steal is appended rather than inserted so every earlier action keeps its index:
+# an M1 or M2 checkpoint means the same thing in an M3 world.
+BASE_ACTION_NAMES: tuple[str, ...] = (
     "N", "NE", "E", "SE", "S", "SW", "W", "NW", "idle", "gather",
 )
+ACTION_NAMES: tuple[str, ...] = BASE_ACTION_NAMES
+STEAL_ACTION_NAMES: tuple[str, ...] = BASE_ACTION_NAMES + ("steal",)
 N_MOVE_ACTIONS = 8
 IDLE = 8
 GATHER = 9
-N_ACTIONS = len(ACTION_NAMES)
+STEAL = 10
+N_ACTIONS = len(BASE_ACTION_NAMES)
+
+
+def action_names(cfg: Config) -> tuple[str, ...]:
+    return STEAL_ACTION_NAMES if cfg.competition.enable_steal else BASE_ACTION_NAMES
+
+
+def num_actions(cfg: Config) -> int:
+    return len(action_names(cfg))
 
 _ANGLES = np.arange(N_MOVE_ACTIONS) * (np.pi / 4.0)
 MOVE_VECTORS: np.ndarray = np.stack([np.sin(_ANGLES), np.cos(_ANGLES)], axis=1)
@@ -62,9 +77,21 @@ class AgentPool:
         )
 
 
+def neighbour_channels(cfg: Config) -> int:
+    """3 per neighbour (dx, dz, hunger), or 4 with their carried food.
+
+    Milestone 3 needs the fourth: stealing from a neighbour who is carrying
+    nothing is a wasted tick, and a policy that cannot see who has food cannot
+    learn to rob selectively -- it could only learn "rob at random", which would
+    look like the behaviour without being it.
+    """
+    return 4 if cfg.competition.observe_neighbour_food else 3
+
+
 def observation_dim(cfg: Config) -> int:
-    """2 own scalars + K_b bushes x 3 + K_a agents x 3 + 3 edge features."""
-    return 2 + 3 * cfg.observation.k_bushes + 3 * cfg.observation.k_agents + 3
+    """2 own scalars + K_b bushes x 3 + K_a agents x (3 or 4) + 3 edge features."""
+    return (2 + 3 * cfg.observation.k_bushes
+            + neighbour_channels(cfg) * cfg.observation.k_agents + 3)
 
 
 def _k_nearest(dist2: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
@@ -148,13 +175,16 @@ def build_observations(
     agent_d2[:, ~alive] = np.inf          # the dead are not neighbours
     np.fill_diagonal(agent_d2, np.inf)    # nor is oneself
     idx, valid = _k_nearest(agent_d2, obs_cfg.k_agents)
+    channels = neighbour_channels(cfg)
     for j in range(obs_cfg.k_agents):
         take = idx[:, j]
         ok = valid[:, j]
         out[:, col + 0] = np.where(ok, np.clip(agent_dx[np.arange(n), take] / scale, -1.0, 1.0), 0.0)
         out[:, col + 1] = np.where(ok, np.clip(agent_dz[np.arange(n), take] / scale, -1.0, 1.0), 0.0)
         out[:, col + 2] = np.where(ok, pool.hunger[take] / cfg.hunger.max, 0.0)
-        col += 3
+        if channels == 4:
+            out[:, col + 3] = np.where(ok, pool.food[take] / max(cfg.food.capacity, 1), 0.0)
+        col += channels
 
     # --- shoreline
     r = np.sqrt(pool.x**2 + pool.z**2)

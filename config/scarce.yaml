@@ -1,0 +1,35 @@
+# The Milestone 3 world: same island, genuinely scarce food.
+#
+# Milestones 1 and 2 ran on config/default.yaml, where berry supply was roughly
+# 7x what six agents actually eat. Everything survived, every policy pinned to the
+# 600-tick ceiling, and survival stopped being able to register any effect at all
+# -- which makes it useless as a measure of whether competition changes anything.
+#
+# The numbers below bring supply down to meet demand:
+#
+#   demand  6 agents x ~8 meals over 600 ticks       = ~48 berries
+#   supply  6 bushes x 2 capacity                    =  12 initial
+#           + 6 bushes x (600 / 100 regrow)          =  36 regrown
+#                                                      --------------
+#                                                       48 berries
+#
+# Measured on this config (12 episodes): a random walk survives ~227 ticks, and
+# the hand-written greedy forager -- which ran the clock out on default.yaml --
+# manages ~504 and still loses 2.4 of its 6 agents. That gap is the room
+# Milestone 3 needs.
+#
+# Six bushes for six agents is also deliberate: if territorial behaviour is going
+# to appear anywhere, it is here, where there is exactly one bush each.
+#
+# `extends` inherits everything from default.yaml and overrides only what is
+# restated, so this file cannot drift away from the base config.
+
+extends: default.yaml
+
+bushes:
+  num_clusters: 3
+  bushes_per_cluster: 2      # 6 bushes total, vs 20 on default.yaml
+  capacity: 2
+  initial_berries: 2
+  regrow_ticks: 100
+  cluster_std: 4.0           # tighter blobs: a cluster is a place worth holding

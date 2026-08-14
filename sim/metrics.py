@@ -40,6 +40,8 @@ class UpdateMetrics:
     berries_gathered: float | None = None
     mean_final_hunger: float | None = None
     survivors: float | None = None
+    steals: float | None = None
+    contests_lost: float | None = None
 
     # optimisation metrics
     policy_loss: float = 0.0
@@ -60,6 +62,7 @@ def summarise_episodes(episodes: Iterable[EpisodeStats]) -> dict[str, float | No
         return {
             "episodes": 0, "mean_lifespan": None, "deaths_per_episode": None,
             "berries_gathered": None, "mean_final_hunger": None, "survivors": None,
+            "steals": None, "contests_lost": None,
         }
     return {
         "episodes": len(episodes),
@@ -68,6 +71,8 @@ def summarise_episodes(episodes: Iterable[EpisodeStats]) -> dict[str, float | No
         "berries_gathered": float(np.mean([e.berries_gathered for e in episodes])),
         "mean_final_hunger": float(np.mean([e.mean_final_hunger for e in episodes])),
         "survivors": float(np.mean([e.survivors for e in episodes])),
+        "steals": float(np.mean([e.steals for e in episodes])),
+        "contests_lost": float(np.mean([e.contests_lost for e in episodes])),
     }
 
 
@@ -95,6 +100,7 @@ class MetricsLogger:
         ("mean_lifespan", "lifespan", "{:>8.1f}"),
         ("deaths_per_episode", "deaths", "{:>6.2f}"),
         ("berries_gathered", "berries", "{:>7.1f}"),
+        ("steals", "steals", "{:>6.1f}"),
         ("mean_final_hunger", "hunger", "{:>6.1f}"),
         ("mean_reward", "rew/step", "{:>8.4f}"),
         ("entropy", "entropy", "{:>7.3f}"),
@@ -170,6 +176,7 @@ class EvalResult:
     mean_final_hunger: float
     survivors: float
     survival_rate: float
+    steals: float = 0.0
 
     @staticmethod
     def from_episodes(label: str, episodes: list[EpisodeStats], max_ticks: int) -> "EvalResult":
@@ -184,6 +191,7 @@ class EvalResult:
             mean_final_hunger=float(np.mean([e.mean_final_hunger for e in episodes])),
             survivors=float(np.mean([e.survivors for e in episodes])),
             survival_rate=float(lifespans.mean() / max_ticks),
+            steals=float(np.mean([e.steals for e in episodes])),
         )
 
     def line(self) -> str:
@@ -191,4 +199,5 @@ class EvalResult:
             f"{self.label:<22} lifespan {self.mean_lifespan:7.1f} +-{self.lifespan_std:5.1f}  "
             f"({self.survival_rate * 100:5.1f}% of episode)  deaths {self.deaths_per_episode:4.2f}  "
             f"berries {self.berries_gathered:6.1f}  final hunger {self.mean_final_hunger:5.1f}"
+            + (f"  steals {self.steals:5.1f}" if self.steals else "")
         )

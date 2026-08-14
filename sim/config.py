@@ -58,6 +58,16 @@ class BushConfig:
 
 
 @dataclass(frozen=True)
+class CompetitionConfig:
+    """Milestone 3. All off by default, so M1/M2 worlds are bit-identical."""
+
+    contest_bushes: bool = False   # only one agent may take from a bush per tick
+    enable_steal: bool = False     # adds an 11th action: take a berry from a neighbour
+    steal_radius: float = 2.5
+    observe_neighbour_food: bool = False  # neighbours' carried food enters the observation
+
+
+@dataclass(frozen=True)
 class ObservationConfig:
     k_bushes: int = 4
     k_agents: int = 3
@@ -115,6 +125,7 @@ class Config:
     hunger: HungerConfig = field(default_factory=HungerConfig)
     food: FoodConfig = field(default_factory=FoodConfig)
     bushes: BushConfig = field(default_factory=BushConfig)
+    competition: CompetitionConfig = field(default_factory=CompetitionConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
@@ -165,6 +176,7 @@ _SECTIONS: dict[str, type] = {
     "hunger": HungerConfig,
     "food": FoodConfig,
     "bushes": BushConfig,
+    "competition": CompetitionConfig,
     "observation": ObservationConfig,
     "reward": RewardConfig,
     "policy": PolicyConfig,
@@ -175,6 +187,7 @@ _SECTIONS: dict[str, type] = {
 
 def config_from_dict(data: dict[str, Any]) -> Config:
     data = dict(data)
+    data.pop("extends", None)  # resolved by load_config before we get here
     sections = {name: _build(cls, data.pop(name, None)) for name, cls in _SECTIONS.items()}
     unknown = set(data) - {"seed"}
     if unknown:
@@ -182,8 +195,41 @@ def config_from_dict(data: dict[str, Any]) -> Config:
     return Config(seed=int(data.get("seed", 0)), **sections)
 
 
-def load_config(path: str | Path | None = None) -> Config:
-    path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge ``override`` onto ``base``, leaving both untouched."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _load_raw(path: Path, seen: tuple[Path, ...] = ()) -> dict[str, Any]:
+    """Read a YAML config, resolving a chain of ``extends`` parents.
+
+    A config may name a parent to inherit from::
+
+        extends: default.yaml
+        bushes:
+          capacity: 3
+
+    Only the keys it restates are overridden, so a milestone that changes four
+    numbers says exactly those four and cannot silently drift from the base
+    config. Parent paths are relative to the child's own directory.
+    """
+    path = path.resolve()
+    if path in seen:
+        chain = " -> ".join(p.name for p in (*seen, path))
+        raise ValueError(f"circular config extends: {chain}")
     with open(path, "r") as fh:
         raw = yaml.safe_load(fh) or {}
-    return config_from_dict(raw)
+    parent = raw.get("extends")
+    if not parent:
+        return raw
+    return _deep_merge(_load_raw(path.parent / parent, (*seen, path)), raw)
+
+
+def load_config(path: str | Path | None = None) -> Config:
+    return config_from_dict(_load_raw(Path(path) if path is not None else DEFAULT_CONFIG_PATH))

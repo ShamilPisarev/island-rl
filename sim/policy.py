@@ -31,7 +31,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
-from .agents import GATHER, N_ACTIONS, N_MOVE_ACTIONS
+from .agents import GATHER, N_ACTIONS, N_MOVE_ACTIONS, STEAL, num_actions
 from .config import Config
 
 
@@ -181,15 +181,55 @@ class PolicyGroup(nn.Module):
 Brain = ActorCritic | PolicyGroup
 
 
+def grow_actor_critic(source: ActorCritic, obs_dim: int, n_actions: int) -> ActorCritic:
+    """Copy a trained brain into a wider observation and/or action space.
+
+    Milestone 3 adds an observation channel (neighbours' carried food) and an
+    action (steal), so an M2 checkpoint no longer fits. Retraining from scratch
+    would work but throws away competence that took millions of steps to acquire.
+
+    Instead: copy every existing weight, and initialise the new ones to **zero**.
+    A zeroed input column contributes nothing, and a zeroed action row gives the
+    new action a logit of 0 alongside trained logits, so the grown policy starts
+    out behaving almost exactly like the one it came from and then learns to use
+    what it has been given. (The new action is reachable from the start rather
+    than masked off, which is what lets PPO discover whether it is worth taking.)
+
+    Shrinking is refused: dropping trained weights silently is never what anyone
+    meant.
+    """
+    if obs_dim < source.obs_dim or n_actions < source.n_actions:
+        raise ValueError(
+            f"cannot shrink a policy: source is obs_dim={source.obs_dim}/"
+            f"n_actions={source.n_actions}, target is {obs_dim}/{n_actions}"
+        )
+    grown = ActorCritic(obs_dim, n_actions, source.hidden_sizes)
+    with torch.no_grad():
+        state = source.state_dict()
+        for name, param in grown.state_dict().items():
+            old = state[name]
+            param.zero_()
+            # Copy the old tensor into the top-left corner of the new one.
+            param[tuple(slice(0, s) for s in old.shape)] = old
+    return grown
+
+
+def grow_policy(source: Brain, obs_dim: int, n_actions: int, num_agents: int) -> Brain:
+    """``grow_actor_critic`` for either brain type, preserving the mode."""
+    if isinstance(source, PolicyGroup):
+        return PolicyGroup([grow_actor_critic(p, obs_dim, n_actions) for p in source.policies])
+    return grow_actor_critic(source, obs_dim, n_actions)
+
+
 def build_policy(cfg: Config, obs_dim: int, mode: str | None = None) -> Brain:
     """Build the brain the config asks for. ``mode`` overrides ``cfg.policy.mode``."""
     mode = mode or cfg.policy.mode
-    shared = ActorCritic(obs_dim, N_ACTIONS, cfg.policy.hidden_sizes)
+    n_actions = num_actions(cfg)   # 11 when stealing is enabled (M3), else 10
     if mode == "shared":
-        return shared
+        return ActorCritic(obs_dim, n_actions, cfg.policy.hidden_sizes)
     if mode == "individual":
         return PolicyGroup([
-            ActorCritic(obs_dim, N_ACTIONS, cfg.policy.hidden_sizes)
+            ActorCritic(obs_dim, n_actions, cfg.policy.hidden_sizes)
             for _ in range(cfg.world.num_agents)
         ])
     raise ValueError(f"unknown policy mode {mode!r} (expected 'shared' or 'individual')")
@@ -214,9 +254,10 @@ def policy_from_config_dict(cfg: Config, policy_config: dict) -> Brain:
 # --- reference policies -----------------------------------------------------
 
 
-def random_actions(obs: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """Uniform over all 10 actions. The baseline the brief asks us to report."""
-    return rng.integers(0, N_ACTIONS, size=obs.shape[0])
+def random_actions(obs: np.ndarray, rng: np.random.Generator,
+                   n_actions: int = N_ACTIONS) -> np.ndarray:
+    """Uniform over the action space. The baseline the brief asks us to report."""
+    return rng.integers(0, n_actions, size=obs.shape[0])
 
 
 def greedy_forager_actions(obs: np.ndarray, cfg: Config) -> np.ndarray:
@@ -226,8 +267,8 @@ def greedy_forager_actions(obs: np.ndarray, cfg: Config) -> np.ndarray:
     stop gathering at carrying capacity and idle instead. No memory, no planning.
 
     It reads only the observation -- not world state -- on purpose: if a greedy
-    controller can survive on these 26 numbers, the observation is sufficient for
-    the task, and any failure to learn is the algorithm's fault, not the sensor's.
+    controller can survive on these numbers, the observation is sufficient for the
+    task, and any failure to learn is the algorithm's fault, not the sensor's.
     """
     kb = cfg.observation.k_bushes
     scale = cfg.observation.distance_scale
@@ -253,3 +294,36 @@ def greedy_forager_actions(obs: np.ndarray, cfg: Config) -> np.ndarray:
     actions = np.where(reachable, heading, actions)
     actions = np.where(in_range, GATHER, actions)
     return actions
+
+
+def greedy_thief_actions(obs: np.ndarray, cfg: Config) -> np.ndarray:
+    """The forager, plus: rob a loaded neighbour when one is already in reach.
+
+    The Milestone 3 reference policy. It only ever steals opportunistically -- if a
+    neighbour carrying food is within ``steal_radius`` and the agent has room, take
+    from them instead of walking to a bush. It never chases a victim, so this is a
+    floor on how much theft is worth, not a ceiling.
+
+    Requires ``competition.observe_neighbour_food``: without that channel there is
+    no way to tell a loaded neighbour from an empty one, and "steal at random" is
+    a different behaviour wearing the same name.
+    """
+    if not cfg.competition.enable_steal:
+        return greedy_forager_actions(obs, cfg)
+    if not cfg.competition.observe_neighbour_food:
+        raise ValueError("greedy_thief needs competition.observe_neighbour_food")
+
+    actions = greedy_forager_actions(obs, cfg)
+    n = obs.shape[0]
+    kb, ka = cfg.observation.k_bushes, cfg.observation.k_agents
+    scale = cfg.observation.distance_scale
+
+    start = 2 + 3 * kb
+    neighbours = obs[:, start:start + 4 * ka].reshape(n, ka, 4)
+    loaded = neighbours[:, :, 3] > 0.0
+    reach = np.hypot(neighbours[:, :, 0], neighbours[:, :, 1]) * scale
+    reach = np.where(loaded, reach, np.inf)
+
+    full = obs[:, 1] >= 1.0 - 1e-6
+    can_rob = ~full & (reach.min(axis=1) <= cfg.competition.steal_radius)
+    return np.where(can_rob, STEAL, actions)

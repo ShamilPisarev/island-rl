@@ -22,7 +22,8 @@ import torch
 from .config import Config, load_config
 from .evaluate import baselines, evaluate, load_checkpoint, make_act_fn, policy_act_fn
 from .metrics import MetricsLogger
-from .policy import Brain, PolicyGroup, build_policy
+from .agents import num_actions
+from .policy import Brain, PolicyGroup, build_policy, grow_policy
 from .ppo import PPOTrainer
 from .replay import record_episode
 from .world import VecWorld
@@ -47,22 +48,25 @@ def fork_from_checkpoint(policy: Brain, cfg: Config, obs_dim: int) -> Brain:
     a fresh optimiser) both work.
     """
     source, _, blob = load_checkpoint(cfg.policy.init_from, device=cfg.ppo.device)
-    if source.config_dict()["obs_dim"] != obs_dim:
-        raise ValueError(
-            f"{cfg.policy.init_from} was trained with obs_dim "
-            f"{source.config_dict()['obs_dim']}, this config gives {obs_dim}"
-        )
+    source_cfg = source.config_dict()
+    target_actions = num_actions(cfg)
+    where = f"{cfg.policy.init_from} ({source_cfg['mode']}, update {blob.get('update', '?')})"
+
+    # A later milestone may widen the observation or add an action. Grow into the
+    # new shape with zeroed new weights rather than refusing or retraining blind.
+    if source_cfg["obs_dim"] != obs_dim or source_cfg["n_actions"] != target_actions:
+        source = grow_policy(source, obs_dim, target_actions, cfg.world.num_agents)
+        print(f"grew {where} from obs_dim {source_cfg['obs_dim']}->{obs_dim}, "
+              f"actions {source_cfg['n_actions']}->{target_actions} (new weights zeroed)")
+        where = f"the grown {source_cfg['mode']} policy"
 
     source_mode = source.config_dict()["mode"]
     target_mode = cfg.policy.mode
     if source_mode == "shared" and target_mode == "individual":
-        forked = PolicyGroup.from_shared(source, cfg.world.num_agents)
-        print(f"forked {cfg.policy.init_from} (shared, update {blob.get('update', '?')}) "
-              f"into {cfg.world.num_agents} individual brains")
-        return forked
+        print(f"forked {where} into {cfg.world.num_agents} individual brains")
+        return PolicyGroup.from_shared(source, cfg.world.num_agents)
     if source_mode == target_mode:
-        print(f"warm-started from {cfg.policy.init_from} "
-              f"({source_mode}, update {blob.get('update', '?')})")
+        print(f"warm-started from {where}")
         return source
     raise ValueError(
         f"cannot initialise a '{target_mode}' policy from an '{source_mode}' checkpoint"
