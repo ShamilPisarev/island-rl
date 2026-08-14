@@ -245,6 +245,26 @@ new ones, and the population ends up with less food. The policy learned to steal
 because stealing pays, not because stealing helps. Worth remembering before
 Milestone 4 leans on shaped rewards for construction.
 
+**What actually fixed M3: action masking.** The policy was spending 30% of its
+living ticks firing `gather` and `steal` from positions where they could not
+possibly succeed — a local optimum that survived eight interventions including
+3.3× the training budget. `mask_invalid_actions` hides an action when it cannot
+do anything (the observation says what is there; the mask says what is
+reachable), and with the trap gone:
+
+| | unmasked | masked |
+|---|---|---|
+| mean lifespan | 452.1 | **471.6 (2.11×)** |
+| steals/ep — still unpaid | 28.9 | **115.5** |
+| doomed actions | 30% of ticks | **0%** |
+| gather hit rate | 0.8–3.4% | **50–98%** |
+
+Theft finally emerged *without being paid for*: once `steal` only ever appears
+with a real victim in reach, its true return becomes visible to PPO. The learned
+policy still trails the scripted forager (495.5) — the residual gap lives in
+crowding and exclusion dynamics and is documented as an open problem rather than
+tuned at.
+
 **The scarce world cannot be learned from scratch.** A from-scratch run lands on
 exactly the random baseline after the full 7.4M steps. M3 only works because M1
 and M2 transferred competence into it — the milestone chain is load-bearing.

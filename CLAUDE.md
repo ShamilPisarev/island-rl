@@ -6,19 +6,24 @@ you.
 
 ## Current state
 
-**Milestones 1, 2 and 3 are complete and verified.** M4–M6 have not been started —
-do not start them without reading §3 of the brief, and read the shaping ablation
-below first, because M4 is the milestone that depends on shaped rewards.
+**Milestones 1, 2 and 3 are complete and verified; M4 is built and training.**
+M5–M6 have not been started. Read the shaping ablation and the M4 economy
+sizing notes before touching M4 configs.
 
 - M1: survival + foraging, one shared brain. 1.97× the random baseline, at the
   ceiling set by a hand-written forager.
 - M2: six individual brains forked from the M1 checkpoint and trained
   independently, plus a behavioural-divergence view. Specialisation appeared:
   action divergence is 19× the shared-brain control.
-- M3: scarcity, contested bushes, stealing. 2.03× random, but *below* both
-  scripted references, and theft never emerged without being paid for.
-  Territoriality appeared as inequality rather than as spatial partitioning.
-- `pytest` passes (147 tests).
+- M3: scarcity, contested bushes, stealing. After the action-masking fix:
+  **2.11× random** (471.6), theft emerging *unpaid* at 115 steals/ep, zero doomed
+  actions — still honestly below the scripted forager (495.5). Territoriality
+  appeared as inequality rather than as spatial partitioning. Canonical
+  checkpoint: `checkpoints/m3-masked`.
+- M4: wood/stone/shelter/night mechanics complete with 30 tests, replay schema
+  v2, viewer support, scripted-builder reference (510.5, 2 shelters/ep, 89% of
+  nights indoors). Shaped + unshaped training pair in flight.
+- `pytest` passes (191 tests).
 - Both viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -30,13 +35,20 @@ python -m sim.train --run-name m2 --policy-mode individual \
     --init-from checkpoints/m1/latest.pt
 python -m sim.divergence --checkpoint checkpoints/m2/latest.pt
 
-python -m sim.train --config config/m3.yaml --run-name m3 \
+# the M3 result (masking is what fixed it; see below)
+python -m sim.train --config config/m3_masked.yaml --run-name m3-masked \
     --policy-mode individual --init-from checkpoints/m2/latest.pt
-python -m sim.divergence --checkpoint checkpoints/m3/latest.pt
+python -m sim.divergence --checkpoint checkpoints/m3-masked/latest.pt
 
 # the labelled ablation, not the M3 result
 python -m sim.train --config config/m3_shaped.yaml --run-name m3-shaped \
     --policy-mode individual --init-from checkpoints/m2/latest.pt
+
+# Milestone 4: shaped and its unshaped control, from the M3 checkpoint
+python -m sim.train --config config/m4.yaml --run-name m4 --updates 400 \
+    --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
+python -m sim.train --config config/m4_unshaped.yaml --run-name m4-unshaped \
+    --updates 400 --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
 ```
 
 ## Layout notes
@@ -490,7 +502,46 @@ Two hypotheses were killed outright rather than merely failing to help:
 blocking and no stealing — the pure foraging task — the policy still plateaus at
 ~27 berries against the forager's 38.7. So this is not about M3's mechanics at
 all; it is about foraging in a world where food is far apart, and the failure was
-simply invisible in M1 because food was never far apart.
+simply invisible in M1 because food was never far apart. A 1000-update run
+(3.3× budget) was flat from update 150, so more compute is not the answer either.
+
+### The fix that worked: action masking
+
+`competition.mask_invalid_actions` hides `gather` and `steal` when they cannot
+possibly succeed (no berry in range / no loaded neighbour in reach; moving and
+idling are always available, dead agents keep `idle` so no row is ever fully
+masked). It is not a reward term and not a hint about what is best — the
+observation says what is *there*, the mask says what is *reachable*. The masked
+logits use −1e8 rather than −inf so a fully-masked row cannot mint NaN gradients,
+and PPO stores the rollout masks because the ratio must be computed against the
+behaviour policy, which was masked.
+
+| | unmasked (m3-fork) | masked (m3-masked) |
+|---|---|---|
+| mean lifespan | 452.1 | **471.6 (2.11×)** |
+| deaths / ep | 3.40 | 3.10 |
+| berries / ep | 26.4 | 29.1 |
+| steals / ep — **still unpaid** | 28.9 | **115.5** |
+| doomed gathers (% of ticks) | 17.7% | **0.0%** |
+| gather hit rate | 0.8–3.4% | **50–98%** |
+
+Two things worth reading twice. **Theft finally emerged without being paid for**
+— masking made `steal` only ever appear when a loaded victim is in reach, so its
+empirical return became visible to PPO, and usage rose 4× with `reward.steal`
+still 0.0. And the behavioural profile flipped from stand-and-mash to travel
+(60% → 87% of ticks moving).
+
+Stacking the contested-bush channel and entropy annealing *on top of* masking
+(600 updates, `m3-final`) gave 456.9 — nothing again. **`checkpoints/m3-masked`
+is the canonical M3 checkpoint.**
+
+**The honest residual: 471.6 still trails the scripted forager (495.5) and thief
+(553.3).** The remaining gap is not doomed actions (there are none left), not
+entropy, not budget, not perception of any mechanic we could name. Lifespan
+spread on the fixed map is 307–550: one agent roves at a 98% hit rate while
+others get excluded and starve, so the shortfall lives in the crowding/exclusion
+dynamics. Left as the open problem it is; masking is where principled
+single-change fixes stopped paying.
 
 ## Gotchas (Milestone 3)
 
