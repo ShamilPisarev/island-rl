@@ -27,14 +27,23 @@ BASE_ACTION_NAMES: tuple[str, ...] = (
 )
 ACTION_NAMES: tuple[str, ...] = BASE_ACTION_NAMES
 STEAL_ACTION_NAMES: tuple[str, ...] = BASE_ACTION_NAMES + ("steal",)
+# Milestone 4 appends three more. When construction is enabled the steal slot is
+# always present (inert if enable_steal is false -- an inert steal is already
+# tested behaviour), so CHOP/MINE/BUILD are stable indices that never shift.
+CONSTRUCTION_ACTION_NAMES: tuple[str, ...] = STEAL_ACTION_NAMES + ("chop", "mine", "build")
 N_MOVE_ACTIONS = 8
 IDLE = 8
 GATHER = 9
 STEAL = 10
+CHOP = 11
+MINE = 12
+BUILD = 13
 N_ACTIONS = len(BASE_ACTION_NAMES)
 
 
 def action_names(cfg: Config) -> tuple[str, ...]:
+    if cfg.construction.enabled:
+        return CONSTRUCTION_ACTION_NAMES
     return STEAL_ACTION_NAMES if cfg.competition.enable_steal else BASE_ACTION_NAMES
 
 
@@ -58,6 +67,8 @@ class AgentPool:
     z: np.ndarray
     hunger: np.ndarray
     food: np.ndarray
+    wood: np.ndarray
+    stone: np.ndarray
     alive: np.ndarray
     last_action: np.ndarray
 
@@ -72,9 +83,39 @@ class AgentPool:
             z=np.zeros(num_agents, dtype=np.float64),
             hunger=np.full(num_agents, max_hunger, dtype=np.float64),
             food=np.zeros(num_agents, dtype=np.int64),
+            wood=np.zeros(num_agents, dtype=np.int64),
+            stone=np.zeros(num_agents, dtype=np.int64),
             alive=np.ones(num_agents, dtype=bool),
             last_action=np.full(num_agents, IDLE, dtype=np.int64),
         )
+
+
+@dataclass
+class ConstructionView:
+    """The slice of world state that observations and masks need for Milestone 4.
+
+    A plain data bundle rather than the World itself, so agents.py keeps no
+    dependency on world.py and the tests can fabricate one in three lines.
+    """
+
+    tree_x: np.ndarray
+    tree_z: np.ndarray
+    tree_wood: np.ndarray
+    rock_x: np.ndarray
+    rock_z: np.ndarray
+    rock_stone: np.ndarray
+    site_x: np.ndarray
+    site_z: np.ndarray
+    site_wood_needed: np.ndarray   # remaining, not total
+    site_stone_needed: np.ndarray
+    tick: int
+
+
+def night_phase(tick: int, cfg: Config) -> tuple[float, bool]:
+    """(cycle phase in [0,1), is it night). Night is the last `night_fraction`."""
+    cc = cfg.construction
+    phase = (tick % cc.night_cycle) / cc.night_cycle
+    return phase, phase >= 1.0 - cc.night_fraction
 
 
 def neighbour_channels(cfg: Config) -> int:
@@ -105,9 +146,18 @@ def bush_channels(cfg: Config) -> int:
 
 
 def observation_dim(cfg: Config) -> int:
-    """2 own scalars + K_b bushes x (3 or 4) + K_a agents x (3 or 4) + 3 edge."""
-    return (2 + bush_channels(cfg) * cfg.observation.k_bushes
-            + neighbour_channels(cfg) * cfg.observation.k_agents + 3)
+    """2 own scalars + K_b bushes x (3 or 4) + K_a agents x (3 or 4) + 3 edge,
+    plus the Milestone 4 block when construction is enabled."""
+    dim = (2 + bush_channels(cfg) * cfg.observation.k_bushes
+           + neighbour_channels(cfg) * cfg.observation.k_agents + 3)
+    if cfg.construction.enabled:
+        cc = cfg.construction
+        dim += 2                    # own wood, own stone
+        dim += 3 * cc.k_trees       # dx, dz, wood left
+        dim += 3 * cc.k_rocks       # dx, dz, stone left
+        dim += 4 * cc.k_sites       # dx, dz, progress, complete
+        dim += 2                    # cycle phase, is_night
+    return dim
 
 
 def action_mask(
@@ -116,6 +166,7 @@ def action_mask(
     bush_z: np.ndarray,
     bush_berries: np.ndarray,
     cfg: Config,
+    construction: "ConstructionView | None" = None,
 ) -> np.ndarray:
     """Which actions can possibly do anything, per agent. Shape ``(A, n_actions)``.
 
@@ -153,6 +204,29 @@ def action_mask(
                    & pool.alive[None, :] & (pool.food[None, :] > 0))
         mask[:, STEAL] = has_room & victims.any(axis=1)
 
+    if cfg.construction.enabled and construction is not None:
+        cc = cfg.construction
+        room = (pool.wood + pool.stone) < cc.material_capacity
+
+        def in_reach(ex, ez, stock, radius):
+            if ex.size == 0:
+                return np.zeros(n, dtype=bool)
+            d2 = (ex[None, :] - pool.x[:, None]) ** 2 + (ez[None, :] - pool.z[:, None]) ** 2
+            return ((d2 <= radius ** 2) & (stock[None, :] > 0)).any(axis=1)
+
+        mask[:, CHOP] = room & in_reach(construction.tree_x, construction.tree_z,
+                                        construction.tree_wood, cc.harvest_radius)
+        mask[:, MINE] = room & in_reach(construction.rock_x, construction.rock_z,
+                                        construction.rock_stone, cc.harvest_radius)
+        # build: an incomplete site in reach that needs a material this agent carries
+        if construction.site_x.size:
+            d2 = ((construction.site_x[None, :] - pool.x[:, None]) ** 2
+                  + (construction.site_z[None, :] - pool.z[:, None]) ** 2)
+            near = d2 <= cc.build_radius ** 2
+            can_wood = near & (construction.site_wood_needed[None, :] > 0) & (pool.wood[:, None] > 0)
+            can_stone = near & (construction.site_stone_needed[None, :] > 0) & (pool.stone[:, None] > 0)
+            mask[:, BUILD] = (can_wood | can_stone).any(axis=1)
+
     mask[~pool.alive] = False
     mask[~pool.alive, IDLE] = True
     return mask
@@ -172,6 +246,8 @@ def observation_layout(cfg: Config) -> tuple[str, ...]:
     Keep this in sync with ``build_observations``; the tests compare the two.
     """
     names: list[str] = ["own.hunger", "own.food"]
+    if cfg.construction.enabled:
+        names += ["own.wood", "own.stone"]
     for j in range(cfg.observation.k_bushes):
         names += [f"bush{j}.dx", f"bush{j}.dz", f"bush{j}.berries"]
         if bush_channels(cfg) == 4:
@@ -180,6 +256,15 @@ def observation_layout(cfg: Config) -> tuple[str, ...]:
         names += [f"neighbour{j}.dx", f"neighbour{j}.dz", f"neighbour{j}.hunger"]
         if neighbour_channels(cfg) == 4:
             names.append(f"neighbour{j}.food")
+    if cfg.construction.enabled:
+        cc = cfg.construction
+        for j in range(cc.k_trees):
+            names += [f"tree{j}.dx", f"tree{j}.dz", f"tree{j}.wood"]
+        for j in range(cc.k_rocks):
+            names += [f"rock{j}.dx", f"rock{j}.dz", f"rock{j}.stone"]
+        for j in range(cc.k_sites):
+            names += [f"site{j}.dx", f"site{j}.dz", f"site{j}.progress", f"site{j}.complete"]
+        names += ["night.phase", "night.is_night"]
     names += ["edge.room", "edge.outward_x", "edge.outward_z"]
     return tuple(names)
 
@@ -203,12 +288,31 @@ def _k_nearest(dist2: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
     return order, valid
 
 
+def _entity_block(out: np.ndarray, col: int, pool: AgentPool, ex: np.ndarray,
+                  ez: np.ndarray, extra: list[np.ndarray], k: int, scale: float) -> int:
+    """Write k-nearest (dx, dz, *extra) triples-or-more for one entity type."""
+    n = pool.n
+    dx = ex[None, :] - pool.x[:, None]
+    dz = ez[None, :] - pool.z[:, None]
+    idx, valid = _k_nearest(dx ** 2 + dz ** 2, k)
+    rows = np.arange(n)
+    for j in range(k):
+        take, ok = idx[:, j], valid[:, j]
+        out[:, col + 0] = np.where(ok, np.clip(dx[rows, take] / scale, -1.0, 1.0), 0.0)
+        out[:, col + 1] = np.where(ok, np.clip(dz[rows, take] / scale, -1.0, 1.0), 0.0)
+        for c, channel in enumerate(extra):
+            out[:, col + 2 + c] = np.where(ok, channel[take], 0.0)
+        col += 2 + len(extra)
+    return col
+
+
 def build_observations(
     pool: AgentPool,
     bush_x: np.ndarray,
     bush_z: np.ndarray,
     bush_berries: np.ndarray,
     cfg: Config,
+    construction: "ConstructionView | None" = None,
 ) -> np.ndarray:
     """Egocentric fixed-size observation for every agent, shape ``(A, obs_dim)``.
 
@@ -242,10 +346,16 @@ def build_observations(
     # --- own state
     out[:, 0] = pool.hunger / cfg.hunger.max
     out[:, 1] = pool.food / max(cfg.food.capacity, 1)
+    own_cols = 2
+    if cfg.construction.enabled:
+        cap = max(cfg.construction.material_capacity, 1)
+        out[:, 2] = pool.wood / cap
+        out[:, 3] = pool.stone / cap
+        own_cols = 4
 
     # --- K nearest bushes (regardless of whether they still hold berries; the
     # berry channel tells the policy whether it is worth walking to)
-    col = 2
+    col = own_cols
     bush_dx = bush_x[None, :] - pool.x[:, None]
     bush_dz = bush_z[None, :] - pool.z[:, None]
     bush_d2 = bush_dx**2 + bush_dz**2
@@ -290,6 +400,27 @@ def build_observations(
         if channels == 4:
             out[:, col + 3] = np.where(ok, pool.food[take] / max(cfg.food.capacity, 1), 0.0)
         col += channels
+
+    # --- Milestone 4: material nodes, shelter sites, and the clock
+    if cfg.construction.enabled:
+        cc = cfg.construction
+        assert construction is not None, "construction world state missing"
+        col = _entity_block(out, col, pool, construction.tree_x, construction.tree_z,
+                            [construction.tree_wood / max(cc.tree_wood, 1)],
+                            cc.k_trees, scale)
+        col = _entity_block(out, col, pool, construction.rock_x, construction.rock_z,
+                            [construction.rock_stone / max(cc.rock_stone, 1)],
+                            cc.k_rocks, scale)
+        total_cost = max(cc.site_wood_cost + cc.site_stone_cost, 1)
+        needed = construction.site_wood_needed + construction.site_stone_needed
+        progress = 1.0 - needed / total_cost
+        complete = (needed == 0).astype(np.float64)
+        col = _entity_block(out, col, pool, construction.site_x, construction.site_z,
+                            [progress, complete], cc.k_sites, scale)
+        phase, is_night = night_phase(construction.tick, cfg)
+        out[:, col + 0] = phase
+        out[:, col + 1] = float(is_night)
+        col += 2
 
     # --- shoreline
     r = np.sqrt(pool.x**2 + pool.z**2)

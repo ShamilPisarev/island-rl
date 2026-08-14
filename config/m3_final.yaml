@@ -1,0 +1,22 @@
+# The combined M3 configuration: everything that is principled, together.
+#
+#   mask_invalid_actions     the one intervention that moved the result
+#                            (452 -> 472); removes the stand-and-mash trap.
+#   observe_bush_contested   did nothing while the policy was trapped in that
+#                            local optimum; retested here now that it is not,
+#                            because the masked policy's remaining error is
+#                            wandering off bushes it should hold.
+#   ent_coef annealing       same logic: annealing could not help a policy stuck
+#                            near uniform, but the masked one commits (1.97) and
+#                            may benefit from being allowed to commit further.
+#
+# No reward changes. Theft still pays nothing.
+extends: m3_masked.yaml
+
+competition:
+  observe_bush_contested: true
+
+ppo:
+  ent_coef: 0.01
+  ent_coef_final: 0.001
+  total_updates: 600

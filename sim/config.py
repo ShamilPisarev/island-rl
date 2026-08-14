@@ -71,6 +71,34 @@ class CompetitionConfig:
 
 
 @dataclass(frozen=True)
+class ConstructionConfig:
+    """Milestone 4. All off by default, so M1-M3 worlds are bit-identical."""
+
+    enabled: bool = False
+    # material nodes, placed like bushes (clustered)
+    num_trees: int = 8
+    tree_wood: int = 6              # units per tree; no regrowth within an episode
+    num_rocks: int = 5
+    rock_stone: int = 4
+    harvest_radius: float = 2.0
+    material_capacity: int = 2      # carried wood+stone combined
+    # shelter sites
+    num_sites: int = 3
+    site_wood_cost: int = 4         # delivered units to complete a site
+    site_stone_cost: int = 2
+    build_radius: float = 2.5
+    shelter_radius: float = 6.0     # protection range of a COMPLETED shelter
+    # the hazard shelter protects from
+    night_cycle: int = 200          # ticks per full day
+    night_fraction: float = 0.25    # last quarter of each cycle is night
+    night_drain_multiplier: float = 3.0
+    # observation channels
+    k_trees: int = 2
+    k_rocks: int = 2
+    k_sites: int = 2
+
+
+@dataclass(frozen=True)
 class ObservationConfig:
     k_bushes: int = 4
     k_agents: int = 3
@@ -86,6 +114,15 @@ class RewardConfig:
     steal: float = 0.0   # 0.0 is the brief-faithful default: theft earns nothing
                          # directly and must pay for itself through the food. Only
                          # config/m3_shaped.yaml raises it, as a labelled ablation.
+    # Milestone 4 shaping. The brief calls M4 the milestone that NEEDS shaping --
+    # the terminal chain (chop -> carry -> build -> survive the night) is far too
+    # long for the survival signal alone. These are documented bootstraps: m4.yaml
+    # sets them non-zero, m4_unshaped.yaml is the control, and the annealing test
+    # retrains with them returned to zero.
+    wood: float = 0.0
+    stone: float = 0.0
+    build: float = 0.0
+    complete: float = 0.0  # split among contributors when a shelter completes
 
 
 @dataclass(frozen=True)
@@ -133,6 +170,7 @@ class Config:
     food: FoodConfig = field(default_factory=FoodConfig)
     bushes: BushConfig = field(default_factory=BushConfig)
     competition: CompetitionConfig = field(default_factory=CompetitionConfig)
+    construction: ConstructionConfig = field(default_factory=ConstructionConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
@@ -184,6 +222,7 @@ _SECTIONS: dict[str, type] = {
     "food": FoodConfig,
     "bushes": BushConfig,
     "competition": CompetitionConfig,
+    "construction": ConstructionConfig,
     "observation": ObservationConfig,
     "reward": RewardConfig,
     "policy": PolicyConfig,

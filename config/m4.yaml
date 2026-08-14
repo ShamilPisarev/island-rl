@@ -1,0 +1,42 @@
+# Milestone 4 — multi-resource + construction. THE SHAPED CONFIG.
+#
+# The brief calls this the milestone that needs reward shaping, and it is right:
+# the terminal chain (chop -> carry across the island -> build -> survive the
+# night three cycles later) is far longer than the steal chain that M3 already
+# proved unlearnable from survival reward alone. The shaping below is a
+# bootstrap, documented as one:
+#
+#   reward.wood / stone   0.3   less than a gather (1.0) so materials never
+#                               outbid food itself
+#   reward.build          0.5   per unit delivered to a site
+#   reward.complete       2.0   to whoever lays the final unit
+#
+# config/m4_unshaped.yaml is the control (all four at 0.0), compared on the
+# terminal metric, and the annealing test continues this run with the shaping
+# removed to ask whether the behaviour survives -- the M3 shaping ablation is
+# the precedent for why neither check may be skipped.
+#
+# World: the M3 competition world plus trees, rocks, shelter sites, and a
+# day/night cycle. Food supply is raised from 48 to 64 berries because the
+# economy was re-sized IN CODE (see CLAUDE.md: "recompute demand with sim"):
+#
+#   sheltered demand    48 berries   supply must cover this, with margin
+#   exposed demand      72 berries   supply must NOT reach this
+#   supply              64 berries   8 bushes x 2 cap + 8 x 6 regrowths
+#
+# so a population that builds shelter can afford the ticks construction costs,
+# and one that sleeps rough starves. Shelter is load-bearing by arithmetic.
+
+extends: m3_masked.yaml
+
+bushes:
+  num_clusters: 4            # 8 bushes -> supply 64 (was 6 -> 48)
+
+construction:
+  enabled: true
+
+reward:
+  wood: 0.3
+  stone: 0.3
+  build: 0.5
+  complete: 2.0

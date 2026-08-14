@@ -25,14 +25,19 @@ from typing import Any
 import numpy as np
 
 from .agents import (
+    BUILD,
+    CHOP,
     GATHER,
     IDLE,
+    MINE,
     MOVE_VECTORS,
     N_MOVE_ACTIONS,
     STEAL,
     AgentPool,
+    ConstructionView,
     action_mask,
     build_observations,
+    night_phase,
     num_actions,
     observation_dim,
 )
@@ -72,6 +77,12 @@ class EpisodeStats:
     survivors: int = 0
     steals: int = 0
     contests_lost: int = 0
+    wood_gathered: int = 0
+    stone_gathered: int = 0
+    builds: int = 0
+    shelters_completed: int = 0
+    night_ticks_sheltered: int = 0
+    night_ticks_exposed: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -127,6 +138,10 @@ class World:
                 zs.append(z)
         return np.array(xs, dtype=np.float64), np.array(zs, dtype=np.float64)
 
+    def _scatter(self, count: int, margin: float = 0.9) -> tuple[np.ndarray, np.ndarray]:
+        """Uniformly scattered static entities (trees, rocks, shelter sites)."""
+        return self._sample_in_disc(self.cfg.world.island_radius * margin, count)
+
     def reset(self) -> np.ndarray:
         cfg = self.cfg
         if self._bush_layout is None or cfg.bushes.resample_each_episode:
@@ -141,6 +156,25 @@ class World:
             cfg.world.island_radius * cfg.world.spawn_radius_frac, cfg.world.num_agents
         )
 
+        cc = cfg.construction
+        if cc.enabled:
+            # Same resample policy as bushes: layouts follow the same seed stream,
+            # so determinism holds and a fixed map pins everything at once.
+            self.tree_x, self.tree_z = self._scatter(cc.num_trees)
+            self.tree_wood = np.full(cc.num_trees, cc.tree_wood, dtype=np.int64)
+            self.rock_x, self.rock_z = self._scatter(cc.num_rocks)
+            self.rock_stone = np.full(cc.num_rocks, cc.rock_stone, dtype=np.int64)
+            self.site_x, self.site_z = self._scatter(cc.num_sites, margin=0.7)
+            self.site_wood_needed = np.full(cc.num_sites, cc.site_wood_cost, dtype=np.int64)
+            self.site_stone_needed = np.full(cc.num_sites, cc.site_stone_cost, dtype=np.int64)
+        else:
+            empty = np.zeros(0, dtype=np.float64)
+            empty_i = np.zeros(0, dtype=np.int64)
+            self.tree_x = self.tree_z = self.rock_x = self.rock_z = empty
+            self.site_x = self.site_z = empty
+            self.tree_wood = self.rock_stone = empty_i
+            self.site_wood_needed = self.site_stone_needed = empty_i
+
         self.tick = 0
         self._alive_ticks = np.zeros(cfg.world.num_agents, dtype=np.int64)
         self._gathered = np.zeros(cfg.world.num_agents, dtype=np.int64)
@@ -148,13 +182,32 @@ class World:
         self._stole = np.zeros(cfg.world.num_agents, dtype=np.int64)
         self._robbed = np.zeros(cfg.world.num_agents, dtype=np.int64)
         self._contested = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self._wood = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self._stone = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self._builds = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self._completions = 0
+        self._night_sheltered = 0
+        self._night_exposed = 0
         return self.observations()
+
+    def construction_view(self) -> ConstructionView | None:
+        if not self.cfg.construction.enabled:
+            return None
+        return ConstructionView(
+            tree_x=self.tree_x, tree_z=self.tree_z, tree_wood=self.tree_wood,
+            rock_x=self.rock_x, rock_z=self.rock_z, rock_stone=self.rock_stone,
+            site_x=self.site_x, site_z=self.site_z,
+            site_wood_needed=self.site_wood_needed,
+            site_stone_needed=self.site_stone_needed,
+            tick=self.tick,
+        )
 
     # --- stepping ---------------------------------------------------------
 
     def observations(self) -> np.ndarray:
         return build_observations(
-            self.pool, self.bush_x, self.bush_z, self.bush_berries, self.cfg
+            self.pool, self.bush_x, self.bush_z, self.bush_berries, self.cfg,
+            self.construction_view(),
         )
 
     def action_mask(self) -> np.ndarray:
@@ -164,7 +217,8 @@ class World:
         """
         if not self.cfg.competition.mask_invalid_actions:
             return np.ones((self.pool.n, num_actions(self.cfg)), dtype=bool)
-        return action_mask(self.pool, self.bush_x, self.bush_z, self.bush_berries, self.cfg)
+        return action_mask(self.pool, self.bush_x, self.bush_z, self.bush_berries,
+                           self.cfg, self.construction_view())
 
     def step(self, actions: np.ndarray) -> StepResult:
         cfg = self.cfg
@@ -263,8 +317,73 @@ class World:
                 stole[i] = 1
                 robbed[victim] = 1
 
-        # 2. hunger drain
-        pool.hunger = np.where(acted, pool.hunger - cfg.hunger.drain_per_tick, pool.hunger)
+        # 1d. construction (Milestone 4): harvest materials, deliver to sites.
+        wood_got = np.zeros(n, dtype=np.int64)
+        stone_got = np.zeros(n, dtype=np.int64)
+        built = np.zeros(n, dtype=np.int64)
+        cc = cfg.construction
+        if cc.enabled:
+            def harvest(action, ex, ez, stock):
+                out = np.zeros(n, dtype=np.int64)
+                for i in np.flatnonzero(acted & (actions == action)):
+                    if pool.wood[i] + pool.stone[i] >= cc.material_capacity:
+                        continue
+                    d2 = (ex - pool.x[i]) ** 2 + (ez - pool.z[i]) ** 2
+                    cand = np.flatnonzero((d2 <= cc.harvest_radius ** 2) & (stock > 0))
+                    if cand.size == 0:
+                        continue
+                    target = int(cand[np.argmin(d2[cand])])
+                    stock[target] -= 1
+                    out[i] = 1
+                return out
+
+            wood_got = harvest(CHOP, self.tree_x, self.tree_z, self.tree_wood)
+            pool.wood += wood_got
+            rewards += wood_got * cfg.reward.wood
+            stone_got = harvest(MINE, self.rock_x, self.rock_z, self.rock_stone)
+            pool.stone += stone_got
+            rewards += stone_got * cfg.reward.stone
+
+            for i in np.flatnonzero(acted & (actions == BUILD)):
+                d2 = (self.site_x - pool.x[i]) ** 2 + (self.site_z - pool.z[i]) ** 2
+                near = np.flatnonzero(d2 <= cc.build_radius ** 2)
+                delivered = False
+                for s in near[np.argsort(d2[near])]:
+                    if self.site_wood_needed[s] > 0 and pool.wood[i] > 0:
+                        self.site_wood_needed[s] -= 1
+                        pool.wood[i] -= 1
+                        delivered = True
+                    elif self.site_stone_needed[s] > 0 and pool.stone[i] > 0:
+                        self.site_stone_needed[s] -= 1
+                        pool.stone[i] -= 1
+                        delivered = True
+                    if delivered:
+                        built[i] = 1
+                        rewards[i] += cfg.reward.build
+                        if self.site_wood_needed[s] == 0 and self.site_stone_needed[s] == 0:
+                            # completion bonus goes to whoever laid the last unit;
+                            # spreading it over past contributors would need a
+                            # ledger and reward agents for work already paid for
+                            rewards[i] += cfg.reward.complete
+                            self._completions += 1
+                        break
+
+        # 2. hunger drain -- multiplied at night for anyone not near a completed
+        #    shelter. This is the hazard that makes shelter worth its materials.
+        drain = np.full(n, cfg.hunger.drain_per_tick)
+        if cc.enabled:
+            _, is_night = night_phase(self.tick, cfg)
+            if is_night:
+                complete = (self.site_wood_needed == 0) & (self.site_stone_needed == 0)
+                sheltered = np.zeros(n, dtype=bool)
+                if complete.any():
+                    d2 = ((self.site_x[None, complete] - pool.x[:, None]) ** 2
+                          + (self.site_z[None, complete] - pool.z[:, None]) ** 2)
+                    sheltered = (d2 <= cc.shelter_radius ** 2).any(axis=1)
+                drain = np.where(sheltered, drain, drain * cc.night_drain_multiplier)
+                self._night_sheltered += int((acted & sheltered).sum())
+                self._night_exposed += int((acted & ~sheltered).sum())
+        pool.hunger = np.where(acted, pool.hunger - drain, pool.hunger)
 
         # 3. auto-eat. Eating is automatic rather than an 11th action for two
         #    reasons: the brief pins the action space at 10, and the eat reward
@@ -296,6 +415,9 @@ class World:
         self._stole += stole
         self._robbed += robbed
         self._contested += contested
+        self._wood += wood_got
+        self._stone += stone_got
+        self._builds += built
 
         # 6. bush regrowth: a depleted bush ticks back up one berry at a time
         below = self.bush_berries < cfg.bushes.capacity
@@ -342,6 +464,12 @@ class World:
             survivors=int(pool.alive.sum()),
             steals=int(self._stole.sum()),
             contests_lost=int(self._contested.sum()),
+            wood_gathered=int(self._wood.sum()),
+            stone_gathered=int(self._stone.sum()),
+            builds=int(self._builds.sum()),
+            shelters_completed=self._completions,
+            night_ticks_sheltered=self._night_sheltered,
+            night_ticks_exposed=self._night_exposed,
         )
 
 

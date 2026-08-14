@@ -1,0 +1,14 @@
+# The M4 control: identical world, every shaping term at zero.
+#
+# Construction must earn its keep through night survival alone here. The M3
+# lesson (see the shaping ablation in CLAUDE.md) is that a shaped run proves
+# nothing by itself -- the comparison on the terminal metric against this
+# control is what shows whether the shaping taught something useful or just
+# bought the behaviour it paid for.
+extends: m4.yaml
+
+reward:
+  wood: 0.0
+  stone: 0.0
+  build: 0.0
+  complete: 0.0
