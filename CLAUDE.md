@@ -432,6 +432,66 @@ territory matrix, as M3's headline behavioural number.
 Gather hit rate also collapsed from ~5.5% to 0.8–3.4%, which is `exclusive_bushes`
 working: most gather attempts now lose to a closer agent.
 
+### Why the learned policy loses to the scripted forager
+
+M3's headline sits below both scripted references. That is worth understanding
+before building on it, so here is the investigation, including the parts that
+found nothing — they are the expensive ones to repeat.
+
+**What the policy actually does wrong.** Run the learned policy, and at each tick
+ask what the scripted forager would have done from the same observation:
+
+| forager wanted | policy did | share of living ticks |
+|---|---|---|
+| move (81% of ticks) | move | 47.6% |
+| | **gather** | **17.7%** |
+| | **steal** | **12.8%** |
+| | idle | 2.5% |
+
+Exact agreement is 9.3%. **The policy does not travel.** Where the forager would
+be walking to a berry-bearing bush, the policy stands still and mashes `gather`
+or `steal`, which pay nothing from where it is standing. That is 30% of every
+tick it lives.
+
+**This is inherited, not a tuning failure.** M1's abundant world taught exactly
+this: "camp a bush and spam gather" is *optimal* when there are 20 bushes and one
+is always underfoot, and it is written up as an observed M1 behaviour above (34%
+gather actions). M2 kept it and M3 forked from M2. In a six-bush world where only
+the closest agent may harvest, that prior is actively wrong — and a policy that
+never travels cannot find the four bushes nobody is standing on. It explains the
+harvest gap (26 berries of 48 against the forager's 37) and the *fall* in
+territory divergence at the same time.
+
+**Seven interventions, all within noise (437–452 lifespan):**
+
+| intervention | result |
+|---|---|
+| baseline (as first run) | 452 |
+| fixing the feature-misalignment bug | 447 |
+| `observe_bush_contested` | 450 |
+| `ent_coef` 0.01 → 0.002 | 446 |
+| `gamma` 0.99 → 0.995 | 445 |
+| annealing `ent_coef` to 0.0005 | 437 |
+| annealed entropy + `gamma` 0.997 | 442 |
+| one shared brain instead of six | 449 |
+
+Two hypotheses were killed outright rather than merely failing to help:
+
+* **Entropy is not the constraint.** Annealing the bonus to 0.0005 left policy
+  entropy at 2.03 of a possible 2.40. The policy is near-uniform *by choice* — it
+  has no confident preference to express — so "the bonus forbids commitment" is
+  simply wrong.
+* **Distance clipping is not the constraint.** `observation.distance_scale` (20)
+  was tuned for the abundant world, and a scarce island has bushes much further
+  away, so the ±1 clip looked like a suspect. Measured: 0.3% of nearest-bush
+  offsets saturate on one axis and 0.0% on both. Direction is intact.
+
+**The gap survives removing competition entirely.** In `scarce.yaml` with no
+blocking and no stealing — the pure foraging task — the policy still plateaus at
+~27 berries against the forager's 38.7. So this is not about M3's mechanics at
+all; it is about foraging in a world where food is far apart, and the failure was
+simply invisible in M1 because food was never far apart.
+
 ## Gotchas (Milestone 3)
 
 **Don't edit `metrics.py` while a run is in flight.** A run holds its CSV header
