@@ -248,6 +248,7 @@ class World:
                 victim = int(victims[np.argmin(d2[victims])])
                 pool.food[victim] -= 1
                 pool.food[i] += 1
+                rewards[i] += cfg.reward.steal   # 0.0 unless deliberately shaped
                 stole[i] = 1
                 robbed[victim] = 1
 

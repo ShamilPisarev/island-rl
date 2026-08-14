@@ -276,6 +276,27 @@ def test_steal_pays_no_reward(m3):
     assert res.rewards[0] == pytest.approx(m3.reward.alive_per_tick)
 
 
+def test_shaped_config_pays_for_theft_and_is_clearly_an_ablation(m3):
+    """The shaped config exists to answer a question, not to be the M3 result.
+    If its reward ever leaks into m3.yaml, the headline number stops being
+    faithful to the brief -- so both halves are pinned here."""
+    shaped = load_config("config/m3_shaped.yaml")
+    assert m3.reward.steal == 0.0
+    assert shaped.reward.steal == m3.reward.gather
+    assert shaped.competition.enable_steal is True   # inherited from m3.yaml
+
+    w = World(shaped, seed=30)
+    w.pool.x[0], w.pool.z[0] = 0.0, 0.0
+    w.pool.x[1], w.pool.z[1] = 1.0, 0.0
+    w.pool.food[1] = 1
+    w.pool.hunger[:] = shaped.hunger.max
+    actions = np.full(shaped.world.num_agents, IDLE)
+    actions[0] = STEAL
+    res = w.step(actions)
+    assert res.stole[0] == 1
+    assert res.rewards[0] == pytest.approx(shaped.reward.gather + shaped.reward.alive_per_tick)
+
+
 def test_steal_is_conserving(m3):
     """Total food in the world must not change: theft moves berries, never mints
     or destroys them."""

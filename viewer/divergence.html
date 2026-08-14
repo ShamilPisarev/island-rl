@@ -43,7 +43,12 @@
     border-radius: 5px; padding: 5px 9px; font: inherit; cursor: pointer;
   }
 
-  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  /* Milestone 3 adds five theft columns; the table then outgrows a narrow window.
+     It has to scroll inside its own box -- letting the page body scroll sideways
+     drags the headings and every other section off screen with it. */
+  .scrollx { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 720px;
+          font-variant-numeric: tabular-nums; }
   th, td { text-align: right; padding: 7px 9px; border-bottom: 1px solid var(--line); }
   th { color: var(--dim); font-weight: 600; font-size: 11px; text-transform: uppercase;
        letter-spacing: .05em; white-space: nowrap; }
@@ -105,7 +110,7 @@
 
     <h2>Per-agent behaviour</h2>
     <p class="note" id="behaviourNote"></p>
-    <table id="statsTable"></table>
+    <div class="scrollx"><table id="statsTable"></table></div>
 
     <h2>Action mix</h2>
     <p class="note">Share of living ticks spent on each kind of action.</p>

@@ -302,6 +302,61 @@ behaving as it did and then learns to use what it has been given. The new action
 is reachable rather than masked, which is what lets PPO find out whether it is
 worth taking. Shrinking is refused outright.
 
+### Results — and two things that did not work
+
+All 20 episodes, `config/m3.yaml`, seeds 10000+:
+
+| policy | mean lifespan | vs random | deaths/ep | steals/ep |
+|---|---|---|---|---|
+| random actions | 223.0 | 1.00× | 5.85 | 0 |
+| **learned, forked from M2** | **452.1** | **2.03×** | 3.40 | 28.9 |
+| learned, from scratch | 223.3 | 1.00× | 5.95 | 0.1 |
+| scripted forager | 495.5 | 2.22× | 2.20 | 0 |
+| scripted thief | 553.3 | 2.48× | 1.45 | 1099.3 |
+
+**1. Theft did not emerge.** The learned policy steals 29 times an episode where the
+scripted thief manages ~1100, and it finishes *below both* scripted references.
+This is not "theft is useless" — the scripted thief proves theft is worth ~58 ticks
+of extra lifespan and a death per episode. It is a credit-assignment failure: with
+`reward.steal = 0.0` the chain is steal → carry → auto-eat some ticks later → don't
+starve, and at γ=0.99 that signal is too weak and too delayed to compete with the
++1.0 a gather pays immediately. This is exactly the failure mode the brief predicts
+for M4's construction rewards, arriving early. `config/m3_shaped.yaml` is the
+labelled ablation that tests the fix.
+
+**2. The scarce world cannot be learned from scratch.** A from-scratch run lands on
+*exactly* the random baseline (223.3 vs 223.0, 1.00×) after the full 7.4M steps,
+with entropy still at ~2.28 of a possible ln(11)=2.40 and negative mean reward.
+Agents starve before they can discover foraging, the −10 death term dominates
+everything, and the policy never escapes. **The milestone chain is load-bearing,
+not a narrative convenience** — M3 only works because M1 and M2 transferred
+competence into it. If you make the world harder again, expect to need a
+curriculum, not a bigger budget.
+
+### Competition produced convergence, not partitioning
+
+The prediction going in was that territoriality would show up as territory
+divergence *rising*. It fell — hard: 0.9080 in M2 to **0.3628** in M3. With 6
+bushes instead of 20, agents pile onto the same few spots rather than spreading
+out. Territory divergence measures how *differently* agents are distributed, and
+scarcity makes them all want the same ground.
+
+What did appear is inequality. Lifespan spread went from 0 ticks in M2 (everyone
+hit the ceiling) to **144 ticks**:
+
+| | agents 3, 5 | agents 2, 4 |
+|---|---|---|
+| lifespan | 388.6, 392.1 | 276.0, 248.0 |
+| distance to nearest bush | 1.50, 1.55 | 4.97, 3.21 |
+
+A dominant pair holds bushes and survives; the excluded ones are pushed to the
+margins and starve. **That is the territorial result — it is just expressed as who
+eats rather than as who stands where.** Read the lifespan spread, not the
+territory matrix, as M3's headline behavioural number.
+
+Gather hit rate also collapsed from ~5.5% to 0.8–3.4%, which is `exclusive_bushes`
+working: most gather attempts now lose to a closer agent.
+
 ## Gotchas (Milestone 3)
 
 **Don't edit `metrics.py` while a run is in flight.** A run holds its CSV header

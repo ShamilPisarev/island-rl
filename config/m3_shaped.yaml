@@ -1,0 +1,23 @@
+# ABLATION — not the Milestone 3 result. Read config/m3.yaml for that.
+#
+# M3 proper pays nothing for theft, per the brief's "no new reward terms beyond
+# survival", and under that rule PPO did not discover stealing: the learned
+# policy managed 29 steals an episode where the scripted thief manages ~1100, and
+# came in below both scripted references on lifespan.
+#
+# That is a credit-assignment failure, not a claim that theft is useless -- the
+# scripted thief proves theft is worth ~58 ticks of extra lifespan. The chain
+# "steal -> carry -> auto-eat later -> do not starve" is simply too long and too
+# delayed for the signal to survive discounting, which is exactly the failure mode
+# the brief predicts for Milestone 4's construction rewards.
+#
+# So this config asks the question early, on a task where the answer is cheap: if
+# a successful steal pays the same +1.0 a gather does, does robbery emerge?
+#
+# Whatever it shows, the shaped reward is a bootstrap and is labelled as one. The
+# honest M3 number is the unshaped one.
+
+extends: m3.yaml
+
+reward:
+  steal: 1.0     # same as `gather`: acquiring a berry pays the same either way

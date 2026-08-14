@@ -1,4 +1,4 @@
-"""Behavioural divergence between agents (Milestone 2).
+"""Behavioural divergence between agents (Milestone 2, extended for 3).
 
 Splitting the shared brain into six is only interesting if the six then do
 different things. This module measures whether they do, over a block of
@@ -14,9 +14,18 @@ What it measures, per agent:
 * **foraging proximity** -- mean distance to the nearest bush, and share of ticks
   spent within gathering range
 * **territory** -- a 2D histogram of where the agent spent its time
+* **theft** (Milestone 3, zero when competition is off) -- steal attempts and
+  successes, times robbed by others, and gather attempts lost to a closer agent
 
 and pairwise Jensen-Shannon divergence between agents on the action and
 territory distributions.
+
+READ THE ACTION MATRIX, NOT THE TERRITORY MATRIX, as the specialisation signal.
+Six agents *sharing one brain* already score ~0.67 bits of territory divergence,
+because they spawn apart and each walks to whichever cluster is nearest --
+different ground is the default, not a finding. Action divergence is near zero
+under sharing, so it is the number that has to clear its control. Always run the
+shared checkpoint through this tool too.
 
 A NOTE ON TERRITORY. It is only meaningful on a fixed map. With
 ``bushes.resample_each_episode`` on (the training default) every episode puts the

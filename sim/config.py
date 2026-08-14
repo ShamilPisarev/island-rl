@@ -81,6 +81,9 @@ class RewardConfig:
     gather: float = 1.0
     eat: float = 2.0
     death: float = -10.0
+    steal: float = 0.0   # 0.0 is the brief-faithful default: theft earns nothing
+                         # directly and must pay for itself through the food. Only
+                         # config/m3_shaped.yaml raises it, as a labelled ablation.
 
 
 @dataclass(frozen=True)
