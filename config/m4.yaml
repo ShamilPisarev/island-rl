@@ -27,6 +27,17 @@
 # so a population that builds shelter can afford the ticks construction costs,
 # and one that sleeps rough starves. Shelter is load-bearing by arithmetic.
 
+# SIZING HISTORY. The first attempt used 4 wood + 2 stone per site and shaping
+# of 0.3/0.5/2.0. Two hundred updates in, the shaped run had 2.5 wood and 0.4
+# deliveries an episode and ZERO completed shelters -- the unshaped control had
+# less of everything, so the shaping was doing *something*, just nowhere near
+# enough. At 0.3 a material action loses to a +1.0 gather everywhere the two
+# compete, and with carry capacity 2 a six-unit site is three round trips before
+# any benefit exists, so the completion bonus never fired even once to teach
+# anything. (CSV kept in runs/_m4_probe1.) Hence: one-round-trip-cheaper sites
+# and per-action-competitive shaping. The unshaped control runs on THIS sizing
+# too, so the comparison stays apples to apples.
+
 extends: m3_masked.yaml
 
 bushes:
@@ -34,9 +45,11 @@ bushes:
 
 construction:
   enabled: true
+  site_wood_cost: 3
+  site_stone_cost: 1         # 4 units = two round trips at capacity 2
 
 reward:
-  wood: 0.3
-  stone: 0.3
-  build: 0.5
-  complete: 2.0
+  wood: 0.5
+  stone: 0.5
+  build: 1.0                 # delivering = a gather, so materials compete with food
+  complete: 3.0
