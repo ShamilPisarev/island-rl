@@ -6,14 +6,19 @@ you.
 
 ## Current state
 
-**Milestones 1 and 2 are complete and verified.** M3–M6 have not been started —
-do not start them without reading §3 of the brief.
+**Milestones 1, 2 and 3 are complete and verified.** M4–M6 have not been started —
+do not start them without reading §3 of the brief, and read the shaping ablation
+below first, because M4 is the milestone that depends on shaped rewards.
 
-- M1: survival + foraging, one shared brain. 1.97× the random baseline.
+- M1: survival + foraging, one shared brain. 1.97× the random baseline, at the
+  ceiling set by a hand-written forager.
 - M2: six individual brains forked from the M1 checkpoint and trained
   independently, plus a behavioural-divergence view. Specialisation appeared:
   action divergence is 19× the shared-brain control.
-- `pytest` passes (112 tests).
+- M3: scarcity, contested bushes, stealing. 2.03× random, but *below* both
+  scripted references, and theft never emerged without being paid for.
+  Territoriality appeared as inequality rather than as spatial partitioning.
+- `pytest` passes (147 tests).
 - Both viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -24,6 +29,14 @@ python -m sim.train --run-name m1
 python -m sim.train --run-name m2 --policy-mode individual \
     --init-from checkpoints/m1/latest.pt
 python -m sim.divergence --checkpoint checkpoints/m2/latest.pt
+
+python -m sim.train --config config/m3.yaml --run-name m3 \
+    --policy-mode individual --init-from checkpoints/m2/latest.pt
+python -m sim.divergence --checkpoint checkpoints/m3/latest.pt
+
+# the labelled ablation, not the M3 result
+python -m sim.train --config config/m3_shaped.yaml --run-name m3-shaped \
+    --policy-mode individual --init-from checkpoints/m2/latest.pt
 ```
 
 ## Layout notes
@@ -321,8 +334,41 @@ of extra lifespan and a death per episode. It is a credit-assignment failure: wi
 `reward.steal = 0.0` the chain is steal → carry → auto-eat some ticks later → don't
 starve, and at γ=0.99 that signal is too weak and too delayed to compete with the
 +1.0 a gather pays immediately. This is exactly the failure mode the brief predicts
-for M4's construction rewards, arriving early. `config/m3_shaped.yaml` is the
-labelled ablation that tests the fix.
+for M4's construction rewards, arriving early.
+
+### The shaping ablation, and why it is a warning for M4
+
+`config/m3_shaped.yaml` pays a successful steal the same +1.0 a gather earns.
+Everything else is identical. 20 episodes:
+
+| | M3 (theft unpaid) | M3 shaped (theft paid) |
+|---|---|---|
+| steals / episode | 28.9 | **140.0** |
+| berries gathered / episode | 26.4 | 23.4 |
+| policy entropy (last 40 updates) | 2.167 | 1.742 |
+| **mean lifespan** | **452.1** | **428.6** |
+| deaths / episode | 3.40 | 3.70 |
+
+**The shaping worked and the outcome got slightly worse.** Theft emerged — 4.8×
+more of it, and the entropy drop shows the policy genuinely committing rather than
+sampling it by accident, which confirms the credit-assignment diagnosis. But
+survival did *not* improve: lifespan fell 452 → 429 and deaths rose.
+
+The mechanism is worth understanding before M4 leans on shaping. Stealing moves
+food between agents; it never creates any. Paying for it buys ticks spent
+redistributing the same berries instead of harvesting new ones — gathering fell
+26.4 → 23.4 — so the population ends up with less food overall and dies sooner.
+The policy learned to steal *because stealing pays*, not because stealing helps.
+
+Note also that the scripted thief steals ~8× more than the shaped policy and
+*does* survive better (553): opportunistic theft targeted at loaded neighbours is
+useful, indiscriminate theft-for-reward is not. Volume was never the point.
+
+**The lesson for M4:** a shaped reward reliably produces the behaviour it pays
+for. That is not evidence the behaviour helps. When M4 adds intermediate rewards
+for gathering materials and partial construction, the shaped run has to be
+compared against the unshaped one *on the terminal metric* — and the brief's
+instruction to test whether shaping can be annealed away is the right instinct.
 
 **2. The scarce world cannot be learned from scratch.** A from-scratch run lands on
 *exactly* the random baseline (223.3 vs 223.0, 1.00×) after the full 7.4M steps,
@@ -365,3 +411,30 @@ run's CSV and read as blanks forever. Cost me a run.
 
 **`contests_lost ≈ 0` is behavioural, not a broken code path.** It is tested
 directly. See above for why the same-tick rule cannot fire in a scarce world.
+
+## What is next (Milestone 4 — multi-resource + construction)
+
+Wood and stone, plus shelter that reduces hunger drain or protects from a periodic
+hazard. The brief calls this the milestone that needs reward shaping, and asks for
+the shaping to be documented honestly as a bootstrap and tested for annealing.
+Three things from M3 bear directly on it:
+
+1. **Read the shaping ablation above first.** Paying for a behaviour reliably
+   produces that behaviour and tells you nothing about whether it helps. Every
+   shaped run needs an unshaped control compared on the *terminal* metric, not on
+   the shaped quantity. `reward.steal` is the working example of the pattern to
+   copy: default 0.0 in the milestone config, raised only in a `*_shaped.yaml`
+   that says in its header that it is an ablation.
+2. **Budget for a curriculum, not just compute.** The scarce world was completely
+   unlearnable from scratch and only worked because M1/M2 fed competence into it.
+   Construction is a longer action chain than theft, so plan on `--init-from` from
+   the start, and expect to need intermediate worlds if it stalls. More updates
+   will not fix a policy sitting at 1.00× random.
+3. **`grow_policy` already handles the growth.** Wood, stone and shelter state will
+   widen the observation and add actions; forking with zeroed new weights works and
+   is tested. Don't retrain from scratch out of habit.
+
+One loose end worth knowing about: M3's own headline is *below* both scripted
+references, so unlike M1 there is no "we matched the ceiling" result here. If you
+want the learned policy to beat the scripted thief, that is an open problem in its
+own right and probably wants attention before piling construction on top.

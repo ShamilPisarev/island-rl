@@ -228,8 +228,22 @@ it — 29 steals an episode against the scripted thief's ~1100, finishing below 
 scripted references. Theft is clearly *worth* having (the thief buys 58 ticks of
 life and a death per episode); the problem is credit assignment. Steal → carry →
 auto-eat later → don't starve cannot compete with the +1.0 a gather pays now.
-`config/m3_shaped.yaml` tests the fix by paying for theft, as an explicitly
-labelled bootstrap.
+
+So `config/m3_shaped.yaml` pays a steal the same +1.0 as a gather, as an explicitly
+labelled bootstrap, to test that diagnosis:
+
+| | theft unpaid | theft paid |
+|---|---|---|
+| steals / episode | 28.9 | **140.0** |
+| berries gathered | 26.4 | 23.4 |
+| **mean lifespan** | **452.1** | **428.6** |
+
+**The shaping worked and the outcome got slightly worse.** Theft emerged, 4.8× more
+of it — but survival fell. Stealing moves food between agents and never creates
+any, so paying for it buys ticks spent redistributing berries instead of harvesting
+new ones, and the population ends up with less food. The policy learned to steal
+because stealing pays, not because stealing helps. Worth remembering before
+Milestone 4 leans on shaped rewards for construction.
 
 **The scarce world cannot be learned from scratch.** A from-scratch run lands on
 exactly the random baseline after the full 7.4M steps. M3 only works because M1
