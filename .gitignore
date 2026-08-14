@@ -6,8 +6,11 @@ __pycache__/
 
 checkpoints/
 runs/
-viewer/replays/*.json
-!viewer/replays/fake_demo.json
-!viewer/replays/index.json
+
+# Replays and their manifest are generated. Committing them would leave a fresh
+# clone with an index.json pointing at files it does not have; run
+# `python -m sim.make_fake_replay` to get something to look at.
+viewer/replays/*
+!viewer/replays/.gitkeep
 
 .DS_Store

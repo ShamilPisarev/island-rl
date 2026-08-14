@@ -90,6 +90,23 @@ and bounds, replay round-trip and schema versioning, seed determinism, GAE
 correctness, dead-agent masking, and a PPO smoke test on a task with a known
 optimum.
 
+## Results (Milestone 1)
+
+300 updates, 7.37M agent-steps, 4.2 minutes on a laptop CPU. Twenty evaluation
+episodes on identical seeds:
+
+| policy | mean lifespan | of 600 ticks | deaths/episode | berries |
+|---|---|---|---|---|
+| random actions | 302.3 ± 61.6 | 50% | 5.10 | 11.5 |
+| **learned** | **595.6 ± 19.0** | **99%** | **0.10** | **64.0** |
+| scripted greedy forager | 600.0 ± 0.0 | 100% | 0.00 | 66.0 |
+
+**1.97× the random baseline**, effectively at the ceiling set by a hand-written
+forager. And they are genuinely navigating rather than surviving by luck: the
+learned agents sit 2.25 units from the nearest bush on average against 7.05 for
+random play, and spend 53% of their ticks within gathering range where chance
+would give 11%.
+
 ## Configuration
 
 Everything tunable lives in `config/default.yaml` — world size, hunger rates,

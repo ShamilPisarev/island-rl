@@ -118,18 +118,46 @@ state anywhere in the training path, it silently breaks the guarantee.
 
 ## Reference points
 
-Measured on the shipped `config/default.yaml`, 20 episodes, seeds 10000+:
+Measured on the shipped `config/default.yaml`, 20 episodes, seeds 10000+.
+Training run `m1`: 300 updates, 7.37M agent-steps, 4.2 min on CPU.
 
-| policy | mean lifespan | of 600 ticks | deaths/ep |
-|---|---|---|---|
-| random actions | ~302 | 50% | 5.1 |
-| scripted greedy forager | 600 | 100% | 0.0 |
+| policy | mean lifespan | of 600 ticks | deaths/ep | berries |
+|---|---|---|---|---|
+| random actions | 302.3 ± 61.6 | 50% | 5.10 | 11.5 |
+| **learned (300 updates)** | **595.6 ± 19.0** | **99%** | **0.10** | **64.0** |
+| scripted greedy forager | 600.0 ± 0.0 | 100% | 0.00 | 66.0 |
+
+**1.97× the random baseline**, effectively at the scripted ceiling. Reproduce
+with `python -m sim.train --run-name m1` (seed 0) and
+`python -m sim.evaluate --checkpoint checkpoints/latest.pt --baselines`.
 
 The scripted forager (`policy.greedy_forager_actions`) reads *only* the 26-dim
 observation, not world state. That is on purpose: it proves the observation is
 sufficient for the task, so any failure to learn is the algorithm's fault rather
 than the sensor's. Treat it as a soft ceiling for memoryless reactive foraging —
 it is not optimal, it just never wastes a tick.
+
+Learning curve shape, for recognising a healthy run: lifespan sits at the random
+floor for ~60 updates while explained variance climbs to ~0.8 (the critic learns
+first), then lifespan rises steeply between updates 80 and 170, and pins at 600
+from ~240 onward. Entropy only falls from 2.30 to ~2.04 — the policy stays
+noticeably stochastic even when solving the task, because with bushes everywhere
+many actions are near-equivalent and nothing punishes the indifference.
+
+### Observed behaviour (not rewarded, worth knowing)
+
+- **The learned policy spams `gather`** — 34% of its actions, against 1.9% for
+  the scripted forager, which gathers only when it needs to. Gathering pays +1.0
+  whenever an inventory slot is free, so camping a bush and grabbing
+  opportunistically is straightforwardly worth more than walking away. It is
+  rational given the reward, not a bug, but it means the learned policy looks
+  *busier* than an optimal one.
+- **Agents cluster on bush hotspots** and travel much less than the scripted
+  forager (mean distance to nearest bush 2.25 vs 7.05 for random; 53% of ticks
+  spent inside gather range against 11% by chance). No reward encourages
+  proximity to other agents — this falls out of everyone independently wanting
+  the same clusters. Do not read it as social behaviour yet; M3 is where
+  competition gets a real test.
 
 ## What is next (Milestone 2)
 

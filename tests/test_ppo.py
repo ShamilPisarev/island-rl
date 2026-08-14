@@ -80,26 +80,53 @@ def test_rollout_shapes_and_finiteness(tiny):
     assert trainer.global_step == T * N * A
 
 
-def test_dead_agents_are_inactive_and_stay_dead_until_reset(cfg):
-    """The whole masking story in one test: once an agent starves it must be
-    inactive for every remaining tick of its episode."""
+def _collect_with_spy(trainer) -> tuple:
+    """Collect a rollout while recording what the env reported each tick."""
+    seen: list[dict] = []
+    original = trainer.envs.step
+
+    def spy(actions):
+        out = original(actions)
+        seen.append({k: np.copy(v) for k, v in out.items()})
+        return out
+
+    trainer.envs.step = spy
+    rollout = trainer.collect()
+    trainer.envs.step = original
+    return rollout, seen
+
+
+def test_agents_only_come_back_to_life_at_an_episode_boundary(cfg):
+    """The whole masking story: once an agent starves it stays inactive for the
+    rest of its episode, and the only thing that may flip it back on is a reset.
+
+    The trainer tracks liveness itself (to avoid a round trip through the env
+    every tick), so this checks that bookkeeping against what the world actually
+    reported -- a drift between the two would silently train on corpses.
+    """
     quick = cfg.replace(**{
-        "ppo.num_envs": 2, "ppo.rollout_ticks": 60, "ppo.num_minibatches": 1,
+        "ppo.num_envs": 3, "ppo.rollout_ticks": 80, "ppo.num_minibatches": 1,
         "ppo.epochs": 1, "world.max_ticks": 10_000, "hunger.drain_per_tick": 4.0,
     })
     trainer = make_trainer(quick)
-    r = trainer.collect()
-    active = r.active.numpy()
+    rollout, seen = _collect_with_spy(trainer)
+    active = rollout.active.numpy()
 
     assert not active.all(), "nobody died; the test is not testing anything"
-    for n in range(active.shape[1]):
-        for a in range(active.shape[2]):
-            column = active[:, n, a]
-            # inside one episode activity is monotonically non-increasing; a
-            # reset is the only thing that may flip it back on
-            dead = np.flatnonzero(~column)
-            if dead.size:
-                assert column[dead[0]] == False  # noqa: E712
+
+    # The trainer's mask must equal the world's own view of who acted.
+    for t, step in enumerate(seen):
+        assert np.array_equal(active[t], step["acted"]), f"liveness drift at tick {t}"
+
+    resurrections = 0
+    for t in range(active.shape[0] - 1):
+        came_back = ~active[t] & active[t + 1]
+        if came_back.any():
+            assert seen[t]["episode_done"][came_back.any(axis=1)].all(), (
+                f"agent revived at tick {t} without an episode reset"
+            )
+            resurrections += 1
+    assert resurrections > 0, "no episode ended; reset path untested"
 
 
 def test_inactive_transitions_are_dropped_from_the_update(cfg):
