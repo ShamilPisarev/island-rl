@@ -68,7 +68,7 @@ def test_steal_slot_is_kept_even_if_stealing_is_disabled(m4):
 
 def test_observation_layout_matches_dim_and_is_unique(m4):
     layout = observation_layout(m4)
-    assert len(layout) == observation_dim(m4) == 53
+    assert len(layout) == observation_dim(m4) == 55
     assert len(set(layout)) == len(layout)
     assert "own.wood" in layout and "night.is_night" in layout
 
@@ -315,19 +315,26 @@ def test_observation_reports_own_materials_and_night(m4):
     assert obs[0, layout.index("night.is_night")] == pytest.approx(1.0)
 
 
-def test_site_progress_channel_tracks_delivery(m4):
+def test_site_need_channels_track_delivery_per_material(m4):
+    """Per-material needs, not blended progress: whether to bring wood or stone
+    is a decision, and a policy that cannot see which is missing can only guess."""
     w = World(m4, seed=17)
     layout = observation_layout(m4)
     park(w, 0, w.site_x[0], w.site_z[0])
-    total = m4.construction.site_wood_cost + m4.construction.site_stone_cost
 
     obs = w.observations()
-    assert obs[0, layout.index("site0.progress")] == pytest.approx(0.0)
+    assert obs[0, layout.index("site0.need_wood")] == pytest.approx(1.0)
+    assert obs[0, layout.index("site0.need_stone")] == pytest.approx(1.0)
+    assert obs[0, layout.index("site0.complete")] == pytest.approx(0.0)
 
     w.site_wood_needed[0] = 0
+    obs = w.observations()
+    assert obs[0, layout.index("site0.need_wood")] == pytest.approx(0.0)
+    assert obs[0, layout.index("site0.need_stone")] == pytest.approx(1.0)
+    assert obs[0, layout.index("site0.complete")] == pytest.approx(0.0)
+
     w.site_stone_needed[0] = 0
     obs = w.observations()
-    assert obs[0, layout.index("site0.progress")] == pytest.approx(1.0)
     assert obs[0, layout.index("site0.complete")] == pytest.approx(1.0)
 
 
@@ -370,7 +377,7 @@ def test_ppo_runs_in_a_construction_world(m4):
     })
     torch.manual_seed(0)
     envs = VecWorld(tiny, seed=0, num_envs=tiny.ppo.num_envs)
-    assert envs.obs_dim == 53
+    assert envs.obs_dim == 55
     trainer = PPOTrainer(tiny, build_policy(tiny, envs.obs_dim), envs, device="cpu")
     for i in range(2):
         m = trainer.train_update(i)

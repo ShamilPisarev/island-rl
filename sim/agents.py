@@ -155,7 +155,7 @@ def observation_dim(cfg: Config) -> int:
         dim += 2                    # own wood, own stone
         dim += 3 * cc.k_trees       # dx, dz, wood left
         dim += 3 * cc.k_rocks       # dx, dz, stone left
-        dim += 4 * cc.k_sites       # dx, dz, progress, complete
+        dim += 5 * cc.k_sites       # dx, dz, need_wood, need_stone, complete
         dim += 2                    # cycle phase, is_night
     return dim
 
@@ -263,7 +263,8 @@ def observation_layout(cfg: Config) -> tuple[str, ...]:
         for j in range(cc.k_rocks):
             names += [f"rock{j}.dx", f"rock{j}.dz", f"rock{j}.stone"]
         for j in range(cc.k_sites):
-            names += [f"site{j}.dx", f"site{j}.dz", f"site{j}.progress", f"site{j}.complete"]
+            names += [f"site{j}.dx", f"site{j}.dz",
+                      f"site{j}.need_wood", f"site{j}.need_stone", f"site{j}.complete"]
         names += ["night.phase", "night.is_night"]
     names += ["edge.room", "edge.outward_x", "edge.outward_z"]
     return tuple(names)
@@ -411,12 +412,16 @@ def build_observations(
         col = _entity_block(out, col, pool, construction.rock_x, construction.rock_z,
                             [construction.rock_stone / max(cc.rock_stone, 1)],
                             cc.k_rocks, scale)
-        total_cost = max(cc.site_wood_cost + cc.site_stone_cost, 1)
-        needed = construction.site_wood_needed + construction.site_stone_needed
-        progress = 1.0 - needed / total_cost
-        complete = (needed == 0).astype(np.float64)
+        # Per-material remaining need, not a blended progress number: whether to
+        # bring wood or stone is a decision the policy has to make, and a policy
+        # that cannot see which material is missing can only guess -- the same
+        # argument that put neighbours' food in the M3 observation.
+        need_w = construction.site_wood_needed / max(cc.site_wood_cost, 1)
+        need_s = construction.site_stone_needed / max(cc.site_stone_cost, 1)
+        complete = ((construction.site_wood_needed == 0)
+                    & (construction.site_stone_needed == 0)).astype(np.float64)
         col = _entity_block(out, col, pool, construction.site_x, construction.site_z,
-                            [progress, complete], cc.k_sites, scale)
+                            [need_w, need_s, complete], cc.k_sites, scale)
         phase, is_night = night_phase(construction.tick, cfg)
         out[:, col + 0] = phase
         out[:, col + 1] = float(is_night)

@@ -42,6 +42,11 @@ class UpdateMetrics:
     survivors: float | None = None
     steals: float | None = None
     contests_lost: float | None = None
+    wood_gathered: float | None = None
+    stone_gathered: float | None = None
+    builds: float | None = None
+    shelters: float | None = None
+    night_sheltered_frac: float | None = None
 
     # optimisation metrics
     policy_loss: float = 0.0
@@ -63,6 +68,8 @@ def summarise_episodes(episodes: Iterable[EpisodeStats]) -> dict[str, float | No
             "episodes": 0, "mean_lifespan": None, "deaths_per_episode": None,
             "berries_gathered": None, "mean_final_hunger": None, "survivors": None,
             "steals": None, "contests_lost": None,
+            "wood_gathered": None, "stone_gathered": None, "builds": None,
+            "shelters": None, "night_sheltered_frac": None,
         }
     return {
         "episodes": len(episodes),
@@ -73,6 +80,14 @@ def summarise_episodes(episodes: Iterable[EpisodeStats]) -> dict[str, float | No
         "survivors": float(np.mean([e.survivors for e in episodes])),
         "steals": float(np.mean([e.steals for e in episodes])),
         "contests_lost": float(np.mean([e.contests_lost for e in episodes])),
+        "wood_gathered": float(np.mean([e.wood_gathered for e in episodes])),
+        "stone_gathered": float(np.mean([e.stone_gathered for e in episodes])),
+        "builds": float(np.mean([e.builds for e in episodes])),
+        "shelters": float(np.mean([e.shelters_completed for e in episodes])),
+        "night_sheltered_frac": float(
+            sum(e.night_ticks_sheltered for e in episodes)
+            / max(sum(e.night_ticks_sheltered + e.night_ticks_exposed for e in episodes), 1)
+        ),
     }
 
 
@@ -101,6 +116,8 @@ class MetricsLogger:
         ("deaths_per_episode", "deaths", "{:>6.2f}"),
         ("berries_gathered", "berries", "{:>7.1f}"),
         ("steals", "steals", "{:>6.1f}"),
+        ("shelters", "shelt", "{:>5.1f}"),
+        ("night_sheltered_frac", "night%", "{:>6.2f}"),
         ("mean_final_hunger", "hunger", "{:>6.1f}"),
         ("mean_reward", "rew/step", "{:>8.4f}"),
         ("entropy", "entropy", "{:>7.3f}"),
@@ -177,6 +194,8 @@ class EvalResult:
     survivors: float
     survival_rate: float
     steals: float = 0.0
+    shelters: float = 0.0
+    night_sheltered_frac: float = 0.0
 
     @staticmethod
     def from_episodes(label: str, episodes: list[EpisodeStats], max_ticks: int) -> "EvalResult":
@@ -192,6 +211,11 @@ class EvalResult:
             survivors=float(np.mean([e.survivors for e in episodes])),
             survival_rate=float(lifespans.mean() / max_ticks),
             steals=float(np.mean([e.steals for e in episodes])),
+            shelters=float(np.mean([e.shelters_completed for e in episodes])),
+            night_sheltered_frac=float(
+                sum(e.night_ticks_sheltered for e in episodes)
+                / max(sum(e.night_ticks_sheltered + e.night_ticks_exposed for e in episodes), 1)
+            ),
         )
 
     def line(self) -> str:
@@ -200,4 +224,6 @@ class EvalResult:
             f"({self.survival_rate * 100:5.1f}% of episode)  deaths {self.deaths_per_episode:4.2f}  "
             f"berries {self.berries_gathered:6.1f}  final hunger {self.mean_final_hunger:5.1f}"
             + (f"  steals {self.steals:5.1f}" if self.steals else "")
+            + (f"  shelters {self.shelters:3.1f} ({self.night_sheltered_frac * 100:3.0f}% nights in)"
+               if self.shelters or self.night_sheltered_frac else "")
         )

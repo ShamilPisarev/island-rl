@@ -23,6 +23,7 @@ from .config import Config, config_from_dict, load_config
 from .metrics import EvalResult
 from .policy import (
     Brain,
+    greedy_builder_actions,
     greedy_forager_actions,
     greedy_thief_actions,
     policy_from_config_dict,
@@ -86,6 +87,8 @@ def make_act_fn(kind: str, cfg: Config, policy: Brain | None,
         return lambda obs, mask=None: greedy_forager_actions(obs, cfg)
     if kind == "thief":
         return lambda obs, mask=None: greedy_thief_actions(obs, cfg)
+    if kind == "builder":
+        return lambda obs, mask=None: greedy_builder_actions(obs, cfg, mask)
     if policy is None:
         raise ValueError("a checkpoint is required to evaluate a learned policy")
     return policy_act_fn(policy, deterministic=deterministic, device=device)
@@ -125,6 +128,11 @@ def baselines(cfg: Config, episodes: int, seed: int) -> list[EvalResult]:
         results.append(
             evaluate(cfg, make_act_fn("thief", cfg, None, seed), episodes, seed, "scripted thief")
         )
+    if cfg.construction.enabled:
+        results.append(
+            evaluate(cfg, make_act_fn("builder", cfg, None, seed), episodes, seed,
+                     "scripted builder")
+        )
     return results
 
 
@@ -133,7 +141,7 @@ def main() -> None:
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--config", default=None,
                         help="ignored when --checkpoint is given; the checkpoint carries its own")
-    parser.add_argument("--policy", choices=["learned", "random", "greedy", "thief"], default=None)
+    parser.add_argument("--policy", choices=["learned", "random", "greedy", "thief", "builder"], default=None)
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--seed", type=int, default=10_000,
                         help="evaluation seeds are offset from training seeds by default")

@@ -177,3 +177,30 @@ def test_scripted_forager_beats_random_survival(cfg):
     greedy = run(lambda obs, mask=None: greedy_forager_actions(obs, cfg), seeds)
     random_life = run(lambda obs, mask=None: rng.integers(0, N_ACTIONS, size=obs.shape[0]), seeds)
     assert greedy > random_life * 1.2
+
+
+def test_construction_replay_is_v2_with_material_blocks(cfg):
+    """v2 only for construction worlds; v1 files stay valid forever."""
+    from sim.config import load_config
+
+    m4 = load_config("config/m4.yaml").replace(**{"world.max_ticks": 40})
+    rec = record_episode(m4, seed=2, act_fn=random_actor(0, 6), label="v2", source="fake")
+    d = rec.to_dict()
+    assert d["schema_version"] == 2
+    assert d["tick_fields"]["agent"] == ["x", "z", "hunger", "food", "alive", "action",
+                                         "wood", "stone"]
+    assert len(d["trees"]) == m4.construction.num_trees
+    assert len(d["sites"]) == m4.construction.num_sites
+    for tick in d["ticks"]:
+        assert len(tick["a"][0]) == 8
+        assert len(tick["w"]) == m4.construction.num_trees
+        assert len(tick["s"]) == m4.construction.num_sites
+    assert "night_cycle" in d["world"]
+
+    # and a non-construction world still writes v1 with 6-column rows
+    rec1 = record_episode(cfg.replace(**{"world.max_ticks": 20}), seed=3,
+                          act_fn=random_actor(1, 6), label="v1", source="fake")
+    d1 = rec1.to_dict()
+    assert d1["schema_version"] == 1
+    assert len(d1["ticks"][0]["a"][0]) == 6
+    assert "trees" not in d1

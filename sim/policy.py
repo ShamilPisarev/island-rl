@@ -31,7 +31,8 @@ import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
-from .agents import GATHER, N_ACTIONS, N_MOVE_ACTIONS, STEAL, num_actions
+from .agents import (BUILD, CHOP, GATHER, IDLE, MINE, N_ACTIONS,
+                     N_MOVE_ACTIONS, STEAL, num_actions, observation_layout)
 from .config import Config
 
 
@@ -335,7 +336,15 @@ def greedy_forager_actions(obs: np.ndarray, cfg: Config) -> np.ndarray:
     n = obs.shape[0]
     actions = np.full(n, N_MOVE_ACTIONS, dtype=np.int64)  # idle
 
-    bush = obs[:, 2:2 + 3 * kb].reshape(n, kb, 3)
+    # Columns located by NAME, not position: optional channels (neighbour food,
+    # bush contested, the whole M4 block) shift the layout, and a hardcoded
+    # offset fails silently -- the M4 world's own-materials columns landed where
+    # this function expected bushes, and the forager quietly starved.
+    layout = observation_layout(cfg)
+    col = {name: i for i, name in enumerate(layout)}
+    bush_stride = col["bush1.dx"] - col["bush0.dx"] if kb > 1 else 3
+    bush = obs[:, col["bush0.dx"]:col["bush0.dx"] + kb * bush_stride]
+    bush = bush.reshape(n, kb, bush_stride)
     has_berries = bush[:, :, 2] > 0.0
     dist = np.hypot(bush[:, :, 0], bush[:, :, 1]) * scale
     dist = np.where(has_berries, dist, np.inf)
@@ -343,7 +352,7 @@ def greedy_forager_actions(obs: np.ndarray, cfg: Config) -> np.ndarray:
     rows = np.arange(n)
     best = dist[rows, nearest]
 
-    full = obs[:, 1] >= 1.0 - 1e-6
+    full = obs[:, col["own.food"]] >= 1.0 - 1e-6
     reachable = np.isfinite(best) & ~full
     in_range = reachable & (best <= cfg.bushes.gather_radius)
 
@@ -375,15 +384,125 @@ def greedy_thief_actions(obs: np.ndarray, cfg: Config) -> np.ndarray:
 
     actions = greedy_forager_actions(obs, cfg)
     n = obs.shape[0]
-    kb, ka = cfg.observation.k_bushes, cfg.observation.k_agents
+    ka = cfg.observation.k_agents
     scale = cfg.observation.distance_scale
 
-    start = 2 + 3 * kb
+    layout = observation_layout(cfg)
+    col = {name: i for i, name in enumerate(layout)}
+    start = col["neighbour0.dx"]
     neighbours = obs[:, start:start + 4 * ka].reshape(n, ka, 4)
     loaded = neighbours[:, :, 3] > 0.0
     reach = np.hypot(neighbours[:, :, 0], neighbours[:, :, 1]) * scale
     reach = np.where(loaded, reach, np.inf)
 
-    full = obs[:, 1] >= 1.0 - 1e-6
+    full = obs[:, col["own.food"]] >= 1.0 - 1e-6
     can_rob = ~full & (reach.min(axis=1) <= cfg.competition.steal_radius)
     return np.where(can_rob, STEAL, actions)
+
+
+def _heading(dx: np.ndarray, dz: np.ndarray) -> np.ndarray:
+    """Compass action pointing along (dx, dz); action i is i*45deg from +z."""
+    return (np.round(np.arctan2(dx, dz) / (np.pi / 4.0)) % N_MOVE_ACTIONS).astype(np.int64)
+
+
+def greedy_builder_actions(obs: np.ndarray, cfg: Config,
+                           mask: np.ndarray | None = None) -> np.ndarray:
+    """The Milestone 4 reference: forage first, build shelter, sleep indoors.
+
+    Priorities per agent, top first:
+      1. keep food topped up (delegate to the greedy forager when hungry or
+         under-stocked) -- a dead builder builds nothing
+      2. at night, or just before nightfall, run to the nearest completed
+         shelter and stay inside it
+      3. otherwise work on construction: deliver carried material to the
+         nearest incomplete site, else harvest whichever material that site
+         still needs more of
+
+    Observation-driven like the forager and thief, with one honest exception:
+    it also reads the action mask for "could chop/mine/build succeed right
+    here", which is information the learned policy receives too. It never
+    plans routes and never coordinates -- a floor on what construction is
+    worth, not a ceiling.
+    """
+    cc = cfg.construction
+    if not cc.enabled:
+        return greedy_forager_actions(obs, cfg)
+
+    layout = observation_layout(cfg)
+    col = {name: i for i, name in enumerate(layout)}
+    scale = cfg.observation.distance_scale
+    n = obs.shape[0]
+    actions = greedy_forager_actions(obs, cfg)   # default: keep food coming
+
+    def block(prefix: str, k: int, per: int) -> np.ndarray:
+        start = col[f"{prefix}0.dx"]
+        return obs[:, start:start + k * per].reshape(n, k, per)
+
+    trees = block("tree", cc.k_trees, 3)
+    rocks = block("rock", cc.k_rocks, 3)
+    sites = block("site", cc.k_sites, 5)
+    phase = obs[:, col["night.phase"]]
+    is_night = obs[:, col["night.is_night"]] > 0.5
+    # head home a little before dusk: crossing the island takes ~50 ticks
+    dusk_soon = phase > (1.0 - cc.night_fraction) - 0.2
+
+    hungry = obs[:, col["own.hunger"]] < 0.55
+    low_food = obs[:, col["own.food"]] < 0.5
+    forage_mode = hungry | low_food
+    carrying = (obs[:, col["own.wood"]] + obs[:, col["own.stone"]]) > 0.0
+
+    def nearest(entities: np.ndarray, want: np.ndarray) -> tuple[np.ndarray, ...]:
+        d = np.hypot(entities[:, :, 0], entities[:, :, 1]) * scale
+        d = np.where(want, d, np.inf)
+        j = np.argmin(d, axis=1)
+        r = np.arange(n)
+        return d[r, j], entities[r, j, 0], entities[r, j, 1]
+
+    # --- 2. shelter at night (complete sites only)
+    complete = sites[:, :, 4] > 0.5
+    d_home, hx, hz = nearest(sites, complete)
+    inside = d_home <= cc.shelter_radius * 0.6
+    seek_shelter = (is_night | dusk_soon) & np.isfinite(d_home)
+    actions = np.where(seek_shelter & ~inside, _heading(hx, hz), actions)
+    # once home at night, stay put unless the forager found food in arm's reach
+    stay = seek_shelter & inside & (actions < N_MOVE_ACTIONS)
+    actions = np.where(stay, IDLE, actions)
+
+    # --- 3. construction work, only when fed and it is broad daylight.
+    # Target the MOST FINISHED incomplete site, not the nearest one: progress is
+    # objective, so every agent picks the same focal site and material lands in
+    # one place instead of being smeared across all three. (Six agents each
+    # feeding their own nearest site completed 0.4 shelters an episode; a focal
+    # site completes before the first nightfall.)
+    work = ~forage_mode & ~seek_shelter
+    present = np.hypot(sites[:, :, 0], sites[:, :, 1]) > 0
+    incomplete = (sites[:, :, 4] < 0.5) & present
+    remaining = sites[:, :, 2] + sites[:, :, 3]          # need_wood + need_stone
+    remaining = np.where(incomplete, remaining, np.inf)
+    j = np.argmin(remaining, axis=1)
+    r = np.arange(n)
+    has_site = np.isfinite(remaining[r, j])
+    sx, sz = sites[r, j, 0], sites[r, j, 1]
+    site_needs_wood = sites[r, j, 2] > 0.0
+    site_needs_stone = sites[r, j, 3] > 0.0
+
+    if mask is None:
+        mask = np.ones((n, num_actions(cfg)), dtype=bool)
+
+    deliver = work & carrying & has_site
+    actions = np.where(deliver & mask[:, BUILD], BUILD, actions)
+    actions = np.where(deliver & ~mask[:, BUILD], _heading(sx, sz), actions)
+
+    fetch = work & ~carrying & has_site
+    d_tree, tx, tz = nearest(trees, trees[:, :, 2] > 0)
+    d_rock, rx, rz = nearest(rocks, rocks[:, :, 2] > 0)
+    # fetch what the focal site actually still needs; stone when wood is covered
+    want_stone = (~site_needs_wood & site_needs_stone) | ~np.isfinite(d_tree)
+    actions = np.where(fetch & mask[:, CHOP] & ~want_stone, CHOP, actions)
+    actions = np.where(fetch & mask[:, MINE] & want_stone, MINE, actions)
+    walk_material = fetch & ~mask[:, CHOP] & ~mask[:, MINE]
+    goal_x = np.where(want_stone, rx, tx)
+    goal_z = np.where(want_stone, rz, tz)
+    ok = walk_material & (np.isfinite(d_tree) | np.isfinite(d_rock))
+    actions = np.where(ok, _heading(goal_x, goal_z), actions)
+    return actions

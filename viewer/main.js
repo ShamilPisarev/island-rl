@@ -9,11 +9,13 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 // --- replay schema this build can read (see sim/replay.py) ------------------
-const SUPPORTED_SCHEMA = [1];
+const SUPPORTED_SCHEMA = [1, 2];   // v2 = Milestone 4: materials, shelters, night
 // Column order inside each tick's `a` rows. Cross-checked against the file's
 // own tick_fields on load, so a schema change cannot silently shift a column.
 const A_X = 0, A_Z = 1, A_HUNGER = 2, A_FOOD = 3, A_ALIVE = 4, A_ACTION = 5;
+const A_WOOD = 6, A_STONE = 7;                      // v2 only
 const EXPECTED_AGENT_FIELDS = ['x', 'z', 'hunger', 'food', 'alive', 'action'];
+const EXPECTED_AGENT_FIELDS_V2 = [...EXPECTED_AGENT_FIELDS, 'wood', 'stone'];
 
 const GATHER_COLOR = 0x6ec46e;
 const STEAL_COLOR = 0xe0563c;
@@ -48,7 +50,8 @@ controls.maxPolarAngle = Math.PI * 0.49;   // don't let the camera go under the 
 controls.minDistance = 8;
 controls.maxDistance = 320;
 
-scene.add(new THREE.HemisphereLight(0xbcd8ff, 0x3d5a32, 0.75));
+const hemi = new THREE.HemisphereLight(0xbcd8ff, 0x3d5a32, 0.75);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff0d5, 1.5);
 sun.position.set(70, 110, 45);
 sun.castShadow = true;
@@ -105,7 +108,11 @@ const state = {
   follow: -1,
   agents: [],         // { group, body, material, barFill, berries[], deathTick }
   bushes: [],         // { mesh, base }
+  trees: [],
+  rocks: [],
+  sites: [],
   actionNames: [],
+  construction: false,
 };
 
 function fatal(title, message) {
@@ -127,10 +134,12 @@ function validate(replay, origin) {
     );
   }
   const fields = replay?.tick_fields?.agent;
-  if (!Array.isArray(fields) || EXPECTED_AGENT_FIELDS.some((f, i) => fields[i] !== f)) {
+  const expected = replay.schema_version >= 2 ? EXPECTED_AGENT_FIELDS_V2 : EXPECTED_AGENT_FIELDS;
+  if (!Array.isArray(fields) || fields.length !== expected.length
+      || expected.some((f, i) => fields[i] !== f)) {
     throw new Error(
       `${origin}\n\nAgent column layout is ${JSON.stringify(fields)}, expected ` +
-      `${JSON.stringify(EXPECTED_AGENT_FIELDS)}.\n\nRefusing to render: the columns ` +
+      `${JSON.stringify(expected)}.\n\nRefusing to render: the columns ` +
       `would be misread.`
     );
   }
@@ -205,6 +214,88 @@ function buildBush(x, z) {
   group.add(foliage);
 
   return { group, foliage };
+}
+
+function buildTree(x, z) {
+  const group = new THREE.Group();
+  group.position.set(x, ISLAND_TOP, z);
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.28, 0.4, 2.2, 6),
+    new THREE.MeshStandardMaterial({ color: 0x5d4327, roughness: 1, flatShading: true }),
+  );
+  trunk.position.y = 1.1;
+  trunk.castShadow = true;
+  group.add(trunk);
+  const crown = new THREE.Mesh(
+    new THREE.ConeGeometry(1.7, 3.6, 7),
+    new THREE.MeshStandardMaterial({ color: 0x2f6b34, roughness: 0.9, flatShading: true }),
+  );
+  crown.position.y = 3.6;
+  crown.castShadow = true;
+  group.add(crown);
+  return { group, crown, trunk };
+}
+
+function buildRock(x, z) {
+  const mesh = new THREE.Mesh(
+    new THREE.DodecahedronGeometry(1.5, 0),
+    new THREE.MeshStandardMaterial({ color: 0x9aa7b8, roughness: 0.9, flatShading: true }),
+  );
+  mesh.position.set(x, ISLAND_TOP + 0.5, z);
+  mesh.rotation.set(0.4, 0.9, 0.2);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return { mesh };
+}
+
+function buildSite(x, z, shelterRadius) {
+  const group = new THREE.Group();
+  group.position.set(x, ISLAND_TOP, z);
+
+  // foundation ring: always visible, marks the buildable spot
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(2.0, 0.16, 6, 18),
+    new THREE.MeshStandardMaterial({ color: 0x8b8378, roughness: 1, flatShading: true }),
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.1;
+  ring.receiveShadow = true;
+  group.add(ring);
+
+  // walls rise with progress
+  const walls = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.8, 1.9, 1.0, 8, 1, true),
+    new THREE.MeshStandardMaterial({ color: 0xb08d57, roughness: 0.95, flatShading: true,
+                                     side: THREE.DoubleSide }),
+  );
+  walls.castShadow = true;
+  group.add(walls);
+
+  // roof appears on completion
+  const roof = new THREE.Mesh(
+    new THREE.ConeGeometry(2.4, 1.6, 8),
+    new THREE.MeshStandardMaterial({ color: 0x7a5230, roughness: 0.9, flatShading: true }),
+  );
+  roof.castShadow = true;
+  roof.visible = false;
+  group.add(roof);
+
+  // faint protection halo, shown for completed shelters at night
+  const halo = new THREE.Mesh(
+    new THREE.RingGeometry(shelterRadius - 0.25, shelterRadius, 36),
+    new THREE.MeshBasicMaterial({ color: 0xffd98a, transparent: true, opacity: 0.0,
+                                  side: THREE.DoubleSide }),
+  );
+  halo.rotation.x = -Math.PI / 2;
+  halo.position.y = 0.08;
+  group.add(halo);
+
+  // warm light for the hearth at night
+  const lamp = new THREE.PointLight(0xffc36b, 0.0, shelterRadius * 2.2, 1.8);
+  lamp.position.y = 2.2;
+  group.add(lamp);
+
+  return { group, walls, roof, halo, lamp };
 }
 
 function buildAgent(color) {
@@ -300,6 +391,28 @@ function loadReplay(replay, origin) {
     return built;
   });
 
+  state.construction = replay.schema_version >= 2;
+  state.trees = [];
+  state.rocks = [];
+  state.sites = [];
+  if (state.construction) {
+    state.trees = (replay.trees || []).map((e) => {
+      const built = buildTree(e.x, e.z);
+      worldGroup.add(built.group);
+      return built;
+    });
+    state.rocks = (replay.rocks || []).map((e) => {
+      const built = buildRock(e.x, e.z);
+      worldGroup.add(built.mesh);
+      return built;
+    });
+    state.sites = (replay.sites || []).map((e) => {
+      const built = buildSite(e.x, e.z, replay.world.shelter_radius || 6);
+      worldGroup.add(built.group);
+      return built;
+    });
+  }
+
   const capacity = replay.world.food_capacity;
   state.agents = replay.agents.map((a, i) => {
     const built = buildAgent(a.color);
@@ -387,11 +500,11 @@ function applyTick(t) {
       A.berries.forEach((pip, k) => { pip.visible = k < food; });
 
       const action = state.actionNames[a0[A_ACTION]];
-      const acting = action === 'gather' || action === 'steal';
-      A.marker.visible = acting;
-      if (acting) {
-        A.marker.material.color.setHex(action === 'steal' ? STEAL_COLOR : GATHER_COLOR);
-      }
+      const MARKERS = { gather: GATHER_COLOR, steal: STEAL_COLOR,
+                        chop: 0x8a5a2b, mine: 0x9aa7b8, build: 0xe0b83c };
+      const color = MARKERS[action];
+      A.marker.visible = color !== undefined;
+      if (color !== undefined) A.marker.material.color.setHex(color);
     } else {
       A.marker.visible = false;
     }
@@ -408,9 +521,77 @@ function applyTick(t) {
     bush.foliage.material.color.setRGB(0.25 + (1 - v) * 0.28, 0.24 + v * 0.36, 0.13 + (1 - v) * 0.08);
   }
 
+  if (state.construction) {
+    const wcfg = state.replay.world;
+    for (let k = 0; k < state.trees.length; k++) {
+      const frac = (cur.w?.[k] ?? 0) / (wcfg.tree_wood || 1);
+      const tree = state.trees[k];
+      tree.crown.scale.setScalar(0.25 + 0.75 * frac);
+      tree.crown.position.y = 2.2 + 1.4 * frac;
+      tree.crown.material.color.setRGB(0.18 + (1 - frac) * 0.25,
+                                       0.42 - (1 - frac) * 0.15,
+                                       0.2 - (1 - frac) * 0.05);
+    }
+    for (let k = 0; k < state.rocks.length; k++) {
+      const frac = (cur.r?.[k] ?? 0) / (wcfg.rock_stone || 1);
+      state.rocks[k].mesh.scale.setScalar(0.35 + 0.65 * frac);
+    }
+    const night = nightFactor(t);
+    for (let k = 0; k < state.sites.length; k++) {
+      const [wNeed, sNeed] = cur.s?.[k] ?? [1, 1];
+      const total = (wcfg.site_wood_cost || 4) + (wcfg.site_stone_cost || 2);
+      const progress = 1 - (wNeed + sNeed) / total;
+      const done = wNeed === 0 && sNeed === 0;
+      const site = state.sites[k];
+      site.walls.visible = progress > 0;
+      site.walls.scale.y = Math.max(progress, 0.05);
+      site.walls.position.y = 1.25 * Math.max(progress, 0.05);   // grow upward
+      site.roof.visible = done;
+      site.roof.position.y = 2.5 * progress + 0.9;
+      site.halo.material.opacity = done ? night * 0.35 : 0;
+      site.lamp.intensity = done ? night * 1.4 : 0;
+    }
+    applyNight(night);
+  } else {
+    applyNight(0);
+  }
+
   updateAgentPanel(cur);
-  $('tickCount').textContent = `${i0} / ${state.lastTick}`;
+  const night = state.construction && nightFactor(t) > 0.5;
+  $('tickCount').textContent = `${night ? '\u263e ' : ''}${i0} / ${state.lastTick}`;
   $('scrub').value = String(t);
+}
+
+// Night as a 0..1 factor with a soft edge either side of the boundary, derived
+// from the tick index and the cycle constants in the replay's world block --
+// never from a per-tick flag that could disagree with them.
+function nightFactor(t) {
+  const w = state.replay.world;
+  if (!w.night_cycle) return 0;
+  const phase = (t % w.night_cycle) / w.night_cycle;
+  const nightStart = 1 - (w.night_fraction || 0.25);
+  const soft = 0.02;   // ~4 ticks of dusk on a 200-tick cycle
+  const into = (phase - nightStart) / soft;
+  const outof = (1 - phase) / soft;
+  return Math.max(0, Math.min(1, into, outof));
+}
+
+const DAY = {
+  sun: 1.5, sunColor: new THREE.Color(0xfff0d5),
+  hemi: 0.75, water: new THREE.Color(0x2f86bd), bg: new THREE.Color(0x0d1117),
+};
+const NIGHT = {
+  sun: 0.22, sunColor: new THREE.Color(0x7fa3d8),
+  hemi: 0.18, water: new THREE.Color(0x123049), bg: new THREE.Color(0x05070c),
+};
+
+function applyNight(f) {
+  sun.intensity = DAY.sun + (NIGHT.sun - DAY.sun) * f;
+  sun.color.copy(DAY.sunColor).lerp(NIGHT.sunColor, f);
+  hemi.intensity = DAY.hemi + (NIGHT.hemi - DAY.hemi) * f;
+  water.material.color.copy(DAY.water).lerp(NIGHT.water, f);
+  scene.background.copy(DAY.bg).lerp(NIGHT.bg, f);
+  scene.fog.color.copy(scene.background);
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +626,7 @@ function updateAgentPanel(tick) {
     row.classList.toggle('followed', state.follow === i);
     row.querySelector('.meta').textContent = alive
       ? `hunger ${a[A_HUNGER].toFixed(0)} · food ${a[A_FOOD]}/${world.food_capacity}`
+        + (state.construction ? ` · w${a[A_WOOD]} s${a[A_STONE]}` : '')
       : 'dead';
     const fill = row.querySelector('.bar > i');
     fill.style.width = `${Math.max(alive ? hunger : 0, 0) * 100}%`;
@@ -455,9 +637,15 @@ function updateAgentPanel(tick) {
 
 function renderSummary() {
   const s = state.replay.summary || {};
-  $('summary').innerHTML =
+  let html =
     `<b>${s.mean_lifespan ?? '?'}</b> mean lifespan · <b>${s.deaths ?? '?'}</b> deaths · ` +
     `<b>${s.berries_gathered ?? '?'}</b> berries · <b>${s.meals ?? '?'}</b> meals`;
+  if (s.shelters_completed !== undefined) {
+    const nights = s.night_ticks_sheltered + s.night_ticks_exposed;
+    const pct = nights ? Math.round(100 * s.night_ticks_sheltered / nights) : 0;
+    html += ` · <b>${s.shelters_completed}</b> shelters · <b>${pct}%</b> of night indoors`;
+  }
+  $('summary').innerHTML = html;
 }
 
 function setFollow(i) {

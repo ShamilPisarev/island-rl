@@ -1,5 +1,22 @@
 """Replay recording, schema, and the manifest the viewer reads.
 
+REPLAY SCHEMA v1 / v2
+=====================
+
+v2 (Milestone 4) extends v1 and is emitted only for construction worlds:
+non-construction worlds keep the v1 encoding unchanged, so every replay written
+before M4 stays valid. What v2 adds:
+
+    agent rows  : two extra columns, wood and stone carried
+    trees       : [{x, z}]  static, index-aligned with per-tick `w`
+    rocks       : [{x, z}]  static, index-aligned with per-tick `r`
+    sites       : [{x, z}]  static, index-aligned with per-tick `s`
+    per tick    : w = wood left per tree, r = stone left per rock,
+                  s = [wood_still_needed, stone_still_needed] per site
+    world block : night_cycle, night_fraction, shelter_radius, site costs --
+                  the viewer derives day/night from the tick index and these,
+                  rather than trusting a redundant per-tick flag
+
 REPLAY SCHEMA v1
 ================
 
@@ -54,9 +71,11 @@ from .config import Config
 from .world import World
 
 SCHEMA_VERSION = 1
-SUPPORTED_VERSIONS = frozenset({1})
+SCHEMA_VERSION_CONSTRUCTION = 2
+SUPPORTED_VERSIONS = frozenset({1, 2})
 
 AGENT_FIELDS = ["x", "z", "hunger", "food", "alive", "action"]
+AGENT_FIELDS_V2 = AGENT_FIELDS + ["wood", "stone"]
 BUSH_FIELDS = ["berries"]
 
 MANIFEST_NAME = "index.json"
@@ -95,8 +114,10 @@ class ReplayRecorder:
 
     def snapshot(self) -> None:
         pool = self.world.pool
-        rows = [
-            [
+        construction = self.cfg.construction.enabled
+        rows = []
+        for i in range(pool.n):
+            row = [
                 round(float(pool.x[i]), 2),
                 round(float(pool.z[i]), 2),
                 round(float(pool.hunger[i]), 1),
@@ -104,22 +125,28 @@ class ReplayRecorder:
                 int(pool.alive[i]),
                 int(pool.last_action[i]) if self.ticks else IDLE,
             ]
-            for i in range(pool.n)
-        ]
-        self.ticks.append(
-            {
-                "t": int(self.world.tick),
-                "a": rows,
-                "b": [int(v) for v in self.world.bush_berries],
-            }
-        )
+            if construction:
+                row += [int(pool.wood[i]), int(pool.stone[i])]
+            rows.append(row)
+        tick: dict[str, Any] = {
+            "t": int(self.world.tick),
+            "a": rows,
+            "b": [int(v) for v in self.world.bush_berries],
+        }
+        if construction:
+            tick["w"] = [int(v) for v in self.world.tree_wood]
+            tick["r"] = [int(v) for v in self.world.rock_stone]
+            tick["s"] = [[int(a), int(b)] for a, b in
+                         zip(self.world.site_wood_needed, self.world.site_stone_needed)]
+        self.ticks.append(tick)
 
     def to_dict(self) -> dict[str, Any]:
         cfg = self.cfg
         stats = self.world.stats()
         n = cfg.world.num_agents
-        return {
-            "schema_version": SCHEMA_VERSION,
+        construction = cfg.construction.enabled
+        blob = {
+            "schema_version": SCHEMA_VERSION_CONSTRUCTION if construction else SCHEMA_VERSION,
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "label": self.label,
             "source": self.source,
@@ -137,7 +164,8 @@ class ReplayRecorder:
             "action_names": list(action_names(cfg)),
             "agents": [{"id": i, "color": agent_color(i, n)} for i in range(n)],
             "bushes": self.bushes,
-            "tick_fields": {"agent": AGENT_FIELDS, "bush": BUSH_FIELDS},
+            "tick_fields": {"agent": AGENT_FIELDS_V2 if construction else AGENT_FIELDS,
+                            "bush": BUSH_FIELDS},
             "ticks": self.ticks,
             "summary": {
                 "ticks": stats.ticks,
@@ -149,6 +177,33 @@ class ReplayRecorder:
                 "mean_final_hunger": round(stats.mean_final_hunger, 2),
             },
         }
+        if construction:
+            cc = cfg.construction
+            world = self.world
+            blob["world"].update({
+                "night_cycle": cc.night_cycle,
+                "night_fraction": cc.night_fraction,
+                "shelter_radius": cc.shelter_radius,
+                "site_wood_cost": cc.site_wood_cost,
+                "site_stone_cost": cc.site_stone_cost,
+                "material_capacity": cc.material_capacity,
+                "tree_wood": cc.tree_wood,
+                "rock_stone": cc.rock_stone,
+            })
+            blob["trees"] = [{"x": round(float(x), 2), "z": round(float(z), 2)}
+                             for x, z in zip(world.tree_x, world.tree_z)]
+            blob["rocks"] = [{"x": round(float(x), 2), "z": round(float(z), 2)}
+                             for x, z in zip(world.rock_x, world.rock_z)]
+            blob["sites"] = [{"x": round(float(x), 2), "z": round(float(z), 2)}
+                             for x, z in zip(world.site_x, world.site_z)]
+            blob["summary"].update({
+                "wood_gathered": stats.wood_gathered,
+                "stone_gathered": stats.stone_gathered,
+                "shelters_completed": stats.shelters_completed,
+                "night_ticks_sheltered": stats.night_ticks_sheltered,
+                "night_ticks_exposed": stats.night_ticks_exposed,
+            })
+        return blob
 
     def save(self, path: str | Path, update_manifest_file: bool = True) -> Path:
         path = Path(path)
