@@ -321,6 +321,22 @@ approach walk that earned nothing (deliveries ×3.6), and making protection scal
 with build progress removed a cliff where three of every four delivered units
 were invisible to the value function (nights sheltered ×6).
 
+**The shaping annealed away cleanly.** The brief asks whether an M4 bootstrap can
+be removed once it has done its job. Continuing the shaped policy for 200 more
+updates with every shaping term at zero:
+
+| | deliveries/ep | nights indoors | lifespan |
+|---|---|---|---|
+| shaped | 1.94 | 16.1% | 377.6 |
+| **annealed (nothing paid)** | **2.21** | **18.0%** | **382.3** |
+| unshaped control | 0.73 | 4.7% | 368.8 |
+
+The behaviour held rather than decaying toward the control — so the shaping was
+genuine scaffolding, not a subsidy the behaviour depended on. Read that against
+M3, where the same technique produced 4.8× the theft and *worse* survival. Same
+method, opposite verdict: what differs is whether the shaped behaviour was worth
+doing, and only the terminal metric tells you.
+
 ## Configuration
 
 Everything tunable lives in `config/default.yaml` — world size, hunger rates,
