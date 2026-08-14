@@ -648,6 +648,89 @@ others get excluded and starve, so the shortfall lives in the crowding/exclusion
 dynamics. Left as the open problem it is; masking is where principled
 single-change fixes stopped paying.
 
+## Milestone 4 — multi-resource + construction
+
+Wood and stone as depletable nodes, communal shelter sites, and a day/night
+cycle where the unsheltered drain hunger at 3×. `chop`/`mine`/`build` appended as
+actions 11–13; observation 29 → 55. Replay schema v2. All off by default, so
+M1–M3 worlds stay bit-identical.
+
+### The economy, sized in code
+
+Per the M3 postmortem rule, demand was computed with `sim` rather than by hand:
+
+| | berries |
+|---|---|
+| sheltered demand (8 meals × 6 agents) | 48 |
+| **supply** (8 bushes × 2 cap + 8 × 6 regrowths) | **64** |
+| exposed demand (sleeping rough every night) | 72 |
+
+Supply sits *between* the two, so a population that shelters can afford the ticks
+construction costs and one that does not starves. Shelter is load-bearing by
+arithmetic, not decoration.
+
+### Results — construction partially emerged
+
+20 episodes each. The scripted builder is the bar; it forages first, runs home at
+dusk, and feeds the most-finished site (targeting the *nearest* site instead
+spreads material across three and completes almost nothing — worth knowing).
+
+| policy | lifespan | deaths | shelters/ep | nights indoors |
+|---|---|---|---|---|
+| scripted builder | **529.8** | 2.05 | **1.9** | **92%** |
+| scripted forager | 457.6 | 3.12 | 0 | 0% |
+| **learned, shaped (m4c)** | **393.5** | 4.70 | 0.1 | **22%** |
+| learned, unshaped control | 362.5 | 5.05 | 0.0 | 2% |
+
+**The shaped run beat its control on the terminal metric** — +31 ticks of life,
+22% of night ticks under shelter against 2% — which is the *opposite* of the M3
+shaping ablation, where paying for theft produced more theft and less survival.
+Here the shaping bought a real outcome, not just the behaviour it paid for.
+
+**But full shelters essentially never complete** (0.1 per episode against the
+builder's 1.9), and the learned policy remains far below the scripted reference.
+Agents deliver materials and shelter under half-built walls; they do not finish
+the job. That is the honest headline.
+
+### Three attempts, and what each one taught
+
+| attempt | deliveries/ep | shelters/ep | nights in |
+|---|---|---|---|
+| `m4` — sites scattered, cheap shaping | 0.56 | 0.012 | 0.3% |
+| `m4b` — sites on the berry clusters | 2.00 | 0.056 | 2.5% |
+| `m4c` — + partial shelter protection | 1.94 | 0.064 | **16%** |
+
+Neither fix touched the shaping coefficients, deliberately — the M3 ablation is
+the standing warning against that lever. Both were the same *kind* of move that
+solved M3: **change the shape of the problem, do not pay more at the summit.**
+
+* **`m4b` deleted the uncreditable walk.** With sites scattered independently, a
+  loaded agent had to cross open ground to a place it otherwise never went, and
+  that leg earned nothing — structurally identical to M3's doomed gathers.
+  Putting sites on the clusters agents already live at raised deliveries 3.6×.
+* **`m4c` removed the cliff.** A site costs four units and only the fourth bought
+  anything, so three quarters of the work was invisible to the value function.
+  Scaling protection with build progress made the landscape continuous, and
+  night protection went 2.5% → 16%.
+
+An earlier sizing (6-unit sites, shaping 0.3/0.5/2.0) produced *zero* completions
+in 200 updates; CSVs in `runs/_m4_probe1`. At 0.3 a material action loses to a
++1.0 gather everywhere the two compete.
+
+### What is left
+
+The remaining gap is the last unit. Even with a continuous gradient, finishing a
+site is worth much more than the marginal unit suggests (a complete shelter
+protects fully and permanently), and the policy stops at "good enough" partial
+cover. If you pick this up:
+
+* **Do not raise the shaping.** `m4` already showed 3.5× the material activity of
+  its control with no completions; volume was never the constraint.
+* The untried structural lever is **cheaper sites** (2 units), which makes
+  completion reachable by exploration rather than by plan. Cheap to test.
+* Longer training is *not* indicated — the M3 investigation burned 3.3× budget
+  for nothing, and these curves are flat by update ~250.
+
 ## Gotchas (Milestone 3)
 
 **Don't edit `metrics.py` while a run is in flight.** A run holds its CSV header

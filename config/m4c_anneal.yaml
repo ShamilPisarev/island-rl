@@ -1,0 +1,18 @@
+# The M4 annealing test the brief asks for: continue the SHAPED m4c policy with
+# every shaping term returned to zero, and see whether the construction
+# behaviour survives without anything paying for it.
+#
+# Precondition met: m4c actually built something to anneal (1.94 deliveries an
+# episode, 22% of night ticks under partial shelter, +31 ticks of life over its
+# unshaped control). Running this against m4 or m4b would have been a ritual --
+# there was no behaviour there to remove the scaffolding from.
+#
+#   python -m sim.train --config config/m4c_anneal.yaml --run-name m4c-anneal \
+#       --updates 200 --policy-mode individual --init-from checkpoints/m4c/latest.pt
+extends: m4c.yaml
+
+reward:
+  wood: 0.0
+  stone: 0.0
+  build: 0.0
+  complete: 0.0
