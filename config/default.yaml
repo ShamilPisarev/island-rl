@@ -1,0 +1,84 @@
+# Island — Milestone 1 (survival + foraging) configuration.
+#
+# Every tunable in the simulation lives in this file. If you find a magic number
+# in sim/*.py, that is a bug.
+#
+# NOTE ON `hunger`: the brief defines hunger as starting at `max`, DECREASING
+# each tick, and death at <= 0. So it is really a satiety meter: 100 = well fed,
+# 0 = dead. The name is kept for consistency with the brief; read it as "fuel".
+
+seed: 0
+
+world:
+  island_radius: 40.0        # units; agents are confined to this disc
+  num_agents: 6
+  max_ticks: 600             # episode truncation horizon
+  move_step: 0.8             # units travelled per move action (all 8 dirs equal)
+  spawn_radius_frac: 0.6     # agents spawn uniformly within this fraction of the island
+
+hunger:
+  max: 100.0
+  drain_per_tick: 0.3        # 100 / 0.3 = 333 ticks from full to death, so a
+                             # 600-tick episode requires eating at least twice
+  eat_threshold: 60.0        # auto-eat fires below this (see sim/world.py)
+  eat_restore: 35.0
+
+food:
+  capacity: 3                # max berries an agent can carry
+
+bushes:
+  num_clusters: 5
+  bushes_per_cluster: 4
+  cluster_std: 5.0           # gaussian spread of bushes around a cluster centre
+  cluster_radius_frac: 0.75  # cluster centres placed within this fraction of the island
+  capacity: 6                # berries a bush holds when full
+  initial_berries: 6
+  regrow_ticks: 50           # ticks to regrow one berry (only while below capacity)
+  gather_radius: 2.0         # how close an agent must be to gather
+  resample_each_episode: true  # new bush layout each episode. Observations are
+                             # egocentric so a fixed map cannot be memorised anyway,
+                             # but resampling stops the policy overfitting to one
+                             # arrangement of clusters. Set false for a stable map.
+
+observation:
+  k_bushes: 4                # nearest bushes included in the observation
+  k_agents: 3                # nearest *living* other agents included
+  distance_scale: 20.0       # relative offsets divided by this, then clipped to +-1.
+                             # Deliberately not the island diameter: dividing by 80
+                             # would squash a bush 5 units away to 0.06 and destroy
+                             # the near-field gradient the policy actually needs.
+
+reward:
+  alive_per_tick: 0.01
+  gather: 1.0
+  eat: 2.0                   # scaled by hunger deficit: eat * (1 - hunger/eat_threshold)
+  death: -10.0
+
+policy:
+  hidden_sizes: [128, 128]
+
+ppo:
+  num_envs: 32
+  rollout_ticks: 128
+  total_updates: 300
+  epochs: 4
+  num_minibatches: 4
+  lr: 3.0e-4
+  anneal_lr: true
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  device: cpu               # these nets are tiny; CPU beats MPS/CUDA here and is
+                            # the only device we guarantee bit-exact determinism on
+
+logging:
+  run_dir: runs
+  checkpoint_dir: checkpoints
+  replay_dir: viewer/replays
+  log_every: 1              # updates between console/CSV metric rows
+  checkpoint_every: 25
+  replay_every: 50          # updates between recorded replays (0 disables)
+  baseline_episodes: 20     # random-action episodes used for the reported baseline
