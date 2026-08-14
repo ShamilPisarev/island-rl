@@ -18,8 +18,11 @@ world:
 
 hunger:
   max: 100.0
-  drain_per_tick: 0.3        # 100 / 0.3 = 333 ticks from full to death, so a
-                             # 600-tick episode requires eating at least twice
+  drain_per_tick: 0.5        # 100 / 0.5 = 200 ticks from full to death, and one
+                             # meal buys 70. Surviving a 600-tick episode therefore
+                             # takes ~6 meals per agent: enough that a random walk
+                             # dies around tick 280 while a competent forager runs
+                             # the clock out. That gap is the whole experiment.
   eat_threshold: 60.0        # auto-eat fires below this (see sim/world.py)
   eat_restore: 35.0
 

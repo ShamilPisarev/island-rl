@@ -30,7 +30,7 @@ class WorldConfig:
 @dataclass(frozen=True)
 class HungerConfig:
     max: float = 100.0
-    drain_per_tick: float = 0.3
+    drain_per_tick: float = 0.5
     eat_threshold: float = 60.0
     eat_restore: float = 35.0
 

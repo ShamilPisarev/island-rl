@@ -1,0 +1,22 @@
+{
+ "schema_version": 1,
+ "replays": [
+  {
+   "file": "fake_demo.json",
+   "label": "scripted demo (2 wanderers)",
+   "source": "scripted",
+   "schema_version": 1,
+   "ticks": 601,
+   "generated_at": "2026-08-14T12:18:22+00:00",
+   "summary": {
+    "ticks": 600,
+    "deaths": 1,
+    "survivors": 5,
+    "berries_gathered": 53,
+    "meals": 40,
+    "mean_lifespan": 533.17,
+    "mean_final_hunger": 66.67
+   }
+  }
+ ]
+}
