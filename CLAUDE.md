@@ -6,20 +6,23 @@ you.
 
 ## START HERE — handoff for the next session
 
-**M4's first pair is done and construction did NOT emerge** (numbers below). A
-second pair, `m4b`, is testing the fix. Check whether it finished — it was
-launched from a previous session and its processes do not survive that session
-ending:
+**Milestones 1–4 are all trained and written up** (M4's results are in the
+Milestone 4 section below — construction partially emerged; agents shelter under
+half-built walls but almost never finish one). The only thing possibly still in
+flight is the M4 annealing test:
 
 ```bash
-wc -l runs/m4b/metrics.csv runs/m4b-unshaped/metrics.csv  # 401 lines each = done
-tail -6 /tmp/m4b.log                                       # final evaluation, if it got there
+wc -l runs/m4c-anneal/metrics.csv     # 201 lines = done
+grep "learned policy" /tmp/m4c-anneal.log | tail -1
 ```
 
-* **401 lines and a "final evaluation" block in the log** → M4 training is done.
-  Go to "Finishing Milestone 4" below.
-* **Fewer lines, no final block** → it was interrupted. Resume from the last
-  checkpoint (written every 25 updates) rather than restarting:
+* **Done** → compare it against `m4c` (393.5 lifespan, 22% of nights sheltered)
+  and its unshaped control (362.5, 2%). If the construction behaviour survives
+  with nothing paying for it, the shaping was a genuine bootstrap; if it decays
+  toward the control, it was scaffolding. Write the answer into the Milestone 4
+  section, then **go to Milestone 5**.
+* **Interrupted** → resume from the last checkpoint (written every 25 updates)
+  rather than restarting:
 
   ```bash
   python -m sim.train --config config/m4.yaml --run-name m4 --updates 400 \
@@ -34,23 +37,13 @@ tail -6 /tmp/m4b.log                                       # final evaluation, i
 
 ### Finishing Milestone 4
 
-Four steps, in order. None of them is optional — the shaping comparison is the
-whole point of this milestone and step 2 is the brief's explicit request.
+Only the annealing test is outstanding — the brief's explicit request.
 
-1. **Score both runs against the references** (same seed block, so the numbers
-   are comparable to every other milestone):
+1. **The scoring is done** and written up below. The canonical M4 checkpoint is
+   `checkpoints/m4c` (shaped) with `checkpoints/m4c-unshaped` as its control.
 
-   ```bash
-   python -m sim.evaluate --checkpoint checkpoints/m4b/latest.pt --baselines
-   python -m sim.evaluate --checkpoint checkpoints/m4b-unshaped/latest.pt --baselines
-   ```
-
-   The scripted builder on this world is **510.5 lifespan, 2.0 shelters/episode,
-   89% of night ticks indoors**, against the forager's 457.6 — that gap is what
-   shelter is worth, and it is the bar.
-
-2. **Run the annealing test** — the brief asks whether the shaping can be
-   removed once it has done its job:
+2. **The annealing test** — whether the shaping can be removed once it has done
+   its job:
 
    ```bash
    python -m sim.train --config config/m4_anneal.yaml --run-name m4-anneal \
