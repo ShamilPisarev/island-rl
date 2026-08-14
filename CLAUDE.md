@@ -6,14 +6,25 @@ you.
 
 ## Current state
 
-**Milestone 1 (survival + foraging) is complete and verified.** Milestones 2–6
-have not been started — do not start them without reading §3 of the brief.
+**Milestones 1 and 2 are complete and verified.** M3–M6 have not been started —
+do not start them without reading §3 of the brief.
 
-- `pytest` passes.
-- The viewer has been verified in a browser against real replays, including the
+- M1: survival + foraging, one shared brain. 1.97× the random baseline.
+- M2: six individual brains forked from the M1 checkpoint and trained
+  independently, plus a behavioural-divergence view. Specialisation appeared:
+  action divergence is 19× the shared-brain control.
+- `pytest` passes (112 tests).
+- Both viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
-- Training runs end to end and beats the random baseline (numbers in
-  `runs/<name>/metrics.csv` and `runs/<name>/baselines.json`).
+
+Reproduce end to end:
+
+```bash
+python -m sim.train --run-name m1
+python -m sim.train --run-name m2 --policy-mode individual \
+    --init-from checkpoints/m1/latest.pt
+python -m sim.divergence --checkpoint checkpoints/m2/latest.pt
+```
 
 ## Layout notes
 
@@ -25,6 +36,12 @@ did not list:
   evaluate, so it did not belong inside any of them.
 - `sim/make_fake_replay.py` — generates a replay without training, so the viewer
   could be built and verified before a policy existed (brief §5.2).
+- `sim/divergence.py` + `viewer/divergence.html` — the M2 behavioural-divergence
+  view.
+
+**Checkpoints are scoped by run** (`checkpoints/<run_name>/latest.pt`). They were
+flat until M2, at which point a run that forks from `checkpoints/latest.pt`
+promptly overwrote the file it had just forked from. Do not flatten this again.
 
 ## Decisions, and why
 
@@ -159,11 +176,79 @@ many actions are near-equivalent and nothing punishes the indifference.
   the same clusters. Do not read it as social behaviour yet; M3 is where
   competition gets a real test.
 
-## What is next (Milestone 2)
+## Milestone 2 — individual brains
 
-Split the shared policy into per-agent policies initialised from the shared
-checkpoint, then train independently. Nothing in `policy.py` knows how many
-agents exist, so forking is a matter of holding a list of `ActorCritic` instances
-and indexing by agent id in `ppo.py`'s collect and update. The observation
-deliberately contains no agent identity, so the shared policy has no per-agent
-behaviour baked in to unlearn.
+`PolicyGroup` (in `policy.py`) holds one `ActorCritic` per agent and dispatches on
+an `agent_ids` tensor that `ppo.py` threads through collect and update. A shared
+`ActorCritic` accepts the same argument and ignores it, which is the whole reason
+there is still only one training loop rather than two that drift apart.
+
+**Gradient clipping is per-brain, not global.** `PolicyGroup.clip_grad_norm`
+clips each policy separately. Clipping the union would mean one agent's bad
+update scales down every other agent's gradient that step — quietly coupling six
+policies whose entire purpose is to be independent. If you add another optimiser
+concern, ask the same question of it.
+
+**Forking, not fresh initialisation.** M2 starts from the trained M1 shared
+checkpoint copied six ways, so every agent begins competent and diverges from
+there. Six randomly-initialised brains would also "diverge", but you would mostly
+be measuring initialisation noise.
+
+One Adam over all six brains is exactly equivalent to six separate Adams — its
+state is per-parameter and nothing couples the policies — so the optimiser stays
+simple. Throughput drops from ~30k to ~26k agent-steps/s (six small matmuls where
+there was one large one), which was judged an acceptable price for a readable loop.
+
+### Results
+
+300 updates forked from `checkpoints/m1/latest.pt`. Both rows below are 20
+episodes on the *same fixed island*, seed 10000:
+
+| | M1 shared (control) | M2 individual |
+|---|---|---|
+| mean lifespan | 594.5 | 592.9 |
+| **action JS divergence** | **0.0012 bits** | **0.0233 bits (19×)** |
+| territory JS divergence | 0.6722 | 0.9080 |
+| gather-share spread | 2.2 pts | 7.4 pts |
+| mean-radius spread | 5.5 | 21.1 |
+| time-in-gather-range spread | 10.5 pts | 22.8 pts |
+
+Individual brains genuinely specialised. Agent 5 became a bush-camper (37.8%
+gather, 77.3% of ticks in range, closest to bushes); agent 2 a rover (68.2%
+travel, lowest gather share, best hit rate); agent 4 stayed near the island centre
+(mean radius 9.0) while agent 3 ranged to 30.1.
+
+**Read the action matrix, not the territory matrix.** Territory divergence is
+already 0.67 bits for six agents *sharing one brain* — they spawn apart and each
+walks to whichever cluster is nearest, so different ground is the default, not a
+finding. Action divergence is near-zero under sharing and is the signal that
+survives the control.
+
+**Lifespan is saturated, so it cannot show M2 working.** Both milestones sit at
+the 600-tick ceiling; M2 is not "better", it is *differentiated*. Foraging
+proximity did improve (time in gather range went from 41–51% to 55–77%), but the
+headline survival number has no room left to move. Any future milestone that
+wants a survival signal needs a harder world first.
+
+## Gotchas (Milestone 2)
+
+**Territory heatmaps need a fixed map.** With `bushes.resample_each_episode` on
+(the training default), every episode scatters clusters somewhere new, so
+averaging positions in absolute coordinates smears every agent toward the same
+centred blob. `sim/divergence.py` pins the layout by default; `--no-fixed-map`
+exists but makes the territory section meaningless, and the report carries a
+`fixed_map` flag that the viewer turns into a warning banner. The
+map-independent statistics (action mix, hit rate, bush distance) are fine either way.
+
+**Old checkpoints have no `mode` key.** `policy_from_config_dict` defaults them to
+shared, which is what pre-M2 checkpoints are. Do not make the key required.
+
+## What is next (Milestone 3 — competition)
+
+Agents can steal from or block each other; bushes become contested. No new reward
+terms beyond survival. The M2 divergence tooling is the measuring instrument for
+it — territorial behaviour should show up as territory divergence rising *while
+the action-divergence control stays honest*. Worth considering first: the world is
+currently too easy (everyone survives), so contested resources may need scarcity
+turning up (`bushes.capacity`, `regrow_ticks`) before competition has anything to
+bite on.

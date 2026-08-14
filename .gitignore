@@ -12,5 +12,7 @@ runs/
 # `python -m sim.make_fake_replay` to get something to look at.
 viewer/replays/*
 !viewer/replays/.gitkeep
+viewer/reports/*
+!viewer/reports/.gitkeep
 
 .DS_Store

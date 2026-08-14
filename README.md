@@ -28,20 +28,44 @@ Python 3.11+. Dependencies are `torch`, `numpy`, `pyyaml`, and `pytest`.
 ## Train
 
 ```bash
-.venv/bin/python -m sim.train --run-name my-run
+.venv/bin/python -m sim.train --run-name m1
 ```
 
 Reports the random-action baseline before it starts, then logs a metrics row per
-update. Checkpoints land in `checkpoints/`, metrics in `runs/<name>/metrics.csv`,
-and replays in `viewer/replays/`. `Ctrl-C` saves a checkpoint on the way out, and
-`--resume checkpoints/latest.pt` picks it back up.
+update. Checkpoints land in `checkpoints/<run-name>/`, metrics in
+`runs/<name>/metrics.csv`, and replays in `viewer/replays/`. `Ctrl-C` saves a
+checkpoint on the way out, and `--resume checkpoints/m1/latest.pt` picks it back up.
 
 Useful flags: `--updates N`, `--num-envs N`, `--seed N`, `--no-baseline`.
+
+To give every agent its own brain (Milestone 2), fork a trained shared policy:
+
+```bash
+.venv/bin/python -m sim.train --run-name m2 --policy-mode individual \
+    --init-from checkpoints/m1/latest.pt
+```
+
+Forking rather than starting fresh means each agent begins competent and diverges
+from there, instead of six agents independently rediscovering how to walk to a bush.
+
+## Measure divergence
+
+```bash
+.venv/bin/python -m sim.divergence --checkpoint checkpoints/m2/latest.pt
+```
+
+Prints a per-agent behaviour table and writes `viewer/reports/divergence.json`,
+which the divergence view renders as territory heatmaps, action mixes, and
+pairwise Jensen–Shannon divergence matrices.
+
+Run it against the shared M1 checkpoint too — that is the control. Six agents
+sharing one brain still occupy different ground, so territory divergence alone
+proves nothing; it is the *action* divergence that has to clear the control.
 
 ## Evaluate
 
 ```bash
-.venv/bin/python -m sim.evaluate --checkpoint checkpoints/latest.pt --baselines
+.venv/bin/python -m sim.evaluate --checkpoint checkpoints/m1/latest.pt --baselines
 .venv/bin/python -m sim.evaluate --policy random --episodes 20
 ```
 
@@ -69,6 +93,12 @@ Controls: orbit/pan/zoom with the mouse, space to play/pause, arrow keys to step
 a tick, speed buttons for 0.5×–16×, and the scrubber to seek. Click an agent —
 in the scene or in the side panel — to have the camera follow it.
 
+`divergence.html` (linked from the side panel) is the second view: it renders a
+divergence report as territory heatmaps, action mixes, and divergence matrices.
+
+Both pages refuse to render a file whose schema version they do not recognise,
+rather than drawing something plausible and wrong.
+
 To get something to look at before training anything:
 
 ```bash
@@ -85,12 +115,15 @@ was verified before any policy existed.
 .venv/bin/python -m pytest
 ```
 
-Covers world stepping, hunger and death, resource regrowth, observation shape
-and bounds, replay round-trip and schema versioning, seed determinism, GAE
-correctness, dead-agent masking, and a PPO smoke test on a task with a known
-optimum.
+112 tests covering world stepping, hunger and death, resource regrowth,
+observation shape and bounds, replay round-trip and schema versioning, seed
+determinism, GAE correctness, dead-agent masking, per-agent brain dispatch and
+gradient isolation, divergence maths, and a PPO smoke test on a task with a
+known optimum.
 
-## Results (Milestone 1)
+## Results
+
+### Milestone 1 — survival and foraging
 
 300 updates, 7.37M agent-steps, 4.2 minutes on a laptop CPU. Twenty evaluation
 episodes on identical seeds:
@@ -106,6 +139,31 @@ forager. And they are genuinely navigating rather than surviving by luck: the
 learned agents sit 2.25 units from the nearest bush on average against 7.05 for
 random play, and spend 53% of their ticks within gathering range where chance
 would give 11%.
+
+### Milestone 2 — individual brains
+
+Six brains forked from the M1 checkpoint and trained independently for 300
+updates. Both columns are 20 episodes on the same fixed island:
+
+| | M1 shared (control) | M2 individual |
+|---|---|---|
+| mean lifespan | 594.5 | 592.9 |
+| **action divergence** | **0.0012 bits** | **0.0233 bits (19×)** |
+| territory divergence | 0.6722 bits | 0.9080 bits |
+| gather-share spread | 2.2 pts | 7.4 pts |
+| mean-radius spread | 5.5 | 21.1 |
+
+They specialised. Agent 5 became a bush-camper (37.8% of its actions gathering,
+77.3% of its ticks within range); agent 2 a rover (68.2% travelling, the best
+gather hit rate); agent 4 stayed near the island centre while agent 3 ranged to
+the shore.
+
+Two caveats worth stating plainly. **Survival is saturated** — both milestones sit
+at the 600-tick ceiling, so M2 is differentiated rather than better, and any
+future milestone wanting a survival signal needs a harder world first. And
+**territory divergence is not by itself evidence**: six agents sharing a single
+brain already score 0.67 bits on it, because they spawn apart and each heads for
+the nearest cluster. Action divergence is the number that clears its control.
 
 ## Configuration
 
@@ -139,9 +197,11 @@ by how hungry, `-10.0` on death. Nothing else. In particular there is no reward
 for anything social — if clustering or competition appears, it has to appear on
 its own.
 
-**Algorithm:** PPO with GAE, one shared policy across all six agents (parameter
-sharing), a 2×128 tanh MLP with a separate value head, vectorised over
-`num_envs` parallel islands. Agents die at different ticks, so dead slots are
+**Algorithm:** PPO with GAE, a 2×128 tanh MLP with a separate value head,
+vectorised over `num_envs` parallel islands. Milestone 1 shares one policy across
+all six agents (parameter sharing); Milestone 2 gives each agent its own,
+dispatched by agent id through the same training loop, with gradients clipped per
+brain so the six stay independent. Agents die at different ticks, so dead slots are
 masked out of the loss rather than removed from the batch, and the time limit is
 treated as truncation — bootstrapped from `V(final_obs)` — rather than as death.
 
@@ -151,14 +211,17 @@ treated as truncation — bootstrapped from `V(final_obs)` — rather than as de
 config/default.yaml   every tunable
 sim/world.py          environment, tick order, resources
 sim/agents.py         agent state, action space, observation construction
-sim/policy.py         the network, plus random and scripted reference policies
+sim/policy.py         the networks (shared + per-agent), plus reference policies
 sim/ppo.py            the training algorithm
+sim/divergence.py     per-agent behavioural divergence analysis (M2)
 sim/replay.py         replay schema (versioned) and the viewer manifest
 sim/metrics.py        aggregation, CSV, console table
 sim/train.py          training CLI
 sim/evaluate.py       evaluation CLI and the baselines
-viewer/index.html     the viewer (static, no build step)
+viewer/index.html     the replay viewer (static, no build step)
 viewer/main.js
+viewer/divergence.html  the behavioural-divergence view (M2)
+viewer/divergence.js
 tests/
 ```
 

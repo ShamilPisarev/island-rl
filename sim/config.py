@@ -75,6 +75,8 @@ class RewardConfig:
 @dataclass(frozen=True)
 class PolicyConfig:
     hidden_sizes: tuple[int, ...] = (128, 128)
+    mode: str = "shared"          # "shared" (M1) or "individual" (M2)
+    init_from: str | None = None  # checkpoint to fork individual brains from
 
 
 @dataclass(frozen=True)

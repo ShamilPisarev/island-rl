@@ -59,6 +59,12 @@ reward:
 
 policy:
   hidden_sizes: [128, 128]
+  mode: shared               # "shared"     — M1: one brain, parameter-shared across agents
+                             # "individual" — M2: one brain per agent, trained independently
+  init_from: null            # checkpoint to fork individual brains from. Forking a trained
+                             # shared policy means every agent starts competent and diverges
+                             # from there, rather than six agents each rediscovering how to
+                             # walk to a bush. Null starts them from scratch.
 
 ppo:
   num_envs: 32

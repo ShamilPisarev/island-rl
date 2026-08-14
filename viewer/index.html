@@ -49,6 +49,8 @@
   #panel h1 { margin: 0 0 2px; font-size: 15px; letter-spacing: .04em; }
   #panel h1 span { color: var(--accent); }
   .sub { color: var(--dim); font-size: 11px; }
+  .sub a { color: var(--accent); text-decoration: none; }
+  .sub a:hover { text-decoration: underline; }
 
   .picker { padding: 10px 14px; border-bottom: 1px solid var(--line); display: grid; gap: 6px; }
   select, button, input[type=file]::file-selector-button {
@@ -119,6 +121,7 @@
     <header>
       <h1>ISL<span>A</span>ND</h1>
       <div class="sub" id="replayLabel">no replay loaded</div>
+      <div class="sub" style="margin-top:4px"><a href="./divergence.html">divergence view →</a></div>
     </header>
 
     <div class="picker">

@@ -245,6 +245,11 @@ class World:
 
     # --- reporting --------------------------------------------------------
 
+    @property
+    def alive_ticks(self) -> np.ndarray:
+        """Ticks each agent survived this episode, per agent."""
+        return self._alive_ticks.copy()
+
     def stats(self) -> EpisodeStats:
         pool = self.pool
         return EpisodeStats(

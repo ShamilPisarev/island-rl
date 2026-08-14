@@ -34,7 +34,7 @@ import torch.nn as nn
 from .agents import IDLE
 from .config import Config
 from .metrics import UpdateMetrics, explained_variance, summarise_episodes
-from .policy import ActorCritic
+from .policy import Brain
 from .world import VecWorld
 
 
@@ -54,7 +54,15 @@ class Rollout:
 
 
 class PPOTrainer:
-    def __init__(self, cfg: Config, policy: ActorCritic, envs: VecWorld,
+    """Trains either a shared brain or a per-agent group -- the loop is identical.
+
+    Every call into the policy carries an ``agent_ids`` tensor saying which agent
+    each row belongs to. A shared ``ActorCritic`` ignores it; a ``PolicyGroup``
+    dispatches on it. That one argument is what keeps Milestone 1 and Milestone 2
+    on the same training loop instead of two copies that drift apart.
+    """
+
+    def __init__(self, cfg: Config, policy: Brain, envs: VecWorld,
                  device: str | torch.device = "cpu") -> None:
         self.cfg = cfg
         self.p = cfg.ppo
@@ -74,6 +82,14 @@ class PPOTrainer:
         self.agent_alive = torch.ones((self.num_envs, self.num_agents),
                                       dtype=torch.bool, device=self.device)
         self.global_step = 0
+
+        # Which agent each row of a flattened (..., num_agents) batch belongs to.
+        # Flattening puts agents in the fastest-varying position, so the pattern
+        # is just arange(A) tiled -- precomputed here because it never changes.
+        self.step_agent_ids = torch.arange(self.num_agents, device=self.device).repeat(self.num_envs)
+        self.rollout_agent_ids = torch.arange(self.num_agents, device=self.device).repeat(
+            self.p.rollout_ticks * self.num_envs
+        )
 
     # --- rollout ----------------------------------------------------------
 
@@ -98,7 +114,9 @@ class PPOTrainer:
             obs_buf[t] = self.obs
             active_buf[t] = active
 
-            action, log_prob, value = self.policy.act(self.obs.reshape(N * A, -1))
+            action, log_prob, value = self.policy.act(
+                self.obs.reshape(N * A, -1), self.step_agent_ids
+            )
             action = action.reshape(N, A)
             act_buf[t] = action
             logp_buf[t] = log_prob.reshape(N, A)
@@ -121,7 +139,9 @@ class PPOTrainer:
                 # Bootstrap the survivors of a time-limit ending. One extra forward
                 # pass per rollout at most, on the pre-reset observations.
                 final_obs = torch.as_tensor(step["final_obs"], dtype=torch.float32, device=dev)
-                final_value = self.policy.value(final_obs.reshape(N * A, -1)).reshape(N, A)
+                final_value = self.policy.value(
+                    final_obs.reshape(N * A, -1), self.step_agent_ids
+                ).reshape(N, A)
                 rew_buf[t] = rew_buf[t] + self.p.gamma * final_value * truncated
 
             # A slot stops bootstrapping at death, at an episode boundary, or
@@ -136,7 +156,9 @@ class PPOTrainer:
         self.global_step += T * N * A
 
         with torch.no_grad():
-            last_value = self.policy.value(self.obs.reshape(N * A, -1)).reshape(N, A)
+            last_value = self.policy.value(
+                self.obs.reshape(N * A, -1), self.step_agent_ids
+            ).reshape(N, A)
         advantages, returns = self._gae(rew_buf, val_buf, done_buf, last_value)
 
         active_count = int(active_buf.sum().item())
@@ -178,12 +200,15 @@ class PPOTrainer:
                     "approx_kl": 0.0, "clip_fraction": 0.0, "explained_variance": float("nan")}
 
         # Drop inactive transitions once, here, rather than masking in every term.
+        # agent_ids rides along through the same mask and the same shuffle, so a
+        # row can never be scored by another agent's brain.
         obs = rollout.obs.reshape(-1, self.obs_dim)[active]
         actions = rollout.actions.reshape(-1)[active]
         old_log_probs = rollout.log_probs.reshape(-1)[active]
         advantages = rollout.advantages.reshape(-1)[active]
         returns = rollout.returns.reshape(-1)[active]
         old_values = rollout.values.reshape(-1)[active]
+        agent_ids = self.rollout_agent_ids[active]
 
         batch_size = n_active
         minibatch_size = max(batch_size // self.p.num_minibatches, 1)
@@ -200,7 +225,9 @@ class PPOTrainer:
                 if mb.numel() < 2:
                     continue
 
-                log_probs, entropy, values = self.policy.evaluate_actions(obs[mb], actions[mb])
+                log_probs, entropy, values = self.policy.evaluate_actions(
+                    obs[mb], actions[mb], agent_ids[mb]
+                )
                 ratio = (log_probs - old_log_probs[mb]).exp()
 
                 # Normalising per minibatch (not per batch) is the standard recipe
@@ -228,7 +255,10 @@ class PPOTrainer:
 
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.policy.parameters(), self.p.max_grad_norm)
+                # Delegated to the policy so a PolicyGroup can clip each brain
+                # separately; a single global norm would couple six agents that
+                # are supposed to be learning independently.
+                self.policy.clip_grad_norm(self.p.max_grad_norm)
                 self.optimizer.step()
 
                 with torch.no_grad():

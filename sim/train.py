@@ -20,9 +20,9 @@ import numpy as np
 import torch
 
 from .config import Config, load_config
-from .evaluate import baselines, evaluate, make_act_fn, policy_act_fn
+from .evaluate import baselines, evaluate, load_checkpoint, make_act_fn, policy_act_fn
 from .metrics import MetricsLogger
-from .policy import build_policy
+from .policy import Brain, PolicyGroup, build_policy
 from .ppo import PPOTrainer
 from .replay import record_episode
 from .world import VecWorld
@@ -32,6 +32,41 @@ def seed_everything(seed: int) -> None:
     """Seed torch and numpy. World RNGs are seeded separately and explicitly."""
     torch.manual_seed(seed)
     np.random.seed(seed)
+
+
+def fork_from_checkpoint(policy: Brain, cfg: Config, obs_dim: int) -> Brain:
+    """Initialise from ``cfg.policy.init_from``.
+
+    The Milestone 2 move: take the trained shared brain and hand every agent its
+    own copy. They start identical and competent, then diverge under independent
+    gradients -- which is the point, since a divergence measured against six
+    randomly-initialised networks would mostly be measuring initialisation noise.
+
+    Forking a shared checkpoint into an individual policy is the interesting
+    case, but shared->shared (warm start) and individual->individual (resume with
+    a fresh optimiser) both work.
+    """
+    source, _, blob = load_checkpoint(cfg.policy.init_from, device=cfg.ppo.device)
+    if source.config_dict()["obs_dim"] != obs_dim:
+        raise ValueError(
+            f"{cfg.policy.init_from} was trained with obs_dim "
+            f"{source.config_dict()['obs_dim']}, this config gives {obs_dim}"
+        )
+
+    source_mode = source.config_dict()["mode"]
+    target_mode = cfg.policy.mode
+    if source_mode == "shared" and target_mode == "individual":
+        forked = PolicyGroup.from_shared(source, cfg.world.num_agents)
+        print(f"forked {cfg.policy.init_from} (shared, update {blob.get('update', '?')}) "
+              f"into {cfg.world.num_agents} individual brains")
+        return forked
+    if source_mode == target_mode:
+        print(f"warm-started from {cfg.policy.init_from} "
+              f"({source_mode}, update {blob.get('update', '?')})")
+        return source
+    raise ValueError(
+        f"cannot initialise a '{target_mode}' policy from an '{source_mode}' checkpoint"
+    )
 
 
 def save_checkpoint(path: Path, trainer: PPOTrainer, cfg: Config, update: int) -> None:
@@ -59,6 +94,10 @@ def main() -> None:
     parser.add_argument("--resume", default=None)
     parser.add_argument("--device", default=None)
     parser.add_argument("--no-baseline", action="store_true")
+    parser.add_argument("--policy-mode", choices=["shared", "individual"], default=None,
+                        help="shared = M1 parameter sharing; individual = M2, one brain per agent")
+    parser.add_argument("--init-from", default=None,
+                        help="checkpoint to fork individual brains from (M2)")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -71,6 +110,10 @@ def main() -> None:
         overrides["ppo.num_envs"] = args.num_envs
     if args.device is not None:
         overrides["ppo.device"] = args.device
+    if args.policy_mode is not None:
+        overrides["policy.mode"] = args.policy_mode
+    if args.init_from is not None:
+        overrides["policy.init_from"] = args.init_from
     if overrides:
         cfg = cfg.replace(**overrides)
 
@@ -83,6 +126,10 @@ def main() -> None:
     seed_everything(cfg.seed)
     envs = VecWorld(cfg, seed=cfg.seed, num_envs=cfg.ppo.num_envs)
     policy = build_policy(cfg, envs.obs_dim)
+
+    if cfg.policy.init_from:
+        policy = fork_from_checkpoint(policy, cfg, envs.obs_dim)
+
     trainer = PPOTrainer(cfg, policy, envs, device=cfg.ppo.device)
 
     start_update = 0
@@ -100,7 +147,9 @@ def main() -> None:
           f"envs: {cfg.ppo.num_envs}   rollout: {cfg.ppo.rollout_ticks}")
     print(f"batch      : {cfg.ppo.rollout_ticks * cfg.ppo.num_envs * cfg.world.num_agents:,} "
           f"agent-steps per update")
-    print(f"policy     : {sum(p.numel() for p in policy.parameters()):,} parameters\n")
+    brains = getattr(policy, "num_agents", 1)
+    print(f"policy     : {cfg.policy.mode}, {brains} brain(s), "
+          f"{sum(p.numel() for p in policy.parameters()):,} parameters total\n")
 
     baseline_results = []
     if not args.no_baseline:
@@ -113,7 +162,9 @@ def main() -> None:
         print()
 
     logger = MetricsLogger(run_dir / "metrics.csv")
-    checkpoint_dir = Path(cfg.logging.checkpoint_dir)
+    # Scoped by run: a Milestone 2 run forks from a Milestone 1 checkpoint, and a
+    # flat directory would have the fork overwrite the very file it started from.
+    checkpoint_dir = Path(cfg.logging.checkpoint_dir) / run_name
     replay_dir = Path(cfg.logging.replay_dir)
     started = time.perf_counter()
 

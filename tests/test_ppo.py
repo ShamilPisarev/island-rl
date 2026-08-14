@@ -144,9 +144,9 @@ def test_inactive_transitions_are_dropped_from_the_update(cfg):
     seen = {}
     original = trainer.policy.evaluate_actions
 
-    def spy(obs, actions):
+    def spy(obs, actions, agent_ids):
         seen["rows"] = seen.get("rows", 0) + obs.shape[0]
-        return original(obs, actions)
+        return original(obs, actions, agent_ids)
 
     trainer.policy.evaluate_actions = spy
     trainer.update(r)

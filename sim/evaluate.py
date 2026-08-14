@@ -21,31 +21,41 @@ import torch
 from .agents import observation_dim
 from .config import Config, config_from_dict, load_config
 from .metrics import EvalResult
-from .policy import ActorCritic, build_policy, greedy_forager_actions, random_actions
+from .policy import (
+    Brain,
+    greedy_forager_actions,
+    policy_from_config_dict,
+    random_actions,
+)
 from .replay import record_episode
 from .world import EpisodeStats, World
 
 ActFn = Callable[[np.ndarray], np.ndarray]
 
 
-def load_checkpoint(path: str | Path, device: str = "cpu") -> tuple[ActorCritic, Config, dict]:
+def load_checkpoint(path: str | Path, device: str = "cpu") -> tuple[Brain, Config, dict]:
     """Rebuild a policy from a checkpoint, using the config stored inside it.
 
     The config travels with the weights so an evaluation cannot silently use a
     different world than the one the policy was trained on -- a mismatch that
-    produces plausible-looking numbers and no error at all.
+    produces plausible-looking numbers and no error at all. The stored policy
+    config also carries the mode, so shared and per-agent checkpoints both load
+    without the caller having to know which it is.
     """
     blob = torch.load(path, map_location=device, weights_only=False)
     cfg = config_from_dict(blob["config"])
-    policy = build_policy(cfg, blob["policy_config"]["obs_dim"])
+    policy = policy_from_config_dict(cfg, blob["policy_config"])
     policy.load_state_dict(blob["policy_state"])
     policy.eval()
     return policy, cfg, blob
 
 
-def policy_act_fn(policy: ActorCritic, deterministic: bool = False,
+def policy_act_fn(policy: Brain, deterministic: bool = False,
                   device: str = "cpu") -> ActFn:
     """Wrap a network as an ``act_fn(obs) -> actions``.
+
+    The observation block is one row per agent in id order, so the agent ids a
+    ``PolicyGroup`` dispatches on are simply ``arange(num_agents)``.
 
     Sampling (not argmax) is the default: an argmax policy in a world with ties
     and symmetric compass directions can lock into a corner and stand still,
@@ -56,13 +66,14 @@ def policy_act_fn(policy: ActorCritic, deterministic: bool = False,
     def act(obs: np.ndarray) -> np.ndarray:
         with torch.no_grad():
             tensor = torch.as_tensor(obs, dtype=torch.float32, device=torch_device)
-            action, _, _ = policy.act(tensor, deterministic=deterministic)
+            agent_ids = torch.arange(tensor.shape[0], device=torch_device)
+            action, _, _ = policy.act(tensor, agent_ids, deterministic=deterministic)
         return action.cpu().numpy()
 
     return act
 
 
-def make_act_fn(kind: str, cfg: Config, policy: ActorCritic | None,
+def make_act_fn(kind: str, cfg: Config, policy: Brain | None,
                 seed: int, deterministic: bool = False, device: str = "cpu") -> ActFn:
     if kind == "random":
         rng = np.random.default_rng(seed)
