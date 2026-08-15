@@ -26,12 +26,46 @@ Where each milestone landed, in one line each:
 
 In rough order of how much they would teach:
 
-1. **The learned policy still loses to the scripted references in M3–M5.** M1 hit
-   its ceiling; nothing since has. M5's best is 413 lifespan against the scripted
-   trader's 544. The gap is not doomed actions (masking removed those), not
-   entropy, not budget, and not perception of any mechanic we could name — see
-   "Why the learned policy loses to the scripted forager" below for the seven
-   interventions that all came back inside noise. This is the real open problem.
+1. **The milestone chain LOSES navigation, and that is what the gap to the
+   scripted references actually is.** Measured, toward-food share by current
+   distance (50% = a coin flip):
+
+   | | 0–3 | 3–6 | 6–10 | 10–20 | 20+ |
+   |---|---|---|---|---|---|
+   | `nav-probe` | 48.7% | 66.8% | 74.6% | **80.1%** | **86.1%** |
+   | m1 | 47.4% | **60.9%** | **71.1%** | — | — |
+   | m3-masked | 50.6% | 49.3% | 56.5% | 54.3% | **50.5%** |
+   | m4h | 50.3% | 53.8% | 56.3% | 52.3% | **51.2%** |
+   | random | 47.8% | 48.6% | 50.3% | 51.0% | 49.0% |
+   | scripted forager | — | — | — | **100%** | **100%** |
+
+   **Navigation is learnable here and M1 had it.** `nav_probe.yaml` strips the
+   world to "walk to the food" and PPO reaches 86% from long range, so this is
+   not a limitation of the observation, the action encoding or the algorithm.
+   But m3-masked and m4h sit within a couple of points of a random walk *at every
+   range*, despite forking from a policy that could navigate. The chain carried
+   the opportunism forward and dropped the navigation.
+   That reframes everything else in this file: every fix that has ever worked
+   here — action masking, sites on the clusters, materials on the clusters, a
+   fourth site, fungible deliveries — works by bringing things TO an agent whose
+   navigation has decayed to chance. The seven M3 interventions all failed
+   because none of them touched navigation.
+   **Why, measured:** *not* competition. `nav-compete` turns `exclusive_bushes`
+   off and changes nothing (53.0% / 54.4% / 57.0% against m3-masked's 50.8% /
+   55.8% / 53.6%). The cause is that **the target does not survive the walk**: in
+   the scarce world a berry lasts 25.7 ticks and takes 22.3 ticks to reach — a
+   ratio of **1.15×**, against **22×** in the M1 world. Navigation stops being
+   learnable when a target's expected lifetime is comparable to the time needed
+   to reach it, and unlearning it is then correct.
+   **The untried lever is `world.move_step`**, which changes travel time without
+   touching the food economy: 0.8 → 1.6 takes the ratio to ~2.3×.
+
+   *Metric warning, learned the hard way.* An aggregate toward-food share is
+   **confounded and must not be used** — an agent parked on its target scores
+   ~50%, identical to a random walker, so a competent forager and a drunkard are
+   indistinguishable. The first version of this finding claimed the project had
+   *never* learned to navigate; that was the artefact, not the result. Always
+   bucket by current distance.
 2. ~~**Nobody finishes a shelter.**~~ **Solved — see `m4f`.** The cause was
    geography, not the last unit: `m4b` moved the shelter *sites* onto the berry
    clusters and left trees and rocks scattered, so the uncreditable walk it
@@ -108,7 +142,7 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   original verdict was reached where nothing was worth trading: giving stops being
   selected against and the flow turns directional, but it still buys no survival.
   Best checkpoint: `checkpoints/m5b` (497.5 lifespan).
-- `pytest` passes (237 tests).
+- `pytest` passes (242 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -170,6 +204,11 @@ python -m sim.exchange --checkpoint checkpoints/m5/latest.pt
 python -m sim.train --config config/m5b.yaml --run-name m5b --updates 200 \
     --policy-mode individual --init-from checkpoints/m4h/latest.pt
 python -m sim.exchange --checkpoint checkpoints/m5b/latest.pt
+
+# diagnostics for the navigation finding (open problem 1)
+python -m sim.train --config config/nav_probe.yaml --run-name nav-probe --updates 200
+python -m sim.train --config config/nav_compete.yaml --run-name nav-compete \
+    --updates 200 --policy-mode individual --init-from checkpoints/m2/latest.pt
 ```
 
 ## Compute budget — runs are longer than they need to be
@@ -661,6 +700,99 @@ blocking and no stealing — the pure foraging task — the policy still plateau
 all; it is about foraging in a world where food is far apart, and the failure was
 simply invisible in M1 because food was never far apart. A 1000-update run
 (3.3× budget) was flat from update 150, so more compute is not the answer either.
+
+### What the seven interventions were all missing: navigation
+
+Written up long after the fact, because it took a measurement nobody had made.
+For every move a policy makes, ask whether it ends up closer to a *berry-bearing*
+bush — **bucketed by how far away the agent currently is**, because an agent
+hovering on its target necessarily scores ~50% and that is indistinguishable
+from a random walk:
+
+Each policy against **a random baseline measured in its own world** — the floor
+is not 50% everywhere, because movement is projected back onto the disc and a
+walker near the shoreline drifts inward. `--baselines` measures it. 10 episodes:
+
+| toward-food share | 3–6 | 6–10 | 10–20 | 20+ |
+|---|---|---|---|---|
+| **`nav-probe`** learned | 63.9% | 73.6% | **83.0%** | **85.1%** |
+| ...its random floor | 46.5% | 51.2% | 50.2% | 50.3% |
+| ...**over floor** | **+17** | **+22** | **+33** | **+35** |
+| **m1** learned | 62.5% | 66.5% | **78.3%** | 93.8% *(n=16)* |
+| ...its random floor | 50.2% | 49.8% | 51.7% | 54.1% |
+| ...**over floor** | **+12** | **+17** | **+27** | (+40) |
+| **m3-masked** learned | 50.3% | 56.2% | 55.0% | **51.1%** |
+| ...its random floor | 51.0% | 47.2% | 49.4% | 50.7% |
+| ...**over floor** | **−1** | **+9** | **+6** | **+0** |
+| m4h learned | 55.1% | 55.2% | 53.4% | 50.6% |
+| scripted forager | — | — | **100%** | **100%** |
+
+Read the "over floor" rows. m1 and the probe clear their floors by 12–35 points
+and *widen* the margin with distance, which is what navigation looks like.
+m3-masked clears its floor by 9 points at mid-range and by **nothing at all**
+beyond 20 units — and in the scarce world the nearest berry is beyond 20 units on
+9,865 of its 23,700 move-ticks, i.e. exactly where it has no signal.
+
+Three things fall out, and the third is the one that matters.
+
+* **Navigation is learnable in this setup.** `config/nav_probe.yaml` removes
+  scarcity, competition, construction and exchange, leaving one tight cluster and
+  a long walk to it. PPO gets to 86% toward-food from beyond 20 units. So the
+  observation carries enough direction, the action encoding is consistent with
+  it, and PPO can fit it. (The scripted forager already proved the first two by
+  scoring 100% off the observation alone; the probe proves the third.)
+* **M1 had navigation.** 60.9% at 3–6 units and 71.1% at 6–10, against random's
+  ~49%. Not the probe's 86%, but unambiguous.
+* **M3 lost it, and never got it back.** m3-masked is 56.5% / 54.3% / 50.5% at
+  the ranges where M1 managed 61–71% — a random walk with a rounding error on
+  top — *despite forking from M2, which forked from M1*. The milestone chain
+  transferred the opportunism and dropped the navigation, and m4h still has not
+  recovered it.
+
+**This is what the M3 gap always was.** The seven interventions in the table above
+tried entropy, discounting, perception of contest, brain sharing and budget.
+None of them was about going anywhere, which is why they all landed inside noise.
+
+**Why it decays: not competition — the target does not survive the walk.**
+The first hypothesis was `exclusive_bushes` (only the closest agent may harvest,
+so travelling means arriving second). `config/nav_compete.yaml` is m3_masked with
+that single rule off, trained from the same M2 checkpoint. **It made no
+difference**, which is a clean kill:
+
+| toward-food | 3–6 | 6–10 | 10–20 | 20+ |
+|---|---|---|---|---|
+| m2 (what both start from) | **67.1%** | 54.9% | **72.8%** | — |
+| m3-masked (exclusivity on) | 50.8% | 55.8% | 53.6% | 51.3% |
+| nav-compete (**exclusivity off**) | 53.0% | 54.4% | 57.0% | 50.3% |
+
+The pre-registered alternative is the answer, and it is quantitative. Measure how
+long a berry survives on a bush against how long it takes to walk to one:
+
+| | M1 world | **M3 scarce world** |
+|---|---|---|
+| bushes holding a berry | 19.8 of 20 | **2.6 of 6** |
+| distance to the nearest one | 2.5 | **17.8** |
+| → travel time at `move_step` 0.8 | 3.1 ticks | **22.3 ticks** |
+| a berry survives, on average | 69.0 ticks | **25.7 ticks** |
+| **lifetime ÷ travel time** | **22×** | **1.15×** |
+
+In M1 a berry outlives the walk to it twenty-two times over, so setting off is
+free and always pays. In the scarce world the margin is 15% — the berry is gone
+about as often as not by the time you arrive, and that is *before* accounting for
+variance. **Navigation stops being learnable when a target's expected lifetime is
+comparable to the time it takes to reach it**, and unlearning it is correct
+behaviour, not a failure. Exclusivity was irrelevant because with or without it
+the berry is already eaten when you get there.
+
+That ratio is the lever, and it can be moved without touching the food economy at
+all: `world.move_step` changes travel time and nothing else. Doubling it to 1.6
+takes the M3 ratio from 1.15× to ~2.3×.
+
+**The metric warning is part of the finding** — see rule 6. Briefly: the first
+version of this measured the toward-food share aggregated over all distances,
+scored m1 at 51.3%, and concluded the project had never learned to navigate.
+That was sample-weighting (17,347 near-field ticks against 199 far ones), not a
+result. Bucket by distance, always, and print the counts.
 
 ### The fix that worked: action masking
 
@@ -1367,7 +1499,7 @@ run's CSV and read as blanks forever. Cost me a run.
 **`contests_lost ≈ 0` is behavioural, not a broken code path.** It is tested
 directly. See above for why the same-tick rule cannot fire in a scarce world.
 
-## The five rules that survived five milestones
+## The six rules that survived five milestones
 
 Written down because each one was learned the expensive way, and because every
 result in this file that ignored one of them turned out to be wrong.
@@ -1413,3 +1545,20 @@ result in this file that ignored one of them turned out to be wrong.
    already says "recompute demand with `sim` rather than by hand" — this is the
    same rule, applied to *incentives* rather than supply. A fix that removes a
    cliff can remove the summit with it.
+6. **A rate is dominated by whichever states the policy spends its time in,
+   and for a competent policy those are the states where the behaviour barely
+   applies.** The toward-food share looked like a clean measure of navigation
+   and gave m1 51.3%, barely above a random walk — the project had apparently
+   never learned to navigate. It had: bucketed by distance, m1 is 88.4% at 10–20
+   units. The aggregate was 17,347 near-field samples against 199 far ones, so
+   it was essentially the near-field number wearing a general label.
+   Note the explanation that is *wrong*, because it was the first one reached
+   for: this is not "you can only move away from a target you are standing on".
+   The scripted forager scores **100%** in the same near band, because it moves
+   only when moving is right and otherwise gathers. The near-field 48% is a real
+   deficiency; the error was averaging it with real far-field competence at 87:1
+   weighting and reporting the result as one thing.
+   Caught only because a probe result was internally contradictory — the policy
+   plainly reached the food (mean distance 3.8 against random's 24.0) while
+   "scoring" 54.8% toward it. **When two of your numbers cannot both be true,
+   stop and fix the metric.**

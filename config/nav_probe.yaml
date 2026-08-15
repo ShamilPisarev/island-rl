@@ -1,0 +1,73 @@
+# CAN this setup learn to navigate at all? A deliberately minimal probe.
+#
+# THE FINDING THAT PROMPTED IT. Measuring, for every move the policy makes,
+# whether it ends up closer to a berry-bearing bush (50% = a coin flip):
+#
+#   m1          51.3%      <- the policy written up as "at the scripted ceiling"
+#   m2          51.5%
+#   m3-masked   52.5%      <- the SCARCE world, six bushes, navigation essential
+#   m4c-anneal  54.0%
+#   m4h         53.2%
+#   m5b         53.1%
+#   scripted forager  100.0%     scripted builder  92-98%
+#
+# **This project has never learned to navigate.** Not once, in any milestone.
+# Every policy it has trained is a reactive controller: it acts on whatever is in
+# range and otherwise moves at random. m1 reached the scripted ceiling because
+# with twenty bushes food was always underfoot, not because it learned to find
+# food. And every fix that has ever worked here -- action masking, siting
+# shelters on the clusters, materials on the clusters, a fourth site, fungible
+# deliveries -- worked by bringing things TO the agent or making what is already
+# underfoot usable. Nothing ever taught it to go anywhere.
+#
+# The observation is not the problem and this is already controlled for: the
+# scripted forager reads ONLY the 26-dim observation and scores 100%, so the
+# direction information is present and the action encoding is consistent with it.
+#
+# WHAT THIS PROBE ISOLATES. Strip the world back to navigation and nothing else.
+# One tight cluster of bushes, deep supply, no scarcity, no competition, no
+# construction, no exchange. Agents spawn scattered and there is exactly one
+# thing to do: walk to the food. If navigation does not emerge HERE, it is a
+# property of the setup rather than of any milestone's world -- and every result
+# in this project has to be read as "reactive control was enough for that world".
+#
+#   bushes.num_clusters 1        one destination, unambiguous
+#   cluster_std 3.0              tight, so "toward the cluster" is one direction
+#   capacity/initial 12          deep, so arriving is rewarded repeatedly and the
+#                                task never becomes about scarcity
+#   regrow_ticks 20              refills, so camping stays viable and navigation
+#                                is not confounded with rationing
+#   spawn_radius_frac 0.9        spawn far and wide, so the walk is real
+#
+# The 20-unit observation.distance_scale matters here: the cluster can sit up to
+# ~70 units from a spawned agent and offsets clip at +-1, so far-field direction
+# is coarse but its SIGN is intact, which is all a policy needs to set off in the
+# right direction. If the probe fails, re-run it with distance_scale 40 before
+# concluding anything -- that is the one confound this design cannot rule out.
+#
+# PREDICTION, written before the run.
+#
+#   * If PPO can learn navigation at all, this is where: the credit chain is
+#     walk -> arrive -> gather (+1.0), the shortest it can possibly be, and there
+#     is no competing behaviour to spend probability mass on.
+#   * Success looks like the toward-food share climbing well clear of 55%.
+#     Lifespan is NOT the metric -- with a deep cluster, a lucky spawn survives
+#     without moving, so lifespan can look fine while navigation stays at chance.
+#   * If it lands at ~52% again after a full budget, the answer to the project's
+#     oldest open problem is "this setup produces reactive controllers", and the
+#     next lever is the observation or the action space, not the world.
+#
+#   python -m sim.train --config config/nav_probe.yaml --run-name nav-probe \
+#       --updates 200
+extends: default.yaml
+
+world:
+  spawn_radius_frac: 0.9
+
+bushes:
+  num_clusters: 1
+  bushes_per_cluster: 6
+  cluster_std: 3.0
+  capacity: 12
+  initial_berries: 12
+  regrow_ticks: 20

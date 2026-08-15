@@ -577,6 +577,72 @@ giving rose (used 48%). Handing someone a berry they eat is a two-step credit
 chain; handing someone wood they must then carry and spend is the same long chain
 that failed before, and making the delivery fungible did nothing to shorten it.
 
+## The thing all five milestones were actually missing
+
+Across every milestone the learned policy stayed below the hand-written
+references, and a long investigation in Milestone 3 tried seven fixes — entropy,
+discounting, extra perception, brain sharing, more compute — that all came back
+inside noise. The reason none of them worked is that none of them was about
+*going anywhere*.
+
+For every move a policy makes, ask whether it ends up closer to a berry-bearing
+bush. The measurement only means something **bucketed by how far the agent
+currently is**, because an agent standing on its target scores 50% no matter how
+good it is — every move from there goes away:
+
+| toward-food share | 0–3 | 3–6 | 6–10 | 10–20 | 20+ |
+|---|---|---|---|---|---|
+| **navigation probe** | 48.7% | 66.8% | 74.6% | **80.1%** | **86.1%** |
+| **Milestone 1** | 47.4% | **60.9%** | **71.1%** | — | — |
+| **Milestone 3** | 50.6% | 49.3% | 56.5% | 54.3% | **50.5%** |
+| Milestone 4 (best) | 50.3% | 53.8% | 56.3% | 52.3% | 51.2% |
+| random actions | 47.8% | 48.6% | 50.3% | 51.0% | 49.0% |
+| scripted forager | — | — | — | **100%** | **100%** |
+
+Three findings, and the third is the one that matters:
+
+**Navigation is learnable here.** A probe world stripped to nothing but "walk to
+the food" reaches 86% from beyond twenty units. The observation carries enough
+direction, the action encoding is consistent with it, and PPO can fit it.
+
+**Milestone 1 learned it** — 61% at medium range, 71% further out.
+
+**Milestone 3 lost it, and nothing since has recovered it.** The scarce world sits
+within a couple of points of a random walk at every distance, despite being
+forked from a policy that could navigate. The milestone chain carried the
+opportunism forward and dropped the navigation, and every world fix that has
+worked since — action masking, moving shelters onto the food clusters, moving the
+wood and stone there too, letting sites accept anything — works by bringing
+things *to* an agent that can no longer reliably go to them.
+
+The obvious suspect was the rule that only the closest agent may harvest a bush —
+travel, arrive second, get nothing. Turning that rule off changed nothing at all.
+
+The real reason is simpler and can be written as one ratio. How long does a berry
+last, against how long it takes to walk to one?
+
+| | Milestone 1 | **scarce world** |
+|---|---|---|
+| distance to the nearest berry | 2.5 | **17.8** |
+| → time to walk there | 3.1 ticks | **22.3 ticks** |
+| how long a berry survives | 69.0 ticks | **25.7 ticks** |
+| **lifetime ÷ travel time** | **22×** | **1.15×** |
+
+In Milestone 1 a berry outlives the walk twenty-two times over, so setting off is
+free and always pays. In the scarce world the margin is fifteen percent — the
+berry is usually gone by the time you arrive. **Navigation stops being learnable
+when the thing you are walking to expires in about the time it takes to get
+there**, and unlearning it is correct behaviour rather than a failure.
+
+That ratio is also the lever, and it can be moved without touching the food
+economy: how far an agent travels per tick changes travel time and nothing else.
+
+This finding came with a lesson about measurement, too. The first version of it
+averaged the toward-food share over all distances, scored Milestone 1 at 51.3%,
+and concluded the project had never learned to navigate at all. That was
+sample-weighting — seventeen thousand near-field ticks against two hundred
+distant ones — not a result.
+
 ## Configuration
 
 Everything tunable lives in `config/default.yaml` — world size, hunger rates,
