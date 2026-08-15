@@ -32,12 +32,19 @@ In rough order of how much they would teach:
    entropy, not budget, and not perception of any mechanic we could name — see
    "Why the learned policy loses to the scripted forager" below for the seven
    interventions that all came back inside noise. This is the real open problem.
-2. **Nobody finishes a shelter** (0.1 per episode against the builder's 1.9).
-   *Cheaper sites* was the untried structural lever and it has now been tried
-   (`m4d`, 2-unit sites): **flat on lifespan**, while the scripted builder in the
-   same world gained ~15 ticks and 0.6 shelters. So completion is not blocked by
-   the summit being too far. Do not raise the shaping, and do not re-run this.
-   See "The cheap-sites test" in the Milestone 4 section for the next idea.
+2. ~~**Nobody finishes a shelter.**~~ **This was not a real open problem, and the
+   note that said it was had a stale premise.** Under `partial_shelter` the night
+   drain falls *linearly* with build progress, so the final unit of a site is
+   worth exactly what the first one was, and a partial shelter persists just as a
+   finished one does. In the canonical annealed world nothing pays for completion
+   at all. 0.1 shelters an episode is the policy correctly declining to buy
+   something worthless — not a failure. The claim that finishing "is worth much
+   more than the marginal unit suggests" was written for `m4`/`m4b`, where
+   protection was binary, and was never re-derived after `m4c` turned
+   `partial_shelter` on. Full arithmetic in the Milestone 4 section.
+   `m4d` (cheaper sites) was run against the stale premise and came back flat, as
+   it had to. `m4e` (`completion_premium`) tests the corrected one. Do not re-run
+   `m4d`, and do not raise the shaping.
 3. **Exchange needs a mechanism, not a bigger number.** M5 showed the unpaid
    chain is too weak and a flat payment produces a gift farm. If you want trade,
    the thing to change is the *mechanic* — see "What would actually be worth
@@ -65,9 +72,12 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   checkpoint: `checkpoints/m3-masked`.
 - M4: wood/stone/shelter/night mechanics, day/night hazard, replay schema v2.
   Construction partially emerged (22% of nights sheltered against a control's 2%)
-  but shelters almost never complete. The shaping annealed away cleanly.
-  Canonical checkpoint: `checkpoints/m4c-anneal`. Halving the site cost (`m4d`)
-  was tested afterwards and bought the policy nothing.
+  but shelters almost never complete — which turned out to be *correct play*
+  rather than a failure, because `partial_shelter` makes the last unit worth
+  exactly what the first one is. The shaping annealed away cleanly. Canonical
+  checkpoint: `checkpoints/m4c-anneal`. Halving the site cost (`m4d`) was tested
+  afterwards and bought the policy nothing, as the corrected arithmetic says it
+  had to.
 - M5: `give_food`/`give_material`, a transfer ledger, replay schema v3, an
   exchange analysis tool and viewer page, and a scripted trader reference.
   **Exchange did not emerge unpaid** — giving was mildly selected *against* — and
@@ -707,7 +717,10 @@ solved M3: **change the shape of the problem, do not pay more at the summit.**
 * **`m4c` removed the cliff.** A site costs four units and only the fourth bought
   anything, so three quarters of the work was invisible to the value function.
   Scaling protection with build progress made the landscape continuous, and
-  night protection went 2.5% → 16%.
+  night protection went 2.5% → 16%. **It also removed the summit, which nobody
+  noticed for two milestones** — a linear protection curve makes the last unit
+  worth exactly what the first one is, so "nobody completes a shelter" stopped
+  being a defect and became correct play. See "What is left" below.
 
 An earlier sizing (6-unit sites, shaping 0.3/0.5/2.0) produced *zero* completions
 in 200 updates; CSVs in `runs/_m4_probe1`. At 0.3 a material action loses to a
@@ -743,19 +756,62 @@ The difference is not the shaping technique — it is whether the shaped behavio
 was actually worth doing. That is the test, and only the terminal metric
 answers it.
 
-### What is left
+### What is left, and a correction to what this section used to say
 
-The remaining gap is the last unit. Even with a continuous gradient, finishing a
+**This section was wrong for two milestones, so read the correction before the
+open problem.** It used to say: "the remaining gap is the last unit — finishing a
 site is worth much more than the marginal unit suggests (a complete shelter
-protects fully and permanently), and the policy stops at "good enough" partial
-cover.
+protects fully and permanently), and the policy stops at *good enough* partial
+cover." That was true of `m4`/`m4b`, where `partial_shelter` was off and
+protection was binary. **It stopped being true the moment `m4c` turned
+`partial_shelter` on, and nobody re-derived it.** Measured, `m4c`, 4-unit site,
+night drain 1.5 exposed / 0.5 sheltered:
+
+| delivered | protection | night drain | marginal gain |
+|---|---|---|---|
+| 1/4 | 0.25 | 1.25 | +0.25 |
+| 2/4 | 0.50 | 1.00 | +0.25 |
+| 3/4 | 0.75 | 0.75 | +0.25 |
+| **4/4** | **1.00** | **0.50** | **+0.25** ← the last unit |
+
+Exactly linear, and a partial shelter persists exactly as a finished one does, so
+"fully and permanently" separates nothing. In the canonical annealed world
+(`reward.complete` 0.0) **laying the final unit buys precisely what the first one
+bought and not one tick more.**
+
+So "nobody finishes a shelter" was never a perception failure or a credit-
+assignment failure. **It was correct play**, and m4c's own fix caused it:
+`partial_shelter` removed the cliff, and the reason to reach the top went with
+it. The only thing that ever paid for completion was `reward.complete: 3.0`,
+which is shaping, and which is zero in the canonical checkpoint.
+
+Two things follow, and both are load-bearing for whoever picks this up:
+
+* **0.1 shelters an episode is not a defect to fix.** Read it as the policy
+  correctly declining to pay for something worth nothing. The comparison to the
+  scripted builder's 1.9 is not like-for-like: the builder finishes because it
+  was *written* to finish, not because finishing pays.
+* **A fix that removes a cliff can remove the summit with it.** That is the
+  general lesson, and it is why this went unnoticed — `m4c` was a success on
+  every metric anyone looked at (nights indoors 2.5% → 16%), and the thing it
+  quietly deleted was only visible by re-deriving the arithmetic.
+
+The standing advice that survives the correction:
 
 * **Do not raise the shaping.** `m4` already showed 3.5× the material activity of
   its control with no completions; volume was never the constraint.
 * Longer training is *not* indicated — the M3 investigation burned 3.3× budget
   for nothing, and these curves are flat by update ~250.
 * **Cheaper sites were the untried structural lever. They were tried, and they
-  did not pay** — see below.
+  did not pay** — see below. Note that the correction above explains *why* they
+  could not have: m4d halved the distance to a summit that was worth nothing on
+  arrival.
+* If you want completion, the mechanic has to pay for it. That is what
+  `construction.completion_premium` is for — it withholds a slice of the
+  protection until a site is finished, so the continuous landscape survives and
+  the last unit is worth more than the others. `config/m4e_premium.yaml` (the
+  mechanic alone) and `config/m4e.yaml` (mechanic + the `site{j}.finishes`
+  observation channel) are the pair; both headers carry their predictions.
 
 ### The cheap-sites test (`m4d`) — the lever did not pay
 
@@ -815,9 +871,13 @@ and m4c's own header calls that kind of run a ritual.
 Where this leaves the milestone: the three structural levers that worked (site
 placement, partial protection, action masking) all removed something *uncreditable*
 from the chain. Cheap sites removed *length*, not uncreditability, and length was
-never what was broken. If you pick this up again, the untried thing is making the
-final unit perceptible — the observation carries a site's remaining cost, but
-nothing distinguishes "one unit short" as a state worth being in.
+never what was broken.
+
+**And the deeper reason they could not have worked** — found while writing up the
+next experiment, not while running this one — is the correction above: under
+`partial_shelter` the last unit is worth exactly what every other unit is worth.
+m4d halved the distance to a summit that pays nothing on arrival. Any lever that
+only shortens the chain is arguing with the wrong premise.
 
 ## Milestone 5 — exchange
 
@@ -963,7 +1023,7 @@ run's CSV and read as blanks forever. Cost me a run.
 **`contests_lost ≈ 0` is behavioural, not a broken code path.** It is tested
 directly. See above for why the same-tick rule cannot fire in a scarce world.
 
-## The four rules that survived five milestones
+## The five rules that survived five milestones
 
 Written down because each one was learned the expensive way, and because every
 result in this file that ignored one of them turned out to be wrong.
@@ -993,3 +1053,15 @@ result in this file that ignored one of them turned out to be wrong.
 4. **More compute is never the fix.** `scarce-long` spent 3.3× budget and was
    flat from update 150. Runs settle by ~120–175 updates. If a run is not
    working, the world or the observation is wrong, not the budget.
+5. **When you change a mechanic, re-derive the arithmetic that justified the
+   open problems around it.** `m4c` made shelter protection linear in build
+   progress. That fixed the cliff it was aimed at, and in the same stroke made
+   the last unit of a site worth exactly what the first one was — deleting the
+   reason to complete a shelter. The note calling incomplete shelters M4's
+   failure was written before that change and was carried forward, unexamined,
+   through the whole of M5 and into `m4d`, an experiment that could not have
+   worked because it was arguing with a premise that had already expired. Cost:
+   one run and two milestones of a wrong headline. The M3 economy postmortem
+   already says "recompute demand with `sim` rather than by hand" — this is the
+   same rule, applied to *incentives* rather than supply. A fix that removes a
+   cliff can remove the summit with it.

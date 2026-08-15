@@ -354,8 +354,22 @@ real outcome.
 
 **But agents do not finish.** They deliver materials and huddle under half-built
 walls; completed shelters run at 0.1 per episode against the scripted builder's
-1.9, and the learned policy stays well below that reference. That is the honest
-headline, and it is the failure the brief predicted for this milestone.
+1.9, and the learned policy stays well below that reference.
+
+That was written up as this milestone's failure for a long time. **It is not one,
+and finding out why is the more interesting result.** Making protection scale
+with build progress — the fix two paragraphs down — makes the night drain fall
+*linearly*, so the final unit of a site is worth exactly what the first one was,
+and a half-built shelter persists just as a finished one does. Once the
+construction shaping is annealed to zero, as it is in the canonical policy,
+**completing a shelter pays nothing at all** beyond the units it took. The agents
+are not failing to finish. They are declining to buy something worthless, which
+is correct.
+
+The lesson generalises past this project: **a fix that removes a cliff can remove
+the summit with it.** The change looked like an unambiguous success on every
+metric anyone was watching, and what it quietly deleted was visible only by
+re-deriving the arithmetic afterwards.
 
 Getting even that far took two fixes, neither of which touched the shaping
 coefficients — both were the move that solved M3, reshaping the problem rather
@@ -384,7 +398,10 @@ doing, and only the terminal metric tells you.
 the summit nearer: `m4d` halves a site to 2 units — one round trip instead of
 two. It bought the learned policy nothing (373.6 lifespan against m4c's 374.6 at
 matched budget), while the *scripted* builder in the same cheap world gained ~15
-ticks and 0.6 shelters. So the last unit is not out of reach because it is far.
+ticks and 0.6 shelters. So the last unit is not out of reach because it is far —
+and the paragraph above says why it could never have been: halving the distance
+to a summit that pays nothing on arrival changes nothing. That premise was only
+re-derived afterwards, which is the honest order of events.
 
 This run is also a small lesson in reading your own metrics. Protection scales
 with the *fraction* of a site delivered, and "indoors" means half-built, so
