@@ -33,7 +33,7 @@ from torch.distributions import Categorical
 
 from .agents import (BUILD, CHOP, GATHER, GIVE_FOOD, GIVE_MATERIAL, IDLE, MINE,
                      N_ACTIONS, N_MOVE_ACTIONS, STEAL, neighbour_channels,
-                     num_actions, observation_layout)
+                     num_actions, observation_layout, site_channels)
 from .config import Config
 
 
@@ -441,7 +441,7 @@ def greedy_builder_actions(obs: np.ndarray, cfg: Config,
 
     trees = block("tree", cc.k_trees, 3)
     rocks = block("rock", cc.k_rocks, 3)
-    sites = block("site", cc.k_sites, 5)
+    sites = block("site", cc.k_sites, site_channels(cfg))
     phase = obs[:, col["night.phase"]]
     is_night = obs[:, col["night.is_night"]] > 0.5
     # head home a little before dusk: crossing the island takes ~50 ticks
@@ -590,8 +590,9 @@ def greedy_trader_actions(obs: np.ndarray, cfg: Config,
 
     # --- material to a neighbour standing nearer the focal site
     if cfg.construction.enabled:
-        sites = obs[:, col["site0.dx"]:col["site0.dx"] + cfg.construction.k_sites * 5]
-        sites = sites.reshape(n, cfg.construction.k_sites, 5)
+        per = site_channels(cfg)
+        sites = obs[:, col["site0.dx"]:col["site0.dx"] + cfg.construction.k_sites * per]
+        sites = sites.reshape(n, cfg.construction.k_sites, per)
         incomplete = (sites[:, :, 4] < 0.5) & (np.hypot(sites[:, :, 0], sites[:, :, 1]) > 0)
         remaining = np.where(incomplete, sites[:, :, 2] + sites[:, :, 3], np.inf)
         j = np.argmin(remaining, axis=1)

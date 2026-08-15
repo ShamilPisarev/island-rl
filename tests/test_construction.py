@@ -446,6 +446,101 @@ def test_partial_shelter_scales_protection_with_progress(m4):
     assert done < half < untouched, "partial progress must give partial protection"
 
 
+def test_final_unit_channel_is_off_by_default(m4):
+    """Off everywhere it was not asked for, so M1-M5 observations are unchanged."""
+    assert m4.construction.observe_final_unit is False
+    for name in ("config/m4.yaml", "config/m4b.yaml", "config/m4c.yaml",
+                 "config/m4c_anneal.yaml", "config/m4d.yaml", "config/m5.yaml"):
+        c = load_config(name)
+        assert c.construction.observe_final_unit is False
+        assert "site0.finishes" not in observation_layout(c)
+    assert observation_dim(load_config("config/m4c.yaml")) == 55
+
+
+def test_final_unit_channel_fires_only_when_this_agent_can_finish(m4):
+    """1 exactly when one more unit of what the agent carries completes the site.
+
+    The distinction that matters is agent-relative: two agents standing on the
+    same one-short site see different values, because only the one holding the
+    right material can close it. That conjunction is the whole point of the
+    channel -- the five per-site channels plus own.wood/own.stone contain it, but
+    only as a product of terms 40 columns apart.
+    """
+    cfg = m4.replace(**{"construction.observe_final_unit": True,
+                        "construction.sites_at_clusters": True,
+                        "construction.site_wood_cost": 3,
+                        "construction.site_stone_cost": 1})
+    layout = observation_layout(cfg)
+    assert layout.count("site0.finishes") == 1
+    assert len(layout) == observation_dim(cfg) == 57      # 55 + one per site
+    finish_col = layout.index("site0.finishes")
+
+    def channel(wood_needed, stone_needed, carry_wood, carry_stone):
+        w = World(cfg, seed=73)
+        w.site_wood_needed[:] = 3
+        w.site_stone_needed[:] = 1
+        w.site_wood_needed[0] = wood_needed
+        w.site_stone_needed[0] = stone_needed
+        park(w, 0, w.site_x[0], w.site_z[0])
+        w.pool.wood[0], w.pool.stone[0] = carry_wood, carry_stone
+        # park everyone else far away so site0 really is agent 0's nearest
+        for i in range(1, cfg.world.num_agents):
+            park(w, i, 0.0, 0.0)
+        return float(w.observations()[0, finish_col])
+
+    assert channel(1, 0, carry_wood=1, carry_stone=0) == 1.0   # one wood short, holding wood
+    assert channel(0, 1, carry_wood=0, carry_stone=1) == 1.0   # one stone short, holding stone
+    assert channel(1, 0, carry_wood=0, carry_stone=1) == 0.0   # wrong material
+    assert channel(0, 1, carry_wood=1, carry_stone=0) == 0.0   # wrong material
+    assert channel(1, 1, carry_wood=1, carry_stone=1) == 0.0   # two short, not one
+    assert channel(2, 0, carry_wood=1, carry_stone=0) == 0.0   # two short, not one
+    assert channel(0, 0, carry_wood=1, carry_stone=1) == 0.0   # already complete
+
+
+def test_completion_premium_is_off_by_default_and_restores_the_last_unit(m4):
+    """partial_shelter alone makes the last unit worth exactly what the first was.
+
+    That is the measured reason nobody finishes a shelter in m4c/m4d -- not a
+    perception failure but correct play. The premium withholds a slice of the
+    protection until the site is done, so every unit still buys something and the
+    final one buys more.
+    """
+    assert m4.construction.completion_premium == 0.0
+
+    def drains(premium):
+        cfg = m4.replace(**{"construction.partial_shelter": True,
+                            "construction.sites_at_clusters": True,
+                            "construction.completion_premium": premium})
+        cc = cfg.construction
+        total = cc.site_wood_cost + cc.site_stone_cost
+        out = []
+        for delivered in range(total + 1):
+            w = World(cfg, seed=74)
+            w.tick = ticks_to_night(cfg)
+            w.site_wood_needed[:] = cc.site_wood_cost
+            w.site_stone_needed[:] = cc.site_stone_cost
+            # spend wood first, exactly as the build rule does
+            w.site_wood_needed[0] = max(cc.site_wood_cost - delivered, 0)
+            w.site_stone_needed[0] = max(
+                cc.site_stone_cost - max(delivered - cc.site_wood_cost, 0), 0)
+            park(w, 0, w.site_x[0], w.site_z[0])
+            h0 = float(w.pool.hunger[0])
+            w.step(idle_all(cfg))
+            out.append(h0 - float(w.pool.hunger[0]))
+        return out
+
+    flat = drains(0.0)
+    gains = [flat[i] - flat[i + 1] for i in range(len(flat) - 1)]
+    assert gains == pytest.approx([gains[0]] * len(gains)), "default must stay linear"
+
+    premium = drains(0.5)
+    pgains = [premium[i] - premium[i + 1] for i in range(len(premium) - 1)]
+    assert all(g > 0 for g in pgains), "every unit must still buy something"
+    assert pgains[-1] > pgains[0] * 2, "the last unit must be worth clearly more"
+    # and a finished shelter still protects completely, premium or not
+    assert premium[-1] == pytest.approx(flat[-1])
+
+
 def test_indoors_statistic_scales_with_site_cost(m4):
     """The "indoors" statistic is a *fraction* (protection >= 0.5), so how many
     delivered units it takes to count scales with what a site costs.

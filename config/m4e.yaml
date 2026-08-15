@@ -1,0 +1,46 @@
+# Make the last unit PERCEPTIBLE, on top of making it worth something.
+#
+# m4e_premium.yaml gives the final unit real value (5x a normal one) without
+# changing what the agent can see. This config adds the perception half: one
+# extra channel per observed site, `site{j}.finishes`, which is 1 when one more
+# unit OF THE KIND THIS AGENT IS ALREADY CARRYING would complete that site.
+# Observation 55 -> 57.
+#
+# The channel is agent-relative where the other five site channels are not — two
+# agents on the same one-short site see different values, because only the one
+# holding the right material can close it. That fact is already implied by
+# own.wood / own.stone and site{j}.need_wood / need_stone, but only as a
+# conjunction of terms ~40 columns apart, which is the shape of thing a small
+# MLP is worst at. Same call as observe_neighbour_food before theft was asked to
+# emerge, and the same call as the M3 action mask: a mechanic the policy cannot
+# see is a mechanic it cannot respond to.
+#
+# THE PAIR IS THE DELIVERABLE. m4e_premium is the control and differs by exactly
+# this one channel, so the comparison answers a specific question: once finishing
+# genuinely pays, is PERCEIVING that you can finish the binding constraint?
+#
+# PREDICTION, written before the run.
+#
+#   * m4e_premium will complete more shelters than m4c-anneal's 0.091. The
+#     premium restores a real gradient toward the summit and nothing else
+#     changed, so if this does NOT move, the problem was never the incentive.
+#   * m4e will beat m4e_premium on completions if perception is the constraint.
+#     I do not expect much: the conjunction is genuinely available in the
+#     observation, and every previous "give the policy one more channel" move in
+#     this project (observe_bush_contested, +0 ticks) came back inside noise.
+#     The interventions that worked changed what was REACHABLE (action masking)
+#     or what the world paid for, not what was merely visible.
+#   * Most likely outcome: the mechanic does the work and the channel is flat.
+#     That is a useful negative — it would say the last unit was an incentive
+#     problem the whole time and the notes' "perception" framing was wrong.
+#
+# Read completions and nights-indoors here, not lifespan alone: the premium makes
+# both mean something again (indoors now requires a finished shelter). Lifespan
+# is still the terminal metric and the scripted builder in THIS world is the bar.
+#
+#   python -m sim.train --config config/m4e.yaml --run-name m4e --updates 200 \
+#       --policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
+extends: m4e_premium.yaml
+
+construction:
+  observe_final_unit: true

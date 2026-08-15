@@ -165,6 +165,15 @@ def bush_channels(cfg: Config) -> int:
     return 4 if cfg.competition.observe_bush_contested else 3
 
 
+def site_channels(cfg: Config) -> int:
+    """dx, dz, need_wood, need_stone, complete, and optionally ``finishes``.
+
+    The sixth channel is agent-relative where the other five are not: whether
+    *this* agent could complete *this* site with what it is carrying right now.
+    """
+    return 6 if cfg.construction.observe_final_unit else 5
+
+
 def observation_dim(cfg: Config) -> int:
     """2 own scalars + K_b bushes x (3 or 4) + K_a agents x (3 or 4) + 3 edge,
     plus the Milestone 4 block when construction is enabled."""
@@ -175,7 +184,7 @@ def observation_dim(cfg: Config) -> int:
         dim += 2                    # own wood, own stone
         dim += 3 * cc.k_trees       # dx, dz, wood left
         dim += 3 * cc.k_rocks       # dx, dz, stone left
-        dim += 5 * cc.k_sites       # dx, dz, need_wood, need_stone, complete
+        dim += site_channels(cfg) * cc.k_sites
         dim += 2                    # cycle phase, is_night
     return dim
 
@@ -303,6 +312,8 @@ def observation_layout(cfg: Config) -> tuple[str, ...]:
         for j in range(cc.k_sites):
             names += [f"site{j}.dx", f"site{j}.dz",
                       f"site{j}.need_wood", f"site{j}.need_stone", f"site{j}.complete"]
+            if cc.observe_final_unit:
+                names.append(f"site{j}.finishes")
         names += ["night.phase", "night.is_night"]
     names += ["edge.room", "edge.outward_x", "edge.outward_z"]
     return tuple(names)
@@ -340,7 +351,11 @@ def _entity_block(out: np.ndarray, col: int, pool: AgentPool, ex: np.ndarray,
         out[:, col + 0] = np.where(ok, np.clip(dx[rows, take] / scale, -1.0, 1.0), 0.0)
         out[:, col + 1] = np.where(ok, np.clip(dz[rows, take] / scale, -1.0, 1.0), 0.0)
         for c, channel in enumerate(extra):
-            out[:, col + 2 + c] = np.where(ok, channel[take], 0.0)
+            # 1-D channels are per entity ("berries left"); 2-D ones are per
+            # (agent, entity) and have to be gathered on both axes ("could I
+            # finish this site").
+            vals = channel[rows, take] if channel.ndim == 2 else channel[take]
+            out[:, col + 2 + c] = np.where(ok, vals, 0.0)
         col += 2 + len(extra)
     return col
 
@@ -464,8 +479,23 @@ def build_observations(
         need_s = construction.site_stone_needed / max(cc.site_stone_cost, 1)
         complete = ((construction.site_wood_needed == 0)
                     & (construction.site_stone_needed == 0)).astype(np.float64)
+        site_extra = [need_w, need_s, complete]
+        if cc.observe_final_unit:
+            # "One more unit, of the kind I already carry, finishes this site."
+            # Agent-relative, hence (A, S) rather than (S,). A site is one short
+            # when exactly one unit of either material remains, and the build
+            # rule spends wood first, so the carrier of that specific material is
+            # the one who can close it.
+            need_w_raw = construction.site_wood_needed
+            need_s_raw = construction.site_stone_needed
+            one_short = (need_w_raw + need_s_raw) == 1
+            finishes = one_short[None, :] & (
+                ((need_w_raw[None, :] == 1) & (pool.wood[:, None] > 0))
+                | ((need_s_raw[None, :] == 1) & (pool.stone[:, None] > 0))
+            )
+            site_extra.append(finishes.astype(np.float64))
         col = _entity_block(out, col, pool, construction.site_x, construction.site_z,
-                            [need_w, need_s, complete], cc.k_sites, scale)
+                            site_extra, cc.k_sites, scale)
         phase, is_night = night_phase(construction.tick, cfg)
         out[:, col + 0] = phase
         out[:, col + 1] = float(is_night)

@@ -487,6 +487,15 @@ class World:
                 progress = 1.0 - (self.site_wood_needed + self.site_stone_needed) / total
                 if not cc.partial_shelter:
                     progress = (progress >= 1.0).astype(np.float64)
+                elif cc.completion_premium > 0.0:
+                    # partial_shelter made protection LINEAR in progress, which
+                    # removed the cliff and with it any reason to lay the last
+                    # unit -- measured on m4c, every unit of a 4-unit site is
+                    # worth the same 0.25 of the drain. The premium withholds a
+                    # slice until the site is finished, so the gradient survives
+                    # and finishing is worth more than the units it took.
+                    progress = np.where(progress >= 1.0, 1.0,
+                                        progress * (1.0 - cc.completion_premium))
                 protection = np.zeros(n)
                 if self.site_x.size:
                     d2 = ((self.site_x[None, :] - pool.x[:, None]) ** 2

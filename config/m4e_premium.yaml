@@ -1,0 +1,40 @@
+# Give the last unit something to be worth — MECHANIC ONLY (the control).
+#
+# WHY THIS EXISTS. "Nobody finishes a shelter" was carried in the notes as an
+# open problem with the explanation that "finishing a site is worth much more
+# than the marginal unit suggests". That was true in m4/m4b, where protection was
+# binary, and it stopped being true the moment m4c turned on partial_shelter.
+# Measured, m4c, 4-unit site, night drain 1.5 exposed / 0.5 sheltered:
+#
+#   1/4 delivered -> drain 1.25     marginal gain 0.25
+#   2/4           -> 1.00           marginal gain 0.25
+#   3/4           -> 0.75           marginal gain 0.25
+#   4/4           -> 0.50           marginal gain 0.25   <- the LAST unit
+#
+# Exactly linear. In the canonical annealed world (reward.complete 0.0) laying
+# the final unit buys precisely what the first one bought and not one tick more.
+# So 0.1 shelters an episode was never a perception failure or a credit-
+# assignment failure. It was correct play, and m4c's own fix caused it:
+# partial_shelter removed the cliff, and with it the reason to reach the top.
+#
+# completion_premium 0.5 withholds half the protection until the site is done:
+#
+#   1/4 -> protection 0.125     2/4 -> 0.25     3/4 -> 0.375     4/4 -> 1.0
+#
+# Every unit still buys a real drain reduction, so the continuous landscape
+# partial_shelter was introduced for survives; the final unit is now worth 5x a
+# normal one. This is a MECHANIC change, not a coefficient — the whole shaping
+# block stays at zero, inherited from m4c_anneal.
+#
+# Side effect worth knowing: "indoors" (protection >= 0.5) is now reachable ONLY
+# by a finished shelter, so night_sheltered_frac stops being satisfiable by
+# half-built walls and starts meaning what it says. It is not comparable to m4c's
+# or m4d's figure. That trap is what m4d was about; see CLAUDE.md.
+#
+#   python -m sim.train --config config/m4e_premium.yaml --run-name m4e-premium \
+#       --updates 200 --policy-mode individual \
+#       --init-from checkpoints/m4c-anneal/latest.pt
+extends: m4c_anneal.yaml
+
+construction:
+  completion_premium: 0.5

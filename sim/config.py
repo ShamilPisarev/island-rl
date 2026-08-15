@@ -94,10 +94,30 @@ class ConstructionConfig:
     night_fraction: float = 0.25    # last quarter of each cycle is night
     night_drain_multiplier: float = 3.0
     partial_shelter: bool = False    # half-built walls give half the protection
+    # How much of a shelter's protection is withheld until it is FINISHED.
+    #
+    # partial_shelter alone makes protection linear in build progress, which
+    # fixed the credit-assignment cliff by removing the reason to complete: the
+    # last unit buys exactly what the first one did. Measured on m4c, every unit
+    # of a 4-unit site is worth 0.25 of the night drain, final unit included.
+    # That is why nobody finishes -- not a perception failure, correct play.
+    #
+    # With a premium p, a site at progress q protects q*(1-p) and a finished one
+    # protects 1.0. Every unit still buys something (the gradient partial_shelter
+    # was introduced for survives) and the last one additionally buys p. 0.0
+    # reproduces every earlier M4 result exactly.
+    completion_premium: float = 0.0
     # observation channels
     k_trees: int = 2
     k_rocks: int = 2
     k_sites: int = 2
+    # One extra site channel: "one more unit, of the kind I am already carrying,
+    # finishes this". Derivable in principle from own.wood/own.stone and the
+    # site's need channels, but only as a conjunction across distant parts of a
+    # 55-dim vector, which is exactly the shape of thing a small MLP does badly.
+    # Same call as observe_neighbour_food before theft and the M3 action mask:
+    # a mechanic the policy cannot see is one it cannot respond to.
+    observe_final_unit: bool = False
 
 
 @dataclass(frozen=True)
