@@ -446,6 +446,39 @@ def test_partial_shelter_scales_protection_with_progress(m4):
     assert done < half < untouched, "partial progress must give partial protection"
 
 
+def test_indoors_statistic_scales_with_site_cost(m4):
+    """The "indoors" statistic is a *fraction* (protection >= 0.5), so how many
+    delivered units it takes to count scales with what a site costs.
+
+    One delivery counts as indoors at m4d's 2-unit sites and does not at m4c's
+    4-unit sites. That means night_sheltered_frac and shelters-per-episode
+    cannot be compared across the two sizings -- they get mechanically cheaper
+    along with the world. Pinned here because the m4d result is otherwise easy
+    to read as the policy improving when it is the metric moving. The lifespan
+    gap to the scripted builder, measured in the same world, is the comparison
+    that survives this.
+    """
+
+    def sheltered_agents_after_one_delivery(wood_cost, stone_cost):
+        cfg = m4.replace(**{"construction.partial_shelter": True,
+                            "construction.sites_at_clusters": True,
+                            "construction.site_wood_cost": wood_cost,
+                            "construction.site_stone_cost": stone_cost})
+        w = World(cfg, seed=72)
+        w.tick = ticks_to_night(cfg)
+        w.site_wood_needed[:] = wood_cost
+        w.site_stone_needed[:] = stone_cost
+        w.site_wood_needed[0] = wood_cost - 1      # exactly one unit delivered
+        for i in range(cfg.world.num_agents):
+            park(w, i, w.site_x[0], w.site_z[0])
+        w.step(idle_all(cfg))
+        return w._night_sheltered
+
+    n = m4.world.num_agents
+    assert sheltered_agents_after_one_delivery(1, 1) == n     # m4d: 1 of 2 = 0.5
+    assert sheltered_agents_after_one_delivery(3, 1) == 0     # m4c: 1 of 4 = 0.25
+
+
 def test_partial_shelter_off_keeps_the_cliff(m4):
     """The default stays binary, so every earlier M4 result reproduces."""
     cfg = m4.replace(**{"construction.sites_at_clusters": True})

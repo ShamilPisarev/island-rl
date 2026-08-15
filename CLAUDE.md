@@ -32,9 +32,12 @@ In rough order of how much they would teach:
    entropy, not budget, and not perception of any mechanic we could name — see
    "Why the learned policy loses to the scripted forager" below for the seven
    interventions that all came back inside noise. This is the real open problem.
-2. **Nobody finishes a shelter** (0.1 per episode against the builder's 1.9). The
-   untried structural lever is *cheaper sites* (2 units), which makes completion
-   reachable by exploration rather than by plan. Do not raise the shaping.
+2. **Nobody finishes a shelter** (0.1 per episode against the builder's 1.9).
+   *Cheaper sites* was the untried structural lever and it has now been tried
+   (`m4d`, 2-unit sites): **flat on lifespan**, while the scripted builder in the
+   same world gained ~15 ticks and 0.6 shelters. So completion is not blocked by
+   the summit being too far. Do not raise the shaping, and do not re-run this.
+   See "The cheap-sites test" in the Milestone 4 section for the next idea.
 3. **Exchange needs a mechanism, not a bigger number.** M5 showed the unpaid
    chain is too weak and a flat payment produces a gift farm. If you want trade,
    the thing to change is the *mechanic* — see "What would actually be worth
@@ -63,13 +66,14 @@ shaping ablation and the M4 economy sizing notes before touching any config.
 - M4: wood/stone/shelter/night mechanics, day/night hazard, replay schema v2.
   Construction partially emerged (22% of nights sheltered against a control's 2%)
   but shelters almost never complete. The shaping annealed away cleanly.
-  Canonical checkpoint: `checkpoints/m4c-anneal`.
+  Canonical checkpoint: `checkpoints/m4c-anneal`. Halving the site cost (`m4d`)
+  was tested afterwards and bought the policy nothing.
 - M5: `give_food`/`give_material`, a transfer ledger, replay schema v3, an
   exchange analysis tool and viewer page, and a scripted trader reference.
   **Exchange did not emerge unpaid** — giving was mildly selected *against* — and
   paying for it produced a gift farm that cost 54 ticks of life. Canonical
   checkpoint: `checkpoints/m5`.
-- `pytest` passes (230 tests).
+- `pytest` passes (231 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -95,6 +99,13 @@ python -m sim.train --config config/m4.yaml --run-name m4 --updates 400 \
     --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
 python -m sim.train --config config/m4_unshaped.yaml --run-name m4-unshaped \
     --updates 400 --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
+
+# the cheap-sites test and its control — a NEGATIVE result, kept so nobody
+# spends the six minutes finding it again
+python -m sim.train --config config/m4d.yaml --run-name m4d --updates 200 \
+    --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
+python -m sim.train --config config/m4d_unshaped.yaml --run-name m4d-unshaped \
+    --updates 200 --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
 
 # Milestone 5: gifts unpaid (the result) and gifts paid (the ablation), both
 # continued from the annealed M4 policy
@@ -737,14 +748,76 @@ answers it.
 The remaining gap is the last unit. Even with a continuous gradient, finishing a
 site is worth much more than the marginal unit suggests (a complete shelter
 protects fully and permanently), and the policy stops at "good enough" partial
-cover. If you pick this up:
+cover.
 
 * **Do not raise the shaping.** `m4` already showed 3.5× the material activity of
   its control with no completions; volume was never the constraint.
-* The untried structural lever is **cheaper sites** (2 units), which makes
-  completion reachable by exploration rather than by plan. Cheap to test.
 * Longer training is *not* indicated — the M3 investigation burned 3.3× budget
   for nothing, and these curves are flat by update ~250.
+* **Cheaper sites were the untried structural lever. They were tried, and they
+  did not pay** — see below.
+
+### The cheap-sites test (`m4d`) — the lever did not pay
+
+`config/m4d.yaml` cuts a site from 4 units to 2 (1 wood + 1 stone), which at
+`material_capacity` 2 is exactly **one round trip**: an agent already carrying a
+full load can finish a shelter without ever forming a multi-trip intention. Every
+other thing is m4c. 1+1 rather than 2+0 so `mine` does not become a permanently
+doomed action and the rock observation channels do not become noise.
+
+The trap this run was designed around, written into the config header before it
+ran: under `partial_shelter`, protection is the *fraction* of units delivered and
+"indoors" is `protection >= 0.5`. That is 2 deliveries at 4-unit sites and **1**
+at 2-unit sites, so `shelters` and `night_sheltered_frac` both get mechanically
+cheaper along with the world. Neither can be compared across sizings.
+`tests/test_construction.py::test_indoors_statistic_scales_with_site_cost` pins
+this so the result cannot be misread later.
+
+Matched budget, trailing 40 updates of a 200-update run — the tightest estimate
+available, since it averages far more episodes than a 20-episode evaluation:
+
+| | m4c (4-unit) | **m4d (2-unit)** |
+|---|---|---|
+| **mean lifespan** | **374.6** | **373.6** |
+| shelters / ep *(not comparable)* | 0.064 | 0.083 |
+| nights indoors *(not comparable)* | 17.9% | 24.7% |
+| deliveries / ep *(not comparable — 6 units exist, not 12)* | 1.91 | 0.96 |
+
+**Dead flat on the only metric that transfers.** And the 20-episode evaluation
+says who did benefit:
+
+| | m4c world | m4d world (cheap sites) |
+|---|---|---|
+| learned, shaped | 393.5 | 379.6 ± 61.9 |
+| learned, unshaped control | 362.5 | 363.6 ± 58.9 |
+| **scripted builder** | **529.8** | **545.0 ± 45.7** (2.5 shelters, 95% nights in) |
+| **gap, learned → builder** | **136** | **165** |
+
+The scripted builder converted cheaper sites into more shelters and ~15 more
+ticks of life. The learned policy converted them into nothing, so the gap did not
+narrow — if anything it widened. Neither individual delta clears ~1.5 SE on 20
+episodes, so the honest claim is the conservative one: **cheaper sites bought the
+learned policy no survival, while being clearly usable by something that knows
+how to use them.**
+
+The sharpest way to see it: the "indoors" bar was **halved** — one delivery
+instead of two — and the shaped policy still cleared it on 22% of nights, exactly
+what it managed at m4c. The control drifted 2% → 10% on the same halving, which
+is the metric inflating with no behaviour behind it. That is the whole result in
+two numbers.
+
+Shaping still beat its own control (379.6 vs 363.6, +16), so nothing about m4c is
+retracted. What is retracted is the hypothesis that completion was out of reach
+because it was *too far*. It is not the distance to the summit. **No annealing
+run was done, deliberately** — there was no gain to remove the scaffolding from,
+and m4c's own header calls that kind of run a ritual.
+
+Where this leaves the milestone: the three structural levers that worked (site
+placement, partial protection, action masking) all removed something *uncreditable*
+from the chain. Cheap sites removed *length*, not uncreditability, and length was
+never what was broken. If you pick this up again, the untried thing is making the
+final unit perceptible — the observation carries a site's remaining cost, but
+nothing distinguishes "one unit short" as a state worth being in.
 
 ## Milestone 5 — exchange
 
@@ -907,6 +980,12 @@ result in this file that ignored one of them turned out to be wrong.
    action masking (M3), siting shelters where agents already live and making
    partial walls give partial protection (M4). Every attempt to buy the outcome
    with a bigger coefficient produced activity without result.
+   **The refinement, learned from `m4d`:** not every structural change qualifies.
+   The three that worked all deleted a step that *could not be credited* — a
+   doomed action, an unpaid approach walk, three-quarters of a build invisible to
+   the value function. Halving the site cost shortened the chain without making
+   any part of it more creditable, and bought nothing. Ask what the agent cannot
+   perceive or cannot be paid for, not what is merely far away.
 3. **The milestone chain is load-bearing.** The scarce world is unlearnable from
    scratch — a from-scratch run lands on *exactly* the random baseline after the
    full budget. Each milestone works because the previous one transferred

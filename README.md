@@ -380,6 +380,20 @@ M3, where the same technique produced 4.8× the theft and *worse* survival. Same
 method, opposite verdict: what differs is whether the shaped behaviour was worth
 doing, and only the terminal metric tells you.
 
+**And the obvious next lever did not work.** If agents stop one unit short, make
+the summit nearer: `m4d` halves a site to 2 units — one round trip instead of
+two. It bought the learned policy nothing (373.6 lifespan against m4c's 374.6 at
+matched budget), while the *scripted* builder in the same cheap world gained ~15
+ticks and 0.6 shelters. So the last unit is not out of reach because it is far.
+
+This run is also a small lesson in reading your own metrics. Protection scales
+with the *fraction* of a site delivered, and "indoors" means half-built, so
+halving the site cost halves the deliveries needed to count as sheltered. The
+construction statistics duly improved — and meant nothing. The bar was halved and
+the policy cleared it on exactly the same 22% of nights as before. The prediction
+and the confound were both written into the config header before the run, and the
+threshold arithmetic is pinned by a test.
+
 ### Milestone 5 — exchange
 
 Agents can hand over one unit of food or material to the nearest neighbour in

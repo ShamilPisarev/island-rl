@@ -1,0 +1,54 @@
+# Milestone 4, fourth sizing: sites that cost one carry-load.
+#
+# The M4 handoff names this as the one untried structural lever. m4c left the
+# policy delivering material (2.21 an episode after annealing) and sheltering
+# under half-built walls 18% of nights, but essentially never finishing: 0.091
+# shelters an episode against the scripted builder's 1.9. The diagnosis written
+# down at the time was that the last unit is worth far more than the marginal
+# unit suggests, and the policy stops at "good enough" partial cover.
+#
+# So make the summit reachable by exploration rather than by plan. A site costs
+# 1 wood + 1 stone, which at material_capacity 2 is exactly ONE round trip: an
+# agent that happens to be carrying a full load can complete a shelter without
+# ever having to form a multi-trip intention. m4c's 4 units were two round trips
+# and the completion bonus almost never fired often enough to teach anything.
+#
+# 1+1 rather than 2+0 on purpose. Zeroing the stone cost would halve the cost
+# just as well, but it would make `mine` a permanently doomed action and turn
+# the two rock observation channels into noise -- a different and much less
+# interesting world. 1+1 keeps both material economies load-bearing.
+#
+# THE SHAPING IS UNTOUCHED, per the standing rule ("do not raise the shaping",
+# and more generally rule 2: fix the shape of the problem, not the size of the
+# number). This is a world change. config/m4d_unshaped.yaml is the matched
+# control.
+
+# PREDICTION, written before the run.
+#
+# 1. Completions and nights-indoors will rise a lot. This is close to
+#    guaranteed and is NOT the result -- see the confound below.
+#
+# 2. THE CONFOUND, which is the reason this header is long. Under
+#    partial_shelter, protection is the *fraction* of units delivered, and the
+#    "indoors" statistic is protection >= 0.5. At m4c's 4 units that is 2
+#    deliveries; here it is ONE. So `shelters_per_episode` and
+#    `night_sheltered_frac` both get mechanically cheaper along with the world,
+#    and neither can be compared across the two sizings. A rise in either
+#    number is the metric moving, not necessarily the policy.
+#
+# 3. THE TEST THAT SURVIVES IT: the lifespan gap to the scripted builder,
+#    measured in THIS world. In m4c the learned policy trailed the builder by
+#    136 ticks (393.5 vs 529.8). The builder gets cheap sites too, so if this
+#    lever is a real fix that gap narrows. If lifespan rises while the gap holds
+#    at ~136, the world simply got easier and the policy learned nothing new --
+#    that is the outcome to be honest about, and it is the likelier one.
+#
+# Read the gap, not the shelter count.
+#
+#   python -m sim.train --config config/m4d.yaml --run-name m4d --updates 200 \
+#       --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
+extends: m4c.yaml
+
+construction:
+  site_wood_cost: 1
+  site_stone_cost: 1         # 2 units = one round trip at capacity 2

@@ -1,0 +1,14 @@
+# Matched control for m4d.yaml: same world, every shaping term at zero.
+#
+# Worth having for its own sake here and not only by rule. If one-round-trip
+# sites really do make completion reachable by exploration, the unshaped run is
+# where that shows up cleanest -- nothing is paying for wood, stone, delivery or
+# completion, so any building it does is bought entirely by the night drain it
+# avoids. m4c's unshaped control managed 0.011 shelters an episode.
+extends: m4d.yaml
+
+reward:
+  wood: 0.0
+  stone: 0.0
+  build: 0.0
+  complete: 0.0
