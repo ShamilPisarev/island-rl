@@ -485,7 +485,8 @@ def test_final_unit_channel_is_off_by_default(m4):
     """Off everywhere it was not asked for, so M1-M5 observations are unchanged."""
     assert m4.construction.observe_final_unit is False
     for name in ("config/m4.yaml", "config/m4b.yaml", "config/m4c.yaml",
-                 "config/m4c_anneal.yaml", "config/m4d.yaml", "config/m5.yaml"):
+                 "config/m4c_anneal.yaml", "config/m4d.yaml", "config/m4f.yaml",
+                 "config/m4g.yaml", "config/m5.yaml"):
         c = load_config(name)
         assert c.construction.observe_final_unit is False
         assert "site0.finishes" not in observation_layout(c)

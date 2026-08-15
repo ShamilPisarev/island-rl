@@ -456,6 +456,24 @@ episode against 0.05 in the world it came from. **The policy already knew how to
 build. It had nowhere to do it.** Twenty times the completions out of weights
 nobody touched — and the 200 updates that followed added nothing measurable.
 
+One more geography fix followed. There were three shelter sites and four berry
+clusters, so a quarter of the population lived somewhere it could harvest and had
+nowhere within reach to put anything down. A fourth site gives the project its
+best learned policy — **460.2 lifespan, 1.4 shelters an episode, 49% of nights in
+a finished shelter** — but it is worth being precise about what it bought. The
+policy finishes the *same fraction* of the sites it is given (36.7% → 35.0%), and
+the gap to the scripted builder does not move, because the builder gains from the
+fourth site too. That is capacity, not competence.
+
+What is left is no longer geography. The nearest site is now closer than the
+scripted builder keeps it, and agents still deliver only 47% of what they harvest
+against its 81%. They fill up almost at once and then spend 88% of their ticks
+moving without passing close enough to a site to put anything down — eleven units
+an episode die in inventories. The policy carries material and does not navigate
+to sites, which is the same "does not travel with intent" signature the
+competition milestone found, and probably that open problem wearing a hat rather
+than a construction problem at all.
+
 ### Milestone 5 — exchange
 
 Agents can hand over one unit of food or material to the nearest neighbour in

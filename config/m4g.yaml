@@ -1,0 +1,52 @@
+# One shelter site per berry cluster — fixing the delivery leg.
+#
+# m4f fixed the harvest leg by dealing trees and rocks onto the berry clusters,
+# and completions went 0.10 -> 1.10 an episode. What it left behind, measured:
+#
+#                            m4f      scripted builder
+#   delivery rate           41.7%          81.1%
+#   ticks carrying material 83.8%          43.7%
+#   units held at episode end 11.05         2.65
+#   dist to nearest site      7.20          4.99
+#
+# Agents now harvest MORE than the builder (18.95 units vs 14.00) and deliver
+# LESS (7.90 vs 11.35). They fill up and carry it around: full 84% of ticks, and
+# eleven units an episode die in inventories.
+#
+# THE CAUSE IS ARITHMETIC. num_sites is 3 and bushes.num_clusters is 4. Both
+# sites and material nodes are dealt round-robin onto the clusters, so:
+#
+#   sites  land on clusters [0, 1, 2]
+#   trees  land on clusters [0, 1, 2, 3, 0, 1, 2, 3]
+#   rocks  land on clusters [0, 1, 2, 3, 0]
+#
+# Cluster 3 has food, wood and stone and NO SITE. An agent living there can
+# harvest and has nowhere within build_radius to put anything down. That is a
+# quarter of the population carrying material it structurally cannot deliver --
+# the same uncreditable-step failure as m4b and m4f, one more step downstream.
+#
+# PREDICTION, written before the run.
+#
+#   * The delivery RATE is the metric that tests this: 41.7% today against the
+#     builder's 81.1%. It is a ratio, so it is not inflated by there being more
+#     sites, unlike the two below.
+#   * shelters/ep is NOT comparable to m4f. The ceiling goes from 3 sites to 4,
+#     so the number rises mechanically even if nothing improves. Read it as a
+#     share of sites completed, or do not read it. (This trap has now bitten
+#     twice -- see m4d and the m4c "18% of nights indoors" figure -- so it is
+#     called out before the run rather than after.)
+#   * Nights indoors also rises for free: four sites cover more ground than
+#     three regardless of whether any more get finished.
+#   * Terminal metric as ever: lifespan against the scripted builder measured in
+#     THIS world, which gets the fourth site too.
+#
+# Run the zero-shot control first. m4f's own result was carried by geography and
+# not by training at all, so before spending 200 updates, drop the unchanged m4f
+# policy into this world and see what the fourth site alone is worth.
+#
+#   python -m sim.train --config config/m4g.yaml --run-name m4g --updates 200 \
+#       --policy-mode individual --init-from checkpoints/m4f/latest.pt
+extends: m4f.yaml
+
+construction:
+  num_sites: 4               # one per cluster; was 3 with 4 clusters

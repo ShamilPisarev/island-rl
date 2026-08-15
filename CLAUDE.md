@@ -19,7 +19,7 @@ Where each milestone landed, in one line each:
 | M1 | 1.97× random, at the scripted forager's ceiling | `checkpoints/m1` |
 | M2 | specialisation: action divergence 19× the shared-brain control | `checkpoints/m2` |
 | M3 | 2.11× random; theft emerged *unpaid* after action masking | `checkpoints/m3-masked` |
-| M4 | construction emerged; 1.10 shelters/ep once materials sat where agents live | `checkpoints/m4f` (annealed lineage: `m4c-anneal`) |
+| M4 | construction emerged once materials sat where agents live; 1.4 shelters/ep, 460.2 lifespan | `checkpoints/m4g` (annealed lineage: `m4c-anneal`) |
 | M5 | exchange did **not** emerge unpaid; paying for it made survival worse | `checkpoints/m5` |
 
 ### If you are picking this up, the honest open problems
@@ -44,10 +44,18 @@ In rough order of how much they would teach:
    Three earlier explanations are dead and should not be revisited: summit too
    far (`m4d`), summit pays nothing (`m4e-premium`), summit invisible (`m4e`). The
    old framing also rested on a stale premise; see rule 5.
-   **What is left is the delivery leg** — 42% of harvested material reaches a
-   site against the builder's 81%, agents are full 84% of ticks, and `num_sites`
-   3 vs `num_clusters` 4 means one whole cluster has no site to deliver to. One
-   line to test: `num_sites: 4`.
+   `num_sites: 4` (one per cluster) was then tested as **`m4g`** and is the best
+   learned policy in the project — **460.2 lifespan, 1.4 shelters/ep, 49% of
+   nights in a finished shelter** — but it buys *capacity, not competence*: the
+   completion rate per site is flat (36.7% → 35.0%) and the gap to the builder is
+   unchanged, because the builder gained from the fourth site too.
+   **What is left is a targeting problem, and geography is spent.** Agents are
+   full 83% of ticks, ~11 units an episode die in inventories, and the policy
+   moves 88% of ticks without passing within `build_radius` of a site needing
+   what it holds — the same "does not travel with intent" signature M3 found,
+   which makes this probably open problem 1 wearing a hat rather than a
+   construction problem. Untried: `material_capacity: 1`, which turns hoarding
+   into a forced round trip.
 3. **Exchange needs a mechanism, not a bigger number.** M5 showed the unpaid
    chain is too weak and a flat payment produces a gift farm. If you want trade,
    the thing to change is the *mechanic* — see "What would actually be worth
@@ -78,9 +86,11 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   scripted builder's 2.80**, with every construction shaping term at zero. The
   shaping annealed away cleanly first (`checkpoints/m4c-anneal`), and the thing
   that finally produced completions was geography: `materials_at_clusters` put
-  trees and rocks where the agents already live. Best checkpoint:
-  `checkpoints/m4f`. Three earlier levers aimed at "the last unit" (`m4d`,
-  `m4e-premium`, `m4e`) all came back flat and are written up as negatives.
+  trees and rocks where the agents already live, and `m4g` added a fourth site so
+  every cluster has one. Best checkpoint: `checkpoints/m4g` (460.2 lifespan, 1.4
+  shelters/ep, 49% of nights in a finished shelter). Three earlier levers aimed at
+  "the last unit" (`m4d`, `m4e-premium`, `m4e`) all came back flat and are written
+  up as negatives.
 - M5: `give_food`/`give_material`, a transfer ledger, replay schema v3, an
   exchange analysis tool and viewer page, and a scripted trader reference.
   **Exchange did not emerge unpaid** — giving was mildly selected *against* — and
@@ -127,9 +137,12 @@ python -m sim.train --config config/m4e_premium.yaml --run-name m4e-premium \
 python -m sim.train --config config/m4e.yaml --run-name m4e --updates 200 \
     --policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
 
-# the one that worked: put the material nodes where the agents already live
+# the one that worked: put the material nodes where the agents already live,
+# then give every cluster a site (m4g is the best M4 policy)
 python -m sim.train --config config/m4f.yaml --run-name m4f --updates 200 \
     --policy-mode individual --init-from checkpoints/m4e-premium/latest.pt
+python -m sim.train --config config/m4g.yaml --run-name m4g --updates 200 \
+    --policy-mode individual --init-from checkpoints/m4f/latest.pt
 
 # Milestone 5: gifts unpaid (the result) and gifts paid (the ablation), both
 # continued from the annealed M4 policy
@@ -1027,9 +1040,68 @@ in inventories.
 **There is an obvious and cheap cause.** `num_sites` is 3 and `bushes.num_clusters`
 is 4. Materials are dealt round-robin onto all four clusters; sites onto only
 three. **An agent living on cluster 3 can harvest and has nowhere within reach to
-deliver.** The one-line test is `num_sites: 4`, and it is the same shape of fix
-as everything else that has worked here. After that, `material_capacity` 2 and
-the +1.0 gather that competes with every chop are the remaining suspects.
+deliver.** That was tested as `m4g`.
+
+### `m4g` — the fourth site buys capacity, not competence
+
+`config/m4g.yaml` is `m4f` with `num_sites: 4`, one per cluster. The zero-shot
+control was run first, since `m4f` showed geography doing all the work: drop the
+unchanged `m4f` policy into the four-site world and measure before spending any
+compute.
+
+The hypothesis was right about the mechanism. Distance to the nearest site falls
+**7.08 → 4.14**, closer than the scripted builder keeps it (4.99), and delivery
+rises:
+
+| | m4f (3 sites) | **m4g (4 sites)** | builder |
+|---|---|---|---|
+| units delivered / ep | 7.90 | **9.60** | 11.35 |
+| delivery rate | 41.7% | **46.8%** | 81.1% |
+| mean lifespan | 434.8 | **460.2 ± 60.9** | 542.6 |
+| shelters / ep | 1.1 | **1.4** | 3.4 |
+| nights indoors | 42% | **49%** | 99% |
+
+**460.2 is the best learned lifespan anywhere in this project.** But read the two
+lines that say what it is not:
+
+| | m4f | m4g |
+|---|---|---|
+| **completion rate per site** | 1.1 / 3 = **36.7%** | 1.4 / 4 = **35.0%** |
+| **gap to the scripted builder** | **83.9** | **82.4** |
+| ticks carrying material | 83.8% | 83.4% |
+| units dying in inventories / ep | 11.05 | 10.90 |
+
+The policy finishes **the same fraction of the sites it is given**, and the gap to
+the builder is unchanged, because the builder gained from the fourth site too
+(518.7 → 542.6). A fourth site produced a fourth site's worth of building and no
+improvement in the *ability* to build. Contrast `m4f`, where the builder got
+slightly worse and the policy got much better — that was competence; this is
+capacity.
+
+**And the hoarding did not move at all**: full 83% of ticks, ~11 units an episode
+still dying in inventories, in both. That is what pins the delivery rate at half
+the builder's, and it survives having a site at every cluster.
+
+### What is left in M4 — a targeting problem, not a geography one
+
+Every remaining lever of the kind that has worked is spent. The material nodes,
+the sites and the food are now all on the same clusters, and the nearest site is
+*closer* than the scripted builder keeps it. Geography is done.
+
+The mask data says what remains. Agents fill up almost immediately — which is why
+`chop` is *available* on only 0.7% of ticks despite 35% spent in harvest range;
+you cannot chop when full — and then spend **88% of ticks moving** without passing
+within `build_radius` of a site that needs what they hold. `build` is available
+on 0.7% of ticks and taken on only 48% of those.
+
+So the policy carries material and does not navigate to sites. **That is the same
+"does not travel with intent" signature the M3 investigation found**, and it is
+almost certainly the same underlying problem as open problem 1 rather than a
+construction problem at all. Moving things closer cannot fix it; the site is
+already close. Candidates, none tried: `material_capacity` 1 so a full agent must
+deliver before it can chop again, which converts hoarding into a forced round
+trip; or an intrinsic that makes carrying-while-not-delivering cost something.
+Both change the *mechanic*, per rule 2.
 
 ## Milestone 5 — exchange
 
