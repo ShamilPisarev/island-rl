@@ -446,6 +446,52 @@ def test_partial_shelter_scales_protection_with_progress(m4):
     assert done < half < untouched, "partial progress must give partial protection"
 
 
+def test_fungible_materials_lets_either_material_finish_a_site(m4):
+    """Sites deadlock on composition, not volume: on m4g, 22.5% of sites end an
+    episode with all their wood in and one stone missing while agents are still
+    carrying 3.7 stone. Fungible deliveries let whatever arrives count.
+
+    The mask must track the build rule exactly, or `build` becomes a doomed
+    action again -- the thing masking exists to prevent.
+    """
+    assert m4.construction.fungible_materials is False
+    cfg = m4.replace(**{"construction.fungible_materials": True,
+                        "construction.sites_at_clusters": True,
+                        "competition.mask_invalid_actions": True})
+    cc = cfg.construction
+    w = World(cfg, seed=76)
+    # a site one unit short, with only its STONE outstanding
+    w.site_wood_needed[:] = cc.site_wood_cost
+    w.site_stone_needed[:] = cc.site_stone_cost
+    w.site_wood_needed[0] = 0
+    w.site_stone_needed[0] = 1
+    park(w, 0, w.site_x[0], w.site_z[0])
+    w.pool.wood[0], w.pool.stone[0] = 1, 0        # carrying the "wrong" material
+    for i in range(1, cfg.world.num_agents):
+        park(w, i, 0.0, 0.0)
+
+    assert w.action_mask()[0, BUILD], "the mask must offer build when wood can finish it"
+    actions = idle_all(cfg)
+    actions[0] = BUILD
+    w.step(actions)
+    assert w.site_wood_needed[0] + w.site_stone_needed[0] == 0, "the site must complete"
+    assert w.pool.wood[0] == 0, "the wood must actually be spent"
+
+    # and with nothing carried, build stays masked off
+    w2 = World(cfg, seed=76)
+    w2.site_wood_needed[0], w2.site_stone_needed[0] = 0, 1
+    park(w2, 0, w2.site_x[0], w2.site_z[0])
+    w2.pool.wood[0] = w2.pool.stone[0] = 0
+    assert not w2.action_mask()[0, BUILD]
+
+
+def test_fungible_materials_is_off_by_default_everywhere_earlier(m4):
+    for name in ("config/m4.yaml", "config/m4c.yaml", "config/m4c_anneal.yaml",
+                 "config/m4d.yaml", "config/m4e.yaml", "config/m4f.yaml",
+                 "config/m4g.yaml", "config/m5.yaml"):
+        assert load_config(name).construction.fungible_materials is False
+
+
 def test_materials_at_clusters_is_off_by_default_and_moves_the_nodes(m4):
     """m4b sited the SHELTERS on the clusters and left trees and rocks scattered,
     which relocated the uncreditable walk to the harvest leg instead of deleting

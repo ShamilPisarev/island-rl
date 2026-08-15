@@ -412,7 +412,24 @@ class World:
                 near = np.flatnonzero(d2 <= cc.build_radius ** 2)
                 delivered = False
                 for s in near[np.argsort(d2[near])]:
-                    if self.site_wood_needed[s] > 0 and pool.wood[i] > 0:
+                    if cc.fungible_materials:
+                        # A site takes whatever arrives. Spend the agent's wood
+                        # first and retire the wood counter first, so the pair
+                        # (wood_needed, stone_needed) still sums to the units
+                        # outstanding -- every progress and protection
+                        # calculation reads that sum and needs no special case.
+                        if (self.site_wood_needed[s] + self.site_stone_needed[s]) > 0 and (
+                                pool.wood[i] > 0 or pool.stone[i] > 0):
+                            if pool.wood[i] > 0:
+                                pool.wood[i] -= 1
+                            else:
+                                pool.stone[i] -= 1
+                            if self.site_wood_needed[s] > 0:
+                                self.site_wood_needed[s] -= 1
+                            else:
+                                self.site_stone_needed[s] -= 1
+                            delivered = True
+                    elif self.site_wood_needed[s] > 0 and pool.wood[i] > 0:
                         self.site_wood_needed[s] -= 1
                         pool.wood[i] -= 1
                         delivered = True

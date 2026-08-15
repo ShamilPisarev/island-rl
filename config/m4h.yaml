@@ -1,0 +1,49 @@
+# Sites take whatever arrives — fixing a COMPOSITION deadlock, not a volume one.
+#
+# m4g got the material to the sites: agents stand within build_radius of a site,
+# loaded, on 29.7% of ticks. But `build` is legal on only 0.7% of ticks, so
+# **97.5% of the time an agent is at a site holding something, the site does not
+# want it.** That single number is what caps the delivery rate at 47%.
+#
+# Where the sites get stuck, end of episode, 20 episodes:
+#
+#                                     m4g learned   scripted builder
+#   done                                 40.0%           85.0%
+#   all wood in, ONE STONE missing       22.5%            5.0%
+#   stone in, no wood                    10.0%            1.2%
+#   untouched                            21.2%            7.5%
+#   stone left in inventories             3.70            0.65
+#
+# A fifth of all sites end one stone short while the agents are still carrying
+# 3.7 stone. The material exists and is in the wrong hands: each agent feeds its
+# nearest site whatever it happens to hold, and nothing routes the last stone to
+# the site that wants it. The scripted builder dodges this by targeting one focal
+# site globally — a coordination six independent brains do not have and cannot
+# easily learn, since no agent can see another's inventory relative to a site.
+#
+# fungible_materials lets any outstanding unit take any carried material. Both
+# economies stay live — wood and stone both still have to be found, harvested and
+# carried, and `mine` is still worth taking — but a site stops caring which
+# arrived first. This is the same kind of move as partial_shelter: remove a
+# discontinuity that PPO cannot route around, rather than pay more at the summit.
+#
+# PREDICTION, written before the run.
+#
+#   * The (0,1) and (3,0) deadlock states should almost vanish. That is close to
+#     mechanical and is NOT the result.
+#   * The real question is completions. 40.0% of sites are finished today and
+#     22.5% sit one unit short; if the deadlock is the whole story, completions
+#     go to roughly 60% and lifespan rises with it. If they do not, then agents
+#     are not delivering for some further reason and the composition mismatch was
+#     a symptom of the same wandering, not a cause.
+#   * The gap to the scripted builder is the honest metric, as always — the
+#     builder gets fungible sites too, and it is at 85% completion, so it has
+#     much less to gain. If the gap narrows, this is competence; if both rise
+#     together, it is another capacity change like m4g.
+#
+#   python -m sim.train --config config/m4h.yaml --run-name m4h --updates 200 \
+#       --policy-mode individual --init-from checkpoints/m4g/latest.pt
+extends: m4g.yaml
+
+construction:
+  fungible_materials: true

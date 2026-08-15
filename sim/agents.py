@@ -252,9 +252,19 @@ def action_mask(
             d2 = ((construction.site_x[None, :] - pool.x[:, None]) ** 2
                   + (construction.site_z[None, :] - pool.z[:, None]) ** 2)
             near = d2 <= cc.build_radius ** 2
-            can_wood = near & (construction.site_wood_needed[None, :] > 0) & (pool.wood[:, None] > 0)
-            can_stone = near & (construction.site_stone_needed[None, :] > 0) & (pool.stone[:, None] > 0)
-            mask[:, BUILD] = (can_wood | can_stone).any(axis=1)
+            if cc.fungible_materials:
+                # Must mirror World.step's build rule exactly: any outstanding
+                # unit takes any carried material. A mask that promised more
+                # than the rule delivers would reintroduce the doomed actions
+                # masking exists to remove.
+                outstanding = (construction.site_wood_needed
+                               + construction.site_stone_needed)[None, :] > 0
+                can = near & outstanding & ((pool.wood + pool.stone)[:, None] > 0)
+                mask[:, BUILD] = can.any(axis=1)
+            else:
+                can_wood = near & (construction.site_wood_needed[None, :] > 0) & (pool.wood[:, None] > 0)
+                can_stone = near & (construction.site_stone_needed[None, :] > 0) & (pool.stone[:, None] > 0)
+                mask[:, BUILD] = (can_wood | can_stone).any(axis=1)
 
     if cfg.exchange.enabled:
         # A gift needs something to give and someone with room to take it. Note

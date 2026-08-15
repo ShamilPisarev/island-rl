@@ -95,6 +95,21 @@ class ConstructionConfig:
     # ticks, and it is taken on 82-93% of those. The policy is not declining to
     # harvest; it is almost never in a position to.
     materials_at_clusters: bool = False
+    # Let either material count toward a site's remaining cost.
+    #
+    # With separate wood and stone costs, sites deadlock on COMPOSITION rather
+    # than on volume. Measured on m4g: 22.5% of sites end an episode with all
+    # their wood in and one stone missing, 10% the reverse, and agents finish
+    # holding 3.7 stone -- the material exists, it is simply in the wrong hands,
+    # because each agent feeds its nearest site whatever it happens to carry and
+    # nothing routes the last stone to the site that wants it. The scripted
+    # builder dodges this by targeting one focal site globally; six independent
+    # brains have no such coordination.
+    #
+    # Fungible deliveries remove the mismatch without removing either economy:
+    # both wood and stone still have to be harvested and carried, and `mine` is
+    # still worth taking, but a site takes whatever arrives.
+    fungible_materials: bool = False
     site_wood_cost: int = 4         # delivered units to complete a site
     site_stone_cost: int = 2
     build_radius: float = 2.5

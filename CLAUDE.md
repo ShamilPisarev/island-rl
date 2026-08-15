@@ -19,7 +19,7 @@ Where each milestone landed, in one line each:
 | M1 | 1.97× random, at the scripted forager's ceiling | `checkpoints/m1` |
 | M2 | specialisation: action divergence 19× the shared-brain control | `checkpoints/m2` |
 | M3 | 2.11× random; theft emerged *unpaid* after action masking | `checkpoints/m3-masked` |
-| M4 | construction emerged once materials sat where agents live; 1.4 shelters/ep, 460.2 lifespan | `checkpoints/m4g` (annealed lineage: `m4c-anneal`) |
+| M4 | construction emerged; **490.4 lifespan, 3.0 shelters/ep**, beats forager + thief | `checkpoints/m4h` (annealed lineage: `m4c-anneal`) |
 | M5 | exchange did **not** emerge unpaid; paying for it made survival worse | `checkpoints/m5` |
 
 ### If you are picking this up, the honest open problems
@@ -44,18 +44,20 @@ In rough order of how much they would teach:
    Three earlier explanations are dead and should not be revisited: summit too
    far (`m4d`), summit pays nothing (`m4e-premium`), summit invisible (`m4e`). The
    old framing also rested on a stale premise; see rule 5.
-   `num_sites: 4` (one per cluster) was then tested as **`m4g`** and is the best
-   learned policy in the project — **460.2 lifespan, 1.4 shelters/ep, 49% of
-   nights in a finished shelter** — but it buys *capacity, not competence*: the
-   completion rate per site is flat (36.7% → 35.0%) and the gap to the builder is
-   unchanged, because the builder gained from the fourth site too.
-   **What is left is a targeting problem, and geography is spent.** Agents are
-   full 83% of ticks, ~11 units an episode die in inventories, and the policy
-   moves 88% of ticks without passing within `build_radius` of a site needing
-   what it holds — the same "does not travel with intent" signature M3 found,
-   which makes this probably open problem 1 wearing a hat rather than a
-   construction problem. Untried: `material_capacity: 1`, which turns hoarding
-   into a forced round trip.
+   `num_sites: 4` (one per cluster) followed as **`m4g`** — capacity, not
+   competence: completion rate per site flat, gap to the builder unchanged.
+   Then **`m4h`** found the real second constraint. Agents stand at a site
+   *holding material* on 29.7% of ticks, and on **97.5% of those the site does
+   not want what they carry** — sites need 3 wood + 1 stone, everyone feeds their
+   nearest site whatever they hold, and a fifth of sites end one stone short while
+   agents carry 3.7 stone. `construction.fungible_materials` lets any unit take
+   any material: **490.4 lifespan, 3.0 shelters/ep (87% of the builder's rate),
+   83% of nights indoors, and the gap to the builder halved from 82 to 50 while
+   the builder stood still.** This is the best policy in the project and the first
+   since M1 to beat any scripted reference.
+   **What is left:** `build` is available on 1.5% of ticks and taken on only
+   28.6% — uptake *fell* as opportunity rose, which is the clearest remaining
+   inefficiency and costs nothing to investigate.
 3. **Exchange needs a mechanism, not a bigger number.** M5 showed the unpaid
    chain is too weak and a flat payment produces a gift farm. If you want trade,
    the thing to change is the *mechanic* — see "What would actually be worth
@@ -86,17 +88,19 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   scripted builder's 2.80**, with every construction shaping term at zero. The
   shaping annealed away cleanly first (`checkpoints/m4c-anneal`), and the thing
   that finally produced completions was geography: `materials_at_clusters` put
-  trees and rocks where the agents already live, and `m4g` added a fourth site so
-  every cluster has one. Best checkpoint: `checkpoints/m4g` (460.2 lifespan, 1.4
-  shelters/ep, 49% of nights in a finished shelter). Three earlier levers aimed at
-  "the last unit" (`m4d`, `m4e-premium`, `m4e`) all came back flat and are written
-  up as negatives.
+  trees and rocks where the agents already live, `m4g` added a fourth site so
+  every cluster has one, and `m4h` made deliveries fungible so sites stop
+  deadlocking on composition. Best checkpoint: `checkpoints/m4h` — **490.4
+  lifespan, 3.0 shelters/ep (87% of the scripted builder's rate), 83% of nights in
+  a finished shelter**, and the first learned policy since M1 to beat a scripted
+  reference. Three earlier levers aimed at "the last unit" (`m4d`, `m4e-premium`,
+  `m4e`) all came back flat and are written up as negatives.
 - M5: `give_food`/`give_material`, a transfer ledger, replay schema v3, an
   exchange analysis tool and viewer page, and a scripted trader reference.
   **Exchange did not emerge unpaid** — giving was mildly selected *against* — and
   paying for it produced a gift farm that cost 54 ticks of life. Canonical
   checkpoint: `checkpoints/m5`.
-- `pytest` passes (235 tests).
+- `pytest` passes (237 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -143,6 +147,8 @@ python -m sim.train --config config/m4f.yaml --run-name m4f --updates 200 \
     --policy-mode individual --init-from checkpoints/m4e-premium/latest.pt
 python -m sim.train --config config/m4g.yaml --run-name m4g --updates 200 \
     --policy-mode individual --init-from checkpoints/m4f/latest.pt
+python -m sim.train --config config/m4h.yaml --run-name m4h --updates 200 \
+    --policy-mode individual --init-from checkpoints/m4g/latest.pt
 
 # Milestone 5: gifts unpaid (the result) and gifts paid (the ablation), both
 # continued from the annealed M4 policy
@@ -1082,26 +1088,78 @@ capacity.
 still dying in inventories, in both. That is what pins the delivery rate at half
 the builder's, and it survives having a site at every cluster.
 
-### What is left in M4 — a targeting problem, not a geography one
+### `m4h` — a COMPOSITION deadlock, and the best result in the project
 
-Every remaining lever of the kind that has worked is spent. The material nodes,
-the sites and the food are now all on the same clusters, and the nearest site is
-*closer* than the scripted builder keeps it. Geography is done.
+**I first wrote this up as a targeting problem and that was wrong.** The reasoning
+was that agents move 88% of ticks and `build` is legal on only 0.7% of them, so
+they must not be navigating to sites. One measurement killed it:
 
-The mask data says what remains. Agents fill up almost immediately — which is why
-`chop` is *available* on only 0.7% of ticks despite 35% spent in harvest range;
-you cannot chop when full — and then spend **88% of ticks moving** without passing
-within `build_radius` of a site that needs what they hold. `build` is available
-on 0.7% of ticks and taken on only 48% of those.
+| share of living ticks, m4g | |
+|---|---|
+| carrying ≥ 1 unit | 83.3% |
+| within `build_radius` of any site | 30.9% |
+| **in range AND loaded** | **29.7%** |
+| **in range AND the site wants what I carry** | **0.7%** |
 
-So the policy carries material and does not navigate to sites. **That is the same
-"does not travel with intent" signature the M3 investigation found**, and it is
-almost certainly the same underlying problem as open problem 1 rather than a
-construction problem at all. Moving things closer cannot fix it; the site is
-already close. Candidates, none tried: `material_capacity` 1 so a full agent must
-deliver before it can chop again, which converts hoarding into a forced round
-trip; or an intrinsic that makes carrying-while-not-delivering cost something.
-Both change the *mechanic*, per rule 2.
+Agents are at a site, holding material, on nearly a third of all ticks. **On 97.5%
+of those the site does not want what they are carrying.** Navigation was never
+the problem.
+
+Why: a site needs 3 wood + 1 stone, every agent feeds its *nearest* site whatever
+it happens to hold, and nothing routes the missing material to the site that
+wants it. So sites deadlock on composition:
+
+| site state at end of episode | m4g | scripted builder |
+|---|---|---|
+| done | 40.0% | 85.0% |
+| **all wood in, ONE STONE missing** | **22.5%** | 5.0% |
+| stone in, no wood | 10.0% | 1.2% |
+| stone left in inventories | **3.70** | 0.65 |
+
+A fifth of all sites end one stone short *while the agents are carrying 3.7
+stone*. The scripted builder dodges this by targeting one focal site globally —
+coordination six independent brains do not have and cannot easily learn, since no
+agent can see another's inventory relative to a site.
+
+`construction.fungible_materials` lets any outstanding unit take any carried
+material. Both economies stay live — wood and stone still both have to be found,
+harvested and carried — but a site stops caring which arrived first. Same move as
+`partial_shelter`: delete a discontinuity PPO cannot route around.
+
+**Results, 20 episodes.** Zero-shot first, as usual: the unchanged `m4g` policy in
+the fungible world goes from 43.8% to **71.2%** of sites completed with no
+training at all. Trained:
+
+| | m4g | **m4h** | scripted builder |
+|---|---|---|---|
+| **mean lifespan** | 460.2 | **490.4 ± 67.9** | **540.9** |
+| deaths / ep | 3.70 | **2.90** | 1.75 |
+| shelters / ep | 1.4 | **3.0** | 3.45 |
+| nights indoors | 49% | **83%** | 99% |
+| units delivered / ep | 9.60 | **12.25** | 11.35 |
+| delivery rate | 46.8% | **52.1%** | 81.1% |
+| sites ending "one stone short" | 22.5% | **3.8%** | 5.0% |
+| **gap to the builder** | 82.4 | **50.5** | — |
+
+**This is competence, not capacity, and it passes its own pre-registered test:**
+the gap to the builder fell from 82 to 50 while the builder barely moved
+(542.6 → 540.9). Completions went from 41% of the builder's rate to **87%**, and
+the policy now delivers *more* material per episode than the builder does.
+
+**And it clears two of the three scripted references.** 490.4 against the scripted
+forager's 463.6 and the thief's 452.9 — the first time since M1 that the learned
+policy has beaten a scripted baseline. Read it with the caveat it deserves: the
+forager and thief ignore construction entirely, so in a world where shelter is
+load-bearing they are handicapped by design. The builder, which does build, is
+still ahead by 50.
+
+### What is left in M4
+
+Headroom is now visible in one number: **`build` is available on 1.5% of ticks and
+taken on only 28.6% of them**, down from 48% in m4g. As delivering got easier the
+policy got *less* likely to take the opportunity, which is the clearest remaining
+inefficiency and is cheap to look at. Beyond that, 11.25 units an episode still
+die in inventories and the delivery rate is 52% against the builder's 81%.
 
 ## Milestone 5 — exchange
 

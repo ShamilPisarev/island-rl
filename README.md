@@ -465,14 +465,33 @@ policy finishes the *same fraction* of the sites it is given (36.7% → 35.0%), 
 the gap to the scripted builder does not move, because the builder gains from the
 fourth site too. That is capacity, not competence.
 
-What is left is no longer geography. The nearest site is now closer than the
-scripted builder keeps it, and agents still deliver only 47% of what they harvest
-against its 81%. They fill up almost at once and then spend 88% of their ticks
-moving without passing close enough to a site to put anything down — eleven units
-an episode die in inventories. The policy carries material and does not navigate
-to sites, which is the same "does not travel with intent" signature the
-competition milestone found, and probably that open problem wearing a hat rather
-than a construction problem at all.
+The last fix came from a measurement that overturned the obvious explanation. It
+looked like agents were failing to navigate to sites: they move 88% of the time
+and `build` is legal on 0.7% of ticks. In fact they stand at a site holding
+material on **30%** of ticks — and on **97.5% of those the site does not want what
+they are carrying**. A site needs three wood and one stone, everyone feeds their
+nearest site whatever they happen to hold, and a fifth of all sites end the
+episode one stone short *while the agents are carrying 3.7 stone*. The material
+exists; it is in the wrong hands.
+
+Letting a site accept whatever arrives — both materials still have to be found,
+harvested and carried, the site just stops caring which came first:
+
+| | before | **after** | scripted builder |
+|---|---|---|---|
+| mean lifespan | 460.2 | **490.4** | 540.9 |
+| shelters / episode | 1.4 | **3.0** | 3.45 |
+| nights in a finished shelter | 49% | **83%** | 99% |
+| sites stuck one stone short | 22.5% | **3.8%** | 5.0% |
+| **gap to the builder** | 82 | **50** | — |
+
+This one is competence rather than capacity: the gap halved while the builder
+stood still, completions went from 41% of its rate to 87%, and the policy now
+moves *more* material per episode than the builder does. At 490.4 it also clears
+the scripted forager (463.6) and thief (452.9) — the first time since Milestone 1
+that the learned policy has beaten a scripted reference, though those two ignore
+construction entirely and are handicapped in a world where shelter is
+load-bearing.
 
 ### Milestone 5 — exchange
 
