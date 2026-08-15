@@ -32,19 +32,21 @@ In rough order of how much they would teach:
    entropy, not budget, and not perception of any mechanic we could name — see
    "Why the learned policy loses to the scripted forager" below for the seven
    interventions that all came back inside noise. This is the real open problem.
-2. ~~**Nobody finishes a shelter.**~~ **This was not a real open problem, and the
-   note that said it was had a stale premise.** Under `partial_shelter` the night
-   drain falls *linearly* with build progress, so the final unit of a site is
-   worth exactly what the first one was, and a partial shelter persists just as a
-   finished one does. In the canonical annealed world nothing pays for completion
-   at all. 0.1 shelters an episode is the policy correctly declining to buy
-   something worthless — not a failure. The claim that finishing "is worth much
-   more than the marginal unit suggests" was written for `m4`/`m4b`, where
-   protection was binary, and was never re-derived after `m4c` turned
-   `partial_shelter` on. Full arithmetic in the Milestone 4 section.
-   `m4d` (cheaper sites) was run against the stale premise and came back flat, as
-   it had to. `m4e` (`completion_premium`) tests the corrected one. Do not re-run
-   `m4d`, and do not raise the shaping.
+2. **Nobody finishes a shelter — and the real reason is material throughput, not
+   anything to do with the last unit.** Three explanations were tested and all
+   three are dead: the summit is too far (`m4d`, cheaper sites — flat), the summit
+   pays nothing (`m4e-premium`, last unit worth 5× — flat), the summit is
+   invisible (`m4e`, a "one unit finishes this" channel — flat). What is binding
+   is measured and simple: **the policy delivers ~3 units an episode and a shelter
+   costs 4**, so even perfectly concentrated it could not finish one. The scripted
+   builder delivers 9.05. Throughput has not moved across shaped, annealed,
+   premium and perception runs. **Move throughput or move nothing** — candidates
+   in the Milestone 4 section, cheapest first.
+   Note also that the old framing of this problem rested on a stale premise (under
+   `partial_shelter` the last unit is worth exactly what the first was, so the
+   policy declining to finish was correct play). Both the correction and the
+   throughput measurement are written up below. Do not re-run `m4d` or `m4e`, and
+   do not raise the shaping.
 3. **Exchange needs a mechanism, not a bigger number.** M5 showed the unpaid
    chain is too weak and a flat payment produces a gift farm. If you want trade,
    the thing to change is the *mechanic* — see "What would actually be worth
@@ -116,6 +118,13 @@ python -m sim.train --config config/m4d.yaml --run-name m4d --updates 200 \
     --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
 python -m sim.train --config config/m4d_unshaped.yaml --run-name m4d-unshaped \
     --updates 200 --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
+
+# make the last unit worth something (the mechanic), then also perceptible (the
+# channel) — both NEGATIVE, and together they retire the last-unit hypothesis
+python -m sim.train --config config/m4e_premium.yaml --run-name m4e-premium \
+    --updates 200 --policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
+python -m sim.train --config config/m4e.yaml --run-name m4e --updates 200 \
+    --policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
 
 # Milestone 5: gifts unpaid (the result) and gifts paid (the ablation), both
 # continued from the annealed M4 policy
@@ -879,6 +888,77 @@ next experiment, not while running this one — is the correction above: under
 m4d halved the distance to a summit that pays nothing on arrival. Any lever that
 only shortens the chain is arguing with the wrong premise.
 
+### The `m4e` pair — and the constraint that was actually binding
+
+Two runs, both continued 200 updates from `checkpoints/m4c-anneal`, both with
+every construction shaping term at zero, so the only reason to build is the night
+drain. `m4e-premium` adds `completion_premium: 0.5` (the mechanic: a site
+protects 0.125 / 0.25 / 0.375 on the way up and 1.0 when finished, so the last
+unit is worth **5×** a normal one). `m4e` adds one further thing, the
+`site{j}.finishes` observation channel.
+
+| | lifespan | shelters/ep | nights indoors |
+|---|---|---|---|
+| m4c-anneal (no premium) | 403.1 | 0.09 | 18%\* |
+| **m4e-premium** (mechanic only) | **401.7 ± 68.3** | **0.10** | 2% |
+| **m4e** (mechanic + perception) | **377.9 ± 64.5** | **0.15** | 2% |
+| scripted builder, same world | **526.0** | **1.85** | **88%** |
+
+\* not comparable — under the premium, "indoors" requires a *finished* shelter,
+where m4c-anneal's 18% counted half-built walls. That 18% was never 18% of nights
+in a shelter; it was 18% of nights under something ≤ 37.5% built. Rule 5 again.
+
+**Neither lever moved anything.** Making the last unit worth 5× produced 0.10
+shelters against 0.09. Adding the channel produced 0.15 — which is *three
+completed shelters across twenty episodes against two*, not a result. The
+perception change cost 24 ticks of lifespan (~1.6 SE), so the conservative read is
+that it did nothing.
+
+The `m4e` header predicted the mechanic would move completions and the channel
+would be flat, and pre-registered what a null on the mechanic would mean: "if this
+does NOT move, the problem was never the incentive." It did not move. **So the
+incentive was not the constraint either** — which, with m4d, retires the third of
+three candidate explanations.
+
+**What is actually binding, measured.** Counting where every delivered unit
+lands, 20 episodes, same seeds:
+
+| | units delivered / ep | on the busiest site | completions/ep | **if perfectly concentrated** |
+|---|---|---|---|---|
+| m4c-anneal | 2.00 | 75% | 0.05 | **0.25** |
+| m4e-premium | 2.60 | 77% | 0.10 | **0.30** |
+| m4e | 3.05 | 71% | 0.15 | **0.45** |
+| **scripted builder** | **9.05** | 43% | **1.85** | **2.10** |
+
+Read the last column. **A shelter costs 4 units and the policy moves about 3 an
+episode, so even with perfect concentration it would finish well under half a
+shelter per episode.** Completion is not out of reach because the summit is far
+(m4d), or unrewarding (m4e-premium), or invisible (m4e). It is out of reach
+because *not enough material ever gets carried up the hill*. The scripted builder
+delivers **3.5× the material**, and that single ratio is the whole gap.
+
+Note the policy is not even spreading material thin — 71–77% of everything it
+delivers lands on one site, better concentrated than the builder's 43% (the
+builder finishes sites and moves on). Concentration was the plausible culprit and
+it is not the problem.
+
+**And throughput is the number nothing has moved.** It sits at 2–3 units an
+episode across the shaped run (1.94), the annealed run (2.00), the premium (2.60)
+and the perception run (3.05). Shaping material actions at 0.5/0.5/1.0/3.0 did not
+raise it; removing the shaping did not lower it. Meanwhile the policy takes ~30
+berries and 90–140 steals an episode, because a gather pays +1.0 immediately and
+material work pays nothing until nightfall.
+
+**If you pick this up, move throughput or move nothing.** The open question is why
+~3 units is the ceiling when the same agents find time for 140 steals. Candidates,
+untested: material nodes are too far from the bush clusters that sites now sit on
+(m4b moved the *sites* to the clusters but left trees and rocks where they were —
+so the uncreditable walk it deleted may simply have moved upstream to the harvest
+leg); `material_capacity` 2 forces a round trip per two units; and chopping
+competes tick-for-tick with a +1.0 gather in a world where food is at 100% of
+subsistence. The first of those is cheap to test and is the same move that worked
+in m4b.
+
 ## Milestone 5 — exchange
 
 Two appended actions, `give_food` (14) and `give_material` (15), each moving one
@@ -1040,12 +1120,16 @@ result in this file that ignored one of them turned out to be wrong.
    action masking (M3), siting shelters where agents already live and making
    partial walls give partial protection (M4). Every attempt to buy the outcome
    with a bigger coefficient produced activity without result.
-   **The refinement, learned from `m4d`:** not every structural change qualifies.
-   The three that worked all deleted a step that *could not be credited* — a
-   doomed action, an unpaid approach walk, three-quarters of a build invisible to
-   the value function. Halving the site cost shortened the chain without making
-   any part of it more creditable, and bought nothing. Ask what the agent cannot
-   perceive or cannot be paid for, not what is merely far away.
+   **The refinement, learned from `m4d`/`m4e`:** not every structural change
+   qualifies. The three that worked all deleted a step that *could not be
+   credited* — a doomed action, an unpaid approach walk, three-quarters of a build
+   invisible to the value function. Three later attempts on the same problem all
+   came back flat: cheaper sites (shorter chain), a completion premium (bigger
+   payoff at the end), a "one unit finishes this" channel (better perception).
+   Each changed something real and none was the binding constraint, which turned
+   out to be plain throughput — 3 units delivered an episode against a 4-unit
+   shelter. **Measure the constraint before choosing the lever.** Three runs and
+   two configs went to changing things that were not what was stopping it.
 3. **The milestone chain is load-bearing.** The scarce world is unlearnable from
    scratch — a from-scratch run lands on *exactly* the random baseline after the
    full budget. Each milestone works because the previous one transferred

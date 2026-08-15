@@ -411,6 +411,20 @@ the policy cleared it on exactly the same 22% of nights as before. The predictio
 and the confound were both written into the config header before the run, and the
 threshold arithmetic is pinned by a test.
 
+**Two more levers, and then the actual answer.** `m4e-premium` withholds half a
+shelter's protection until it is finished, making the last unit worth 5× a normal
+one; `m4e` additionally gives the policy a channel saying *one more unit, of the
+kind I'm carrying, finishes this*. Neither moved completions (0.09 → 0.10 → 0.15
+per episode, which is two shelters versus three across twenty episodes).
+
+So: not too far, not unrewarding, not invisible. Counting where every delivered
+unit lands says why — **the policy moves about 3 units of material an episode and
+a shelter costs 4.** Even perfectly concentrated it could not finish one, and it
+*is* well concentrated (71–77% of deliveries land on a single site, tighter than
+the scripted builder's 43%). The builder delivers 9.05 units an episode. That one
+ratio is the entire gap, and it did not budge across shaped, annealed, premium and
+perception runs. The open problem was never the last unit; it is throughput.
+
 ### Milestone 5 — exchange
 
 Agents can hand over one unit of food or material to the nearest neighbour in
