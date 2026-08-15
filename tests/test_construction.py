@@ -446,6 +446,41 @@ def test_partial_shelter_scales_protection_with_progress(m4):
     assert done < half < untouched, "partial progress must give partial protection"
 
 
+def test_materials_at_clusters_is_off_by_default_and_moves_the_nodes(m4):
+    """m4b sited the SHELTERS on the clusters and left trees and rocks scattered,
+    which relocated the uncreditable walk to the harvest leg instead of deleting
+    it. This flag finishes the job; it must stay off everywhere it was not asked
+    for, so every earlier M4/M5 world is untouched.
+    """
+    assert m4.construction.materials_at_clusters is False
+    for name in ("config/m4.yaml", "config/m4b.yaml", "config/m4c.yaml",
+                 "config/m4c_anneal.yaml", "config/m4d.yaml", "config/m4e.yaml",
+                 "config/m5.yaml"):
+        assert load_config(name).construction.materials_at_clusters is False
+
+    def mean_bush_distance(flag):
+        cfg = m4.replace(**{"construction.sites_at_clusters": True,
+                            "construction.materials_at_clusters": flag})
+        w = World(cfg, seed=75)
+
+        def nearest(ex, ez):
+            return np.sqrt(((ex[None, :] - w.bush_x[:, None]) ** 2
+                            + (ez[None, :] - w.bush_z[:, None]) ** 2)).min(axis=1).mean()
+
+        return nearest(w.tree_x, w.tree_z), nearest(w.rock_x, w.rock_z)
+
+    scattered_tree, scattered_rock = mean_bush_distance(False)
+    clustered_tree, clustered_rock = mean_bush_distance(True)
+    assert clustered_tree < scattered_tree
+    assert clustered_rock < scattered_rock
+    # and the nodes themselves are unchanged in number and stock
+    cfg = m4.replace(**{"construction.materials_at_clusters": True})
+    w = World(cfg, seed=75)
+    assert w.tree_x.size == cfg.construction.num_trees
+    assert w.rock_x.size == cfg.construction.num_rocks
+    assert int(w.tree_wood.sum()) == cfg.construction.num_trees * cfg.construction.tree_wood
+
+
 def test_final_unit_channel_is_off_by_default(m4):
     """Off everywhere it was not asked for, so M1-M5 observations are unchanged."""
     assert m4.construction.observe_final_unit is False

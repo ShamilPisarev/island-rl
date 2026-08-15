@@ -163,6 +163,19 @@ class World:
         """Uniformly scattered static entities (trees, rocks, shelter sites)."""
         return self._sample_in_disc(self.cfg.world.island_radius * margin, count)
 
+    def _at_clusters(self, count: int, spread: float = 1.5) -> tuple[np.ndarray, np.ndarray]:
+        """Static entities dealt round-robin onto the berry clusters.
+
+        Agents live at the clusters because that is where food is, so anything
+        placed here needs no uncreditable approach walk to reach. Used for
+        shelter sites (``sites_at_clusters``) and material nodes
+        (``materials_at_clusters``).
+        """
+        ccx, ccz = self._cluster_centres
+        pick = np.arange(count) % len(ccx)
+        jitter = self.rng.normal(0.0, spread, size=(2, count))
+        return ccx[pick] + jitter[0], ccz[pick] + jitter[1]
+
     def reset(self) -> np.ndarray:
         cfg = self.cfg
         if self._bush_layout is None or cfg.bushes.resample_each_episode:
@@ -181,9 +194,21 @@ class World:
         if cc.enabled:
             # Same resample policy as bushes: layouts follow the same seed stream,
             # so determinism holds and a fixed map pins everything at once.
-            self.tree_x, self.tree_z = self._scatter(cc.num_trees)
+            # m4b moved the SITES onto the clusters and left the material nodes
+            # scattered, which moved the uncreditable walk upstream rather than
+            # deleting it: measured on the m4c policy, mean distance to the
+            # nearest tree is 10.2 and to the nearest rock 15.5, against 2.4 to
+            # the nearest bush, and agents are within harvest range on 2.7% of
+            # ticks. materials_at_clusters finishes the job m4b started.
+            if cc.materials_at_clusters:
+                self.tree_x, self.tree_z = self._at_clusters(cc.num_trees)
+            else:
+                self.tree_x, self.tree_z = self._scatter(cc.num_trees)
             self.tree_wood = np.full(cc.num_trees, cc.tree_wood, dtype=np.int64)
-            self.rock_x, self.rock_z = self._scatter(cc.num_rocks)
+            if cc.materials_at_clusters:
+                self.rock_x, self.rock_z = self._at_clusters(cc.num_rocks)
+            else:
+                self.rock_x, self.rock_z = self._scatter(cc.num_rocks)
             self.rock_stone = np.full(cc.num_rocks, cc.rock_stone, dtype=np.int64)
             if cc.sites_at_clusters:
                 # Put the shelters where the agents already are. The approach walk
@@ -192,11 +217,7 @@ class World:
                 # siting there removes that leg entirely. Same shape of fix as the
                 # M3 action mask -- delete the uncreditable step rather than pay
                 # more for it.
-                ccx, ccz = self._cluster_centres
-                pick = np.arange(cc.num_sites) % len(ccx)
-                jitter = self.rng.normal(0.0, 1.5, size=(2, cc.num_sites))
-                self.site_x = ccx[pick] + jitter[0]
-                self.site_z = ccz[pick] + jitter[1]
+                self.site_x, self.site_z = self._at_clusters(cc.num_sites)
             else:
                 self.site_x, self.site_z = self._scatter(cc.num_sites, margin=0.7)
             self.site_wood_needed = np.full(cc.num_sites, cc.site_wood_cost, dtype=np.int64)

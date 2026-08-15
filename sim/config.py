@@ -85,6 +85,16 @@ class ConstructionConfig:
     # shelter sites
     num_sites: int = 3
     sites_at_clusters: bool = False  # place shelter sites on the berry clusters
+    # Place trees and rocks on the berry clusters too.
+    #
+    # m4b moved the sites onto the clusters and stopped there, which relocated
+    # the uncreditable walk to the harvest leg instead of deleting it. Measured
+    # on the m4c-anneal policy: mean distance to the nearest tree 10.2 and to the
+    # nearest rock 15.5, against 2.4 to the nearest bush, and agents stand within
+    # harvest_radius on 2.7% of ticks -- so `chop` is *reachable* on 0.2% of
+    # ticks, and it is taken on 82-93% of those. The policy is not declining to
+    # harvest; it is almost never in a position to.
+    materials_at_clusters: bool = False
     site_wood_cost: int = 4         # delivered units to complete a site
     site_stone_cost: int = 2
     build_radius: float = 2.5

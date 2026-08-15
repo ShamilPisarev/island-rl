@@ -425,6 +425,37 @@ the scripted builder's 43%). The builder delivers 9.05 units an episode. That on
 ratio is the entire gap, and it did not budge across shaped, annealed, premium and
 perception runs. The open problem was never the last unit; it is throughput.
 
+### …and then construction emerged
+
+Profiling the chain rather than guessing at it found the leak in one place.
+Distance to the nearest bush: 2.4. To the nearest tree: 10.2. To the nearest
+rock: 15.5. Agents stood in harvest range on **2.7%** of ticks, so `chop` was
+*reachable* on 0.2% of ticks — and taken on 82–93% of the few chances it got. The
+policy was never declining to harvest. It was almost never standing anywhere it
+could.
+
+The cause was that the earlier fix had done half a job: it moved the shelter
+*sites* onto the berry clusters and left trees and rocks scattered, **relocating**
+the uncreditable walk to the harvest leg instead of deleting it. Putting the
+material nodes on the clusters too:
+
+| | before | **after** | scripted builder |
+|---|---|---|---|
+| shelters / episode | 0.10 | **1.10** | 2.80 |
+| nights in a finished shelter | 2% | **42%** | 96% |
+| mean lifespan | 401.7 | **434.8** | 518.7 |
+
+**Construction genuinely emerged** — same order of magnitude as the scripted
+reference rather than two below it, with every construction shaping term at zero,
+so nothing paid for it but the night drain the shelter avoids.
+
+The control is the best part. That run trained 200 updates, so the gain might
+have been compute. It was not: take the **unchanged** earlier policy, drop it into
+the new world, train it for **nothing at all**, and it scores 1.00 shelters an
+episode against 0.05 in the world it came from. **The policy already knew how to
+build. It had nowhere to do it.** Twenty times the completions out of weights
+nobody touched — and the 200 updates that followed added nothing measurable.
+
 ### Milestone 5 — exchange
 
 Agents can hand over one unit of food or material to the nearest neighbour in

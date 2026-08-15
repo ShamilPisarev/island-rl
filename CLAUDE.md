@@ -19,7 +19,7 @@ Where each milestone landed, in one line each:
 | M1 | 1.97× random, at the scripted forager's ceiling | `checkpoints/m1` |
 | M2 | specialisation: action divergence 19× the shared-brain control | `checkpoints/m2` |
 | M3 | 2.11× random; theft emerged *unpaid* after action masking | `checkpoints/m3-masked` |
-| M4 | construction partially emerged; shaping annealed away cleanly | `checkpoints/m4c-anneal` |
+| M4 | construction emerged; 1.10 shelters/ep once materials sat where agents live | `checkpoints/m4f` (annealed lineage: `m4c-anneal`) |
 | M5 | exchange did **not** emerge unpaid; paying for it made survival worse | `checkpoints/m5` |
 
 ### If you are picking this up, the honest open problems
@@ -32,21 +32,22 @@ In rough order of how much they would teach:
    entropy, not budget, and not perception of any mechanic we could name — see
    "Why the learned policy loses to the scripted forager" below for the seven
    interventions that all came back inside noise. This is the real open problem.
-2. **Nobody finishes a shelter — and the real reason is material throughput, not
-   anything to do with the last unit.** Three explanations were tested and all
-   three are dead: the summit is too far (`m4d`, cheaper sites — flat), the summit
-   pays nothing (`m4e-premium`, last unit worth 5× — flat), the summit is
-   invisible (`m4e`, a "one unit finishes this" channel — flat). What is binding
-   is measured and simple: **the policy delivers ~3 units an episode and a shelter
-   costs 4**, so even perfectly concentrated it could not finish one. The scripted
-   builder delivers 9.05. Throughput has not moved across shaped, annealed,
-   premium and perception runs. **Move throughput or move nothing** — candidates
-   in the Milestone 4 section, cheapest first.
-   Note also that the old framing of this problem rested on a stale premise (under
-   `partial_shelter` the last unit is worth exactly what the first was, so the
-   policy declining to finish was correct play). Both the correction and the
-   throughput measurement are written up below. Do not re-run `m4d` or `m4e`, and
-   do not raise the shaping.
+2. ~~**Nobody finishes a shelter.**~~ **Solved — see `m4f`.** The cause was
+   geography, not the last unit: `m4b` moved the shelter *sites* onto the berry
+   clusters and left trees and rocks scattered, so the uncreditable walk it
+   deleted simply moved upstream to the harvest leg. Agents stood in harvest
+   range on 2.7% of ticks. `construction.materials_at_clusters` fixes it and
+   completions go **0.10 → 1.10 an episode** with every shaping term still at
+   zero. The control worth knowing: the **unchanged** `m4e-premium` policy scores
+   1.00 shelters in the new world with *no retraining at all* — **the policy
+   already knew how to build and had nowhere to do it.**
+   Three earlier explanations are dead and should not be revisited: summit too
+   far (`m4d`), summit pays nothing (`m4e-premium`), summit invisible (`m4e`). The
+   old framing also rested on a stale premise; see rule 5.
+   **What is left is the delivery leg** — 42% of harvested material reaches a
+   site against the builder's 81%, agents are full 84% of ticks, and `num_sites`
+   3 vs `num_clusters` 4 means one whole cluster has no site to deliver to. One
+   line to test: `num_sites: 4`.
 3. **Exchange needs a mechanism, not a bigger number.** M5 showed the unpaid
    chain is too weak and a flat payment produces a gift farm. If you want trade,
    the thing to change is the *mechanic* — see "What would actually be worth
@@ -73,19 +74,19 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   appeared as inequality rather than as spatial partitioning. Canonical
   checkpoint: `checkpoints/m3-masked`.
 - M4: wood/stone/shelter/night mechanics, day/night hazard, replay schema v2.
-  Construction partially emerged (22% of nights sheltered against a control's 2%)
-  but shelters almost never complete — which turned out to be *correct play*
-  rather than a failure, because `partial_shelter` makes the last unit worth
-  exactly what the first one is. The shaping annealed away cleanly. Canonical
-  checkpoint: `checkpoints/m4c-anneal`. Halving the site cost (`m4d`) was tested
-  afterwards and bought the policy nothing, as the corrected arithmetic says it
-  had to.
+  Construction emerged and shelters now complete — **1.10 an episode against the
+  scripted builder's 2.80**, with every construction shaping term at zero. The
+  shaping annealed away cleanly first (`checkpoints/m4c-anneal`), and the thing
+  that finally produced completions was geography: `materials_at_clusters` put
+  trees and rocks where the agents already live. Best checkpoint:
+  `checkpoints/m4f`. Three earlier levers aimed at "the last unit" (`m4d`,
+  `m4e-premium`, `m4e`) all came back flat and are written up as negatives.
 - M5: `give_food`/`give_material`, a transfer ledger, replay schema v3, an
   exchange analysis tool and viewer page, and a scripted trader reference.
   **Exchange did not emerge unpaid** — giving was mildly selected *against* — and
   paying for it produced a gift farm that cost 54 ticks of life. Canonical
   checkpoint: `checkpoints/m5`.
-- `pytest` passes (231 tests).
+- `pytest` passes (235 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -125,6 +126,10 @@ python -m sim.train --config config/m4e_premium.yaml --run-name m4e-premium \
     --updates 200 --policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
 python -m sim.train --config config/m4e.yaml --run-name m4e --updates 200 \
     --policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
+
+# the one that worked: put the material nodes where the agents already live
+python -m sim.train --config config/m4f.yaml --run-name m4f --updates 200 \
+    --policy-mode individual --init-from checkpoints/m4e-premium/latest.pt
 
 # Milestone 5: gifts unpaid (the result) and gifts paid (the ablation), both
 # continued from the annealed M4 policy
@@ -949,15 +954,82 @@ raise it; removing the shaping did not lower it. Meanwhile the policy takes ~30
 berries and 90–140 steals an episode, because a gather pays +1.0 immediately and
 material work pays nothing until nightfall.
 
-**If you pick this up, move throughput or move nothing.** The open question is why
-~3 units is the ceiling when the same agents find time for 140 steals. Candidates,
-untested: material nodes are too far from the bush clusters that sites now sit on
-(m4b moved the *sites* to the clusters but left trees and rocks where they were —
-so the uncreditable walk it deleted may simply have moved upstream to the harvest
-leg); `material_capacity` 2 forces a round trip per two units; and chopping
-competes tick-for-tick with a +1.0 gather in a world where food is at 100% of
-subsistence. The first of those is cheap to test and is the same move that worked
-in m4b.
+**If you pick this up, move throughput or move nothing.** That is what `m4f` did.
+
+### `m4f` — construction emerged, and the policy already knew how
+
+Profiling the material chain before choosing a lever (rule 2's refinement, which
+the three preceding nulls earned) pointed at one leg. On the m4c-anneal policy,
+mean distance to the nearest bush is 2.4, to the nearest **tree 10.2** and the
+nearest **rock 15.5**; agents stand in harvest range on 2.7% of ticks; `chop` is
+*reachable* on 0.2% of ticks and is taken on 82–93% of those. **The policy was
+never declining to harvest. It was almost never standing anywhere it could.**
+
+The cause is that `m4b` did half a job. It moved the *shelter sites* onto the
+berry clusters and left trees and rocks scattered, which **relocated** the
+uncreditable walk to the harvest leg rather than deleting it — the same failure
+m4b was written to fix, hiding one step upstream for two milestones.
+`construction.materials_at_clusters` deals trees and rocks onto the clusters too
+(`config/m4f.yaml`). Nothing else changes; the shaping is still zero throughout.
+
+**The result, and the control that makes it a result.** Because `m4f` trained 200
+updates beyond `m4e-premium`, the gain could have been the extra compute. It was
+not: run the **unchanged** `m4e-premium` policy in the `m4f` world with *zero*
+additional training and almost the entire effect is already there.
+
+| m4e-premium policy, no retraining | in its own world | **in the m4f world** |
+|---|---|---|
+| mean lifespan | 388.3 | **445.4** |
+| units delivered / ep | 1.80 | **6.95** |
+| **shelters / ep** | **0.05** | **1.00** |
+| nights indoors (finished shelters) | 1.4% | **31.7%** |
+
+**The policy already knew how to build. It had nowhere to do it.** Twenty times
+the completions out of weights that were not touched. Training on the new
+geography then added nothing measurable — `m4f` trained finishes at 434.8, if
+anything below the 445.4 zero-shot, well inside noise. Rule 4 again.
+
+Where that leaves the milestone, 20 episodes, same seeds:
+
+| | m4c-anneal | m4e-premium | **m4f** | scripted builder |
+|---|---|---|---|---|
+| mean lifespan | 403.1 | 401.7 | **434.8 ± 60.9** | **518.7** |
+| **shelters / ep** | 0.09 | 0.10 | **1.10** | 2.80 |
+| nights indoors | 18%\* | 2% | **42%** | 96% |
+| units harvested / ep | 5.6 | 5.9 | **18.95** | 14.00 |
+| units delivered / ep | 1.65 | 2.15 | **7.90** | 11.35 |
+| **gap to the builder** | — | **124** | **84** | — |
+
+\* the incomparable pre-premium figure; see rule 5.
+
+**This is the first time construction genuinely emerged**, at the same order of
+magnitude as the scripted reference rather than two orders below it — and with
+every construction shaping term at zero, so nothing paid for it but the night
+drain. Note the builder got slightly *worse* in this world (526.0 → 518.7), so
+the narrowing gap is not the world getting easier for everybody; contrast `m4d`,
+where the builder gained and the policy did not.
+
+### What is left in M4
+
+The harvest leg is fixed and the **delivery leg is now the constraint**:
+
+| | m4f | scripted builder |
+|---|---|---|
+| delivery rate (delivered / harvested) | **41.7%** | **81.1%** |
+| ticks carrying material | **83.8%** | 43.7% |
+| units still held when the episode ends | **11.05** | 2.65 |
+| distance to nearest site | 7.20 | 4.99 |
+
+Agents now harvest *more* than the builder (18.95 vs 14.00) and deliver *less*
+(7.90 vs 11.35). They hoard: full for 84% of ticks, and 11 units an episode die
+in inventories.
+
+**There is an obvious and cheap cause.** `num_sites` is 3 and `bushes.num_clusters`
+is 4. Materials are dealt round-robin onto all four clusters; sites onto only
+three. **An agent living on cluster 3 can harvest and has nowhere within reach to
+deliver.** The one-line test is `num_sites: 4`, and it is the same shape of fix
+as everything else that has worked here. After that, `material_capacity` 2 and
+the +1.0 gather that competes with every chop are the remaining suspects.
 
 ## Milestone 5 — exchange
 

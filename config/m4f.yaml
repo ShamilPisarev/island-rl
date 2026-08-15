@@ -1,0 +1,60 @@
+# Move THROUGHPUT — the constraint that was actually binding.
+#
+# m4d (cheaper sites), m4e_premium (last unit worth 5x) and m4e (last unit made
+# perceptible) all came back flat, which retired every explanation that had to do
+# with the last unit. Counting the material chain says what is really wrong, and
+# it is upstream of all three. Measured on m4c-anneal / m4e-premium, 20 episodes:
+#
+#                             learned      scripted builder
+#   units harvested / ep       5.6-5.9       12.6
+#   units delivered / ep       1.7-2.2        9.1
+#   delivery rate             30-36%         72%
+#   ticks in harvest range     2.7%           5.7%
+#   ticks carrying material   28%            55%
+#   dist to nearest bush       2.4            3.9
+#   dist to nearest TREE      10.2            8.7
+#   dist to nearest ROCK      15.5           14.0
+#
+# A shelter costs 4 units and the policy delivers ~2, so completion is
+# arithmetically out of reach no matter how near, valuable or visible the summit
+# is made. And the harvest leg is where it starts: `chop` is REACHABLE on 0.2% of
+# ticks, and the policy takes it on 82-93% of the few chances it gets. It is not
+# declining to harvest. It is almost never standing anywhere it could.
+#
+# THE DIAGNOSIS. m4b moved the shelter sites onto the berry clusters and left the
+# trees and rocks scattered. That deleted the delivery walk and *relocated* the
+# uncreditable leg to the harvest walk rather than removing it — agents live at
+# the clusters because that is where food is, and the wood is ten units away
+# across open ground that pays nothing. This config finishes what m4b started:
+# materials_at_clusters puts trees and rocks where the agents already are.
+#
+# WHY THE MAXIMAL VERSION. This is deliberately the strongest form of the lever —
+# food, wood, stone and shelter all on the same clusters, so the entire build
+# chain is reachable without a single uncreditable step. A gentler version (nodes
+# at moderate range) would be more interesting as a world, but a null result on
+# it would be uninformative: it could always be answered with "not close enough".
+# A null HERE kills the whole family of walk-based explanations at once, which is
+# worth more than a prettier world.
+#
+# PREDICTION, written before the run.
+#
+#   * Harvest throughput rises a lot. Near-certain, and not the result: `chop`
+#     goes from reachable-0.2%-of-ticks to reachable most of the time.
+#   * The question is the DELIVERY rate, currently 30-36% against the builder's
+#     72%. If deliveries scale with harvest, completions follow and the walk was
+#     the whole story. If the policy harvests freely and still fails to deliver,
+#     then carrying-to-a-site is its own broken leg and no geography fixes it.
+#   * Terminal metric as always: lifespan against the scripted builder measured
+#     IN THIS WORLD, which gets the same easier geography and will also improve.
+#     Watch the gap, not the absolute — that is the m4d lesson.
+#
+# Shaping stays at zero throughout (inherited from m4c_anneal via m4e_premium),
+# and completion_premium 0.5 is kept so that finishing is worth something and
+# "nights indoors" keeps meaning a finished shelter.
+#
+#   python -m sim.train --config config/m4f.yaml --run-name m4f --updates 200 \
+#       --policy-mode individual --init-from checkpoints/m4e-premium/latest.pt
+extends: m4e_premium.yaml
+
+construction:
+  materials_at_clusters: true
