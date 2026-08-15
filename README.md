@@ -542,6 +542,41 @@ whole lesson: paying for construction bought an outcome because a shelter really
 does reduce the drain; paying for gifts bought motion because a transfer creates
 nothing.
 
+### The retest that verdict deserved
+
+There is an honest objection to all of the above: it was measured on a world
+where the learned policy finished **0.09 shelters an episode**. Exchange was asked
+to emerge in an economy that barely existed. Once construction actually worked —
+23.5 units harvested an episode, three shelters finished, and 11 units still dying
+unused in inventories — the milestone was run again, gifts still paying nothing.
+
+| | original world | **working economy** |
+|---|---|---|
+| untrained control, gifts / ep | 11.3 | 9.5 |
+| after 200 updates | **7.9 — down 30%** | **11.3 — held** |
+| lifespan | 413.3 | **497.5** |
+| the same world *without* exchange | 406.4 | 490.4 |
+| scripted trader | 543.8 | **569.0** |
+| trader's edge over the builder | +14.0 | **+28.1** |
+| reciprocity | 0.851 | **0.653** |
+
+One thing genuinely changed: **giving stopped being selected against.** And the
+flow turned directional — reciprocity fell, with consistent net donors and net
+recipients rather than neighbours passing a berry back and forth. That is what the
+beginnings of exchange would look like.
+
+The verdict still stands, though. Twelve transfers an episode buys no measurable
+survival, and the gap to the scripted trader is 71 ticks. If anything the retest
+sharpens the original finding: trading is now worth **twice** what it was when the
+milestone concluded PPO could not find it, and PPO still cannot find it.
+
+The prediction going in was wrong in a useful way. Materials were supposed to be
+what paid, since a site now accepts anything handed to it. Instead material
+giving was selected *against* (gifted material is used 2% of the time) and food
+giving rose (used 48%). Handing someone a berry they eat is a two-step credit
+chain; handing someone wood they must then carry and spend is the same long chain
+that failed before, and making the delivery fungible did nothing to shorten it.
+
 ## Configuration
 
 Everything tunable lives in `config/default.yaml` — world size, hunger rates,

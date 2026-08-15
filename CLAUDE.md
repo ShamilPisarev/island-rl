@@ -20,7 +20,7 @@ Where each milestone landed, in one line each:
 | M2 | specialisation: action divergence 19× the shared-brain control | `checkpoints/m2` |
 | M3 | 2.11× random; theft emerged *unpaid* after action masking | `checkpoints/m3-masked` |
 | M4 | construction emerged; **490.4 lifespan, 3.0 shelters/ep**, beats forager + thief | `checkpoints/m4h` (annealed lineage: `m4c-anneal`) |
-| M5 | exchange did **not** emerge unpaid; paying for it made survival worse | `checkpoints/m5` |
+| M5 | exchange did **not** emerge unpaid, on a fair retest either; paying for it made survival worse | `checkpoints/m5b` |
 
 ### If you are picking this up, the honest open problems
 
@@ -59,8 +59,14 @@ In rough order of how much they would teach:
    28.6% — uptake *fell* as opportunity rose, which is the clearest remaining
    inefficiency and costs nothing to investigate.
 3. **Exchange needs a mechanism, not a bigger number.** M5 showed the unpaid
-   chain is too weak and a flat payment produces a gift farm. If you want trade,
-   the thing to change is the *mechanic* — see "What would actually be worth
+   chain is too weak and a flat payment produces a gift farm. **`m5b` retested it
+   on `m4h`'s working economy** — the original verdict was reached in a world
+   where the policy finished 0.09 shelters an episode, so there was nothing worth
+   trading. On the fair retest giving is no longer selected *against* (7.9 → 11.3
+   an episode) and the flow turns directional (reciprocity 0.85 → 0.65), but it
+   still buys no survival, and the scripted trader's edge *doubled* to +28.1 —
+   so the mechanic is worth twice as much as before and PPO still cannot find it.
+   If you want trade, change the *mechanic* — see "What would actually be worth
    trying" in the Milestone 5 section.
 
 Whatever you do next: an experiment here costs about six minutes (200 updates),
@@ -97,9 +103,11 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   `m4e`) all came back flat and are written up as negatives.
 - M5: `give_food`/`give_material`, a transfer ledger, replay schema v3, an
   exchange analysis tool and viewer page, and a scripted trader reference.
-  **Exchange did not emerge unpaid** — giving was mildly selected *against* — and
-  paying for it produced a gift farm that cost 54 ticks of life. Canonical
-  checkpoint: `checkpoints/m5`.
+  **Exchange did not emerge unpaid**, and paying for it produced a gift farm that
+  cost 54 ticks of life. Retested as `m5b` on M4's now-working economy, since the
+  original verdict was reached where nothing was worth trading: giving stops being
+  selected against and the flow turns directional, but it still buys no survival.
+  Best checkpoint: `checkpoints/m5b` (497.5 lifespan).
 - `pytest` passes (237 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
@@ -157,6 +165,11 @@ python -m sim.train --config config/m5.yaml --run-name m5 --updates 200 \
 python -m sim.train --config config/m5_shaped.yaml --run-name m5-shaped \
     --updates 200 --policy-mode individual --init-from checkpoints/m4c-anneal/latest.pt
 python -m sim.exchange --checkpoint checkpoints/m5/latest.pt
+
+# the fair retest: exchange on M4's WORKING economy (m4h), gifts still unpaid
+python -m sim.train --config config/m5b.yaml --run-name m5b --updates 200 \
+    --policy-mode individual --init-from checkpoints/m4h/latest.pt
+python -m sim.exchange --checkpoint checkpoints/m5b/latest.pt
 ```
 
 ## Compute budget — runs are longer than they need to be
@@ -1260,6 +1273,55 @@ Note the asymmetry with M4, which is the useful comparison: paying for
 construction produced building that survived annealing, because a shelter really
 does reduce the drain. Paying for gifts produced motion, because a transfer
 creates nothing. The technique did not change; the mechanic did.
+
+### `m5b` — the retest on a working economy, and what it changed
+
+**M5's verdict was reached in a world with almost no material economy, and that
+needed saying.** The original run sat on `m4c_anneal`, where the learned policy
+completed **0.09 shelters an episode** and delivered 2.0 units. Exchange was asked
+to emerge in an economy that barely existed. `m4h` fixed that — 23.5 units
+harvested, 12.25 delivered, 3.0 of 4 shelters finished — and left 11.25 units an
+episode dying in inventories, exactly the surplus a transfer could move.
+`config/m5b.yaml` is `m4h` plus exchange, gifts still paying nothing.
+
+| | `m5` (old world) | **`m5b`** (working economy) |
+|---|---|---|
+| grown-but-untrained control, gifts/ep | 11.3 | 9.5 |
+| **after 200 updates, gifts/ep** | **7.9 — down 30%** | **11.3 — held** |
+| mean lifespan | 413.3 | **497.5 ± 73.5** |
+| the same world *without* exchange | 406.4 | 490.4 |
+| scripted trader | 543.8 | **569.0** |
+| trader's edge over the builder | +14.0 | **+28.1** |
+| gap, learned → trader | 130.5 | **71.5** |
+| reciprocity | 0.851 | **0.653** |
+| gifted food used | 56% | 48% |
+| gifted material used | 3% | **2%** |
+
+**The one real correction: giving is no longer selected against.** m5's headline
+was that 200 updates trained giving *down* from 11.3 to 7.9. On a working economy
+it holds instead (9.5 → 11.3). And the flow changed character — reciprocity fell
+0.851 → 0.653, with consistent net donors and net recipients (agent 5 gave 61 and
+received 28; agent 4 gave 17 and received 48) rather than the balanced
+pass-it-back pattern. That is directional flow, which is what the beginnings of
+exchange would look like.
+
+**But the verdict itself survives.** 11.9 transfers an episode is tiny, lifespan
+is +7 over the same world without exchange (inside a ±73 spread), and the gap to
+the scripted trader is still 71.5 ticks.
+
+**And the retest makes the credit-assignment finding stronger, not weaker.** The
+trader's edge over the builder *doubled* in this world, +14.0 → **+28.1** — so
+trading is now worth twice as much as it was when M5 concluded PPO could not find
+it, and PPO still cannot find it.
+
+**My hypothesis for this run was wrong in an informative way.** I expected the
+*material* relay to be what paid, since fungible deliveries make any gifted unit
+usable. The opposite happened: material giving was selected *against* (4 → 2 an
+episode) and gifted material is used **2%** of the time, while food giving rose
+(6 → 9) and food is used 48%. Handing someone a berry they eat is a credit chain
+two steps long; handing someone wood they must then carry to a site and spend is
+the same long chain that failed before, and making the *delivery* fungible did
+nothing to shorten it.
 
 ### What would actually be worth trying
 

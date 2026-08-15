@@ -1,0 +1,55 @@
+# Milestone 5, retested on a world where material actually matters.
+#
+# WHY THIS IS NOT JUST RE-RUNNING M5. The original exchange milestone sat on top
+# of m4c_anneal, and it is worth being blunt about what that world was: the
+# learned policy completed **0.09 shelters an episode** and delivered 2.0 units.
+# Exchange was asked to emerge in an economy that barely existed. "Giving was
+# mildly selected against" is a fair reading of that run, but it was measured
+# where a unit of wood was worth almost nothing to anybody, because nothing was
+# ever built with it.
+#
+# m4h is a different world. Construction works: 23.5 units harvested an episode,
+# 12.25 delivered, 3.0 of 4 shelters finished, 83% of nights spent indoors. And
+# critically, **11.25 units an episode still die in agents' inventories** -- the
+# single largest waste left in the system. That is exactly the surplus a transfer
+# could move to someone who can spend it.
+#
+# Three things changed that make a gift worth more than it was in m5:
+#
+#   1. fungible_materials -- a gift of ANY material is immediately usable by a
+#      receiver standing at a site. In m5's world a wood gift was useless to
+#      someone whose site only needed stone, which is the deadlock m4h removed.
+#   2. materials_at_clusters + num_sites 4 -- givers and receivers are actually
+#      co-located now, so `give_material` has someone in reach worth giving to.
+#   3. There is a real shortfall to fix: the delivery rate is 52%, so roughly
+#      half of everything harvested is stranded.
+#
+# NOTHING PAYS FOR A GIFT. reward.give stays 0.0, as in m5 -- the whole point is
+# whether the survival chain alone can now carry it. config/m5_shaped.yaml
+# remains the labelled ablation for what a payment buys (a gift farm).
+#
+# PREDICTION, written before the run.
+#
+#   * The control row is the one to read, exactly as in m5: a grown-but-untrained
+#     policy gives ~11 times an episode purely by sampling a zero-initialised
+#     action. m5 trained that DOWN to 7.9, i.e. giving was selected against. If
+#     the same thing happens here, the m5 verdict survives a fair test and
+#     exchange is genuinely not reachable from survival reward in this design.
+#   * If instead giving holds or rises while lifespan holds, that is the first
+#     evidence exchange pays -- and it would mean m5's negative was partly an
+#     artefact of testing it in a broken economy.
+#   * My expectation is still that it fails, for the reason m5 gave: the giver
+#     pays a tick and the receiver takes the benefit, and nothing lets a giver
+#     see that the receiver is about to build. But the test is now fair, which
+#     it previously was not.
+#   * Terminal metric as ever: lifespan against the scripted trader in THIS
+#     world, and against m4h (490.4) which is the same world without exchange.
+#
+#   python -m sim.train --config config/m5b.yaml --run-name m5b --updates 200 \
+#       --policy-mode individual --init-from checkpoints/m4h/latest.pt
+extends: m4h.yaml
+
+exchange:
+  enabled: true
+  give_radius: 2.5
+  observe_neighbour_materials: true
