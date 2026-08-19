@@ -23,6 +23,76 @@ What brevity does **not** licence, because this project runs on it:
 Measure before choosing a lever (rule 2), and if a claim is unverified, say so
 rather than smoothing it over.
 
+## Plan for the next session
+
+Written 2026-08-19, at the end of the session that closed M4 and retested M5.
+Everything below is ordered by what it would teach, and each item says what has
+already been ruled out so nothing gets re-run.
+
+### 1. The navigation collapse — the one real open problem (start here)
+
+`m1` navigates (+12 to +27 points over its own random floor at 3–20 units).
+`m3-masked` and `m4h` do not (+9 at best, +0 beyond 20 units). Measured cause:
+in the scarce world a berry lasts 25.7 ticks and takes 22.3 ticks to reach, a
+ratio of **1.15×** against **22×** in the M1 world. Navigation stops being
+learnable when the target expires in about the time needed to reach it.
+
+**The untried lever is `world.move_step`.** It changes travel time and touches
+nothing else in the food economy. 0.8 → 1.6 takes the ratio to ~2.3×.
+
+```bash
+# nav_move.yaml does not exist yet: m3_masked.yaml + world.move_step 1.6
+python -m sim.train --config config/nav_move.yaml --run-name nav-move \
+    --updates 200 --policy-mode individual --init-from checkpoints/m2/latest.pt
+python -m sim.navigation --checkpoint checkpoints/nav-move/latest.pt --baselines
+```
+
+Read `sim/navigation.py` output, bucketed, against the **random floor measured in
+that same world** (`--baselines`). Success = the 6–10 and 10–20 bands clear their
+floor by more than m3-masked's +9/+6, ideally toward m1's +17/+27.
+
+Already ruled out, do not repeat: `exclusive_bushes` is not the cause
+(`nav-compete`, flat). Entropy, γ, contest perception, brain sharing and 3.3×
+budget were all tried in M3 and were all flat — see the seven-intervention table.
+
+**If `move_step` works,** the interesting follow-up is whether M3–M5 can be
+re-derived on top of a policy that still navigates, i.e. re-fork the chain from a
+navigating checkpoint and see whether the scripted-reference gap closes
+everywhere. That is the biggest available result in the project.
+
+### 2. M4 residual: `build` uptake
+
+`build` is legal on 1.5% of ticks and taken on 28.6% of them, down from 48% in
+`m4g` — uptake *fell* as opportunity rose. Measured: it is sampling, not
+preference (mean P(build) 30.0%, argmax 55.7%, and uptake ≈ P). Argmax play is
+**worse** overall (470.4 vs 484.9, steals 87 → 243), so determinism is not the fix.
+This is probably the same imprecise-movement problem as item 1 and may dissolve if
+item 1 lands. Do not spend a run on it first.
+
+### 3. Exchange, if you want to push M5 further
+
+`m5b` retested exchange on the working economy: giving stopped being selected
+against and the flow turned directional (reciprocity 0.85 → 0.65), but it still
+buys no survival and the scripted trader's edge *doubled* to +28.1. Do not raise
+`reward.give` — that produces a gift farm (42× the gifts, 54 fewer ticks of life).
+The three mechanic-level ideas are in "What would actually be worth trying".
+Note the measured surprise: **material** giving was selected against (2%
+utilisation) while **food** giving rose (48%), so a relay needs its chain
+shortened, not its deliveries made fungible.
+
+### Housekeeping
+
+* **Back up `checkpoints/` before switching machines.** `./backup_checkpoints.sh <dest>`
+  copies the 34 `latest.pt` files (53MB) plus `runs/`. Both directories are
+  gitignored and the chain is unlearnable from scratch, so this is the one piece
+  of state git will not save for you.
+* A GPU will not help: measured, the network is **7.3%** of per-tick cost and the
+  numpy env step is the rest. Determinism is CPU-only, so CUDA would also break
+  bit-identical reproduction of every result here. A faster CPU with real cooling
+  would help; this machine is fanless and throttles.
+* Response style lives in `.claude/output-styles/terse.md`, selected by
+  `.claude/settings.json`. Project-scoped on purpose, so it travels with the repo.
+
 ## START HERE — handoff for the next session
 
 **Milestones 1–5 are all trained, verified and written up.** Every milestone the
