@@ -35,6 +35,12 @@ never against a nominal 50%.
 
     python -m sim.navigation --checkpoint checkpoints/m1/latest.pt
     python -m sim.navigation --checkpoint checkpoints/m4h/latest.pt --baselines
+    python -m sim.navigation --checkpoint checkpoints/m4h/latest.pt --nights
+
+THE NIGHT BLOCK (`--nights`) exists because "83% of nights indoors" cannot say
+whether the other 17% is a construction problem or a walking-home problem. It is
+the latter: on m4h a finished shelter existed for 100% of exposed night ticks, a
+mean 13.6 units away, while the scripted builder is exposed 0% of the time.
 """
 
 from __future__ import annotations
@@ -165,6 +171,65 @@ def measure(cfg: Config, act_fn: ActFn, episodes: int = 10, seed: int = 10000
     return out
 
 
+def night_exposure(cfg: Config, act_fn: ActFn, episodes: int = 10, seed: int = 10000,
+                   night_random: bool = False) -> dict[str, float]:
+    """Why is a night tick spent outside: nothing built, or nobody went home?
+
+    `shelters/ep` and `night_sheltered_frac` cannot separate those, and they are
+    different problems with different fixes -- one is construction throughput, the
+    other is walking to a finished building that already exists.
+
+    ``night_random`` is the floor. The policy still drives the DAY, so shelters get
+    built and the world is the one being asked about; only night actions are
+    replaced by uniform legal ones. The ordinary baselines cannot serve here: a
+    random or foraging policy never finishes a shelter, so it has no night rows.
+    """
+    rng = np.random.default_rng(seed)
+    night = exposed = none_done = 0
+    dists: list[float] = []
+    lifespans: list[float] = []
+    shelters: list[float] = []
+
+    for e in range(episodes):
+        w = World(cfg, seed=seed + e)
+        obs = w.observations()
+        for _ in range(cfg.world.max_ticks):
+            _, is_night = night_phase(w.tick, cfg)
+            mask = w.action_mask()
+            if night_random and is_night:
+                actions = np.array([rng.choice(np.flatnonzero(mask[i])) if mask[i].any() else 0
+                                    for i in range(cfg.world.num_agents)], dtype=np.int64)
+            else:
+                actions = act_fn(obs, mask)
+            if is_night:
+                done = (w.site_wood_needed + w.site_stone_needed) == 0
+                for i in np.flatnonzero(w.pool.alive):
+                    night += 1
+                    if not done.any():
+                        exposed += 1
+                        none_done += 1
+                        continue
+                    d = float(np.hypot(w.site_x[done] - w.pool.x[i],
+                                       w.site_z[done] - w.pool.z[i]).min())
+                    if d > cfg.construction.shelter_radius:
+                        exposed += 1
+                        dists.append(d)
+            result = w.step(actions)
+            obs = result.obs
+            if result.episode_done:
+                break
+        stats = w.stats()
+        lifespans.append(stats.mean_lifespan)
+        shelters.append(stats.shelters_completed)
+
+    return {"night_ticks": night, "exposed_ticks": exposed,
+            "exposed": exposed / night if night else float("nan"),
+            "none_finished": none_done / exposed if exposed else float("nan"),
+            "mean_distance": float(np.mean(dists)) if dists else float("nan"),
+            "median_distance": float(np.median(dists)) if dists else float("nan"),
+            "lifespan": float(np.mean(lifespans)), "shelters": float(np.mean(shelters))}
+
+
 def _row(label: str, bands: list[dict[str, float]]) -> str:
     """One printed line, with the sample count in each cell.
 
@@ -188,6 +253,9 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=10000)
     ap.add_argument("--baselines", action="store_true",
                     help="also measure random actions and the scripted forager")
+    ap.add_argument("--nights", action="store_true",
+                    help="also report why night ticks are spent exposed, with a "
+                         "night-behaviour floor (construction worlds only)")
     ap.add_argument("--report", default="viewer/reports/navigation.json")
     args = ap.parse_args()
 
@@ -233,6 +301,28 @@ def main() -> None:
               f"{b['sat_both_axes']:5.1%} both   "
               f"toward when seen {vis} (n={b['n_visible']:>5}) / "
               f"unseen {uns} (n={b['n_unseen']:>5})")
+
+    if args.nights and cfg.construction.enabled:
+        print("\n  --- exposed nights: no shelter, or did not go? ---")
+        rows = [("learned policy", night_exposure(cfg, policy_act_fn(policy),
+                                                  args.episodes, args.seed)),
+                ("random AT NIGHT (floor)", night_exposure(cfg, policy_act_fn(policy),
+                                                           args.episodes, args.seed,
+                                                           night_random=True))]
+        for name, r in rows:
+            print(f"  {name:24} exposed {r['exposed']:6.1%} of night ticks"
+                  f"   lifespan {r['lifespan']:6.1f}   shelters {r['shelters']:4.2f}")
+        r = rows[0][1]
+        if r["exposed_ticks"]:
+            print(f"  of the learned policy's exposed night ticks: "
+                  f"{r['none_finished']:.1%} had NO finished shelter anywhere, "
+                  f"{1 - r['none_finished']:.1%} had one")
+            print(f"  when one existed it was {r['mean_distance']:.1f} units away "
+                  f"(median {r['median_distance']:.1f}) = "
+                  f"{r['mean_distance'] / cfg.world.move_step:.0f} ticks of walking")
+        print("  the floor keeps the learned policy BY DAY and randomises only the"
+              "\n  night, because the usual baselines never finish a shelter and so"
+              "\n  produce no night rows at all.")
 
     out = Path(args.report)
     out.parent.mkdir(parents=True, exist_ok=True)

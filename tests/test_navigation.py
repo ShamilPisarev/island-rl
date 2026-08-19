@@ -96,3 +96,27 @@ def test_move_vectors_are_unit_length_and_distinct():
     norms = np.hypot(MOVE_VECTORS[:, 0], MOVE_VECTORS[:, 1])
     assert np.allclose(norms, 1.0), norms
     assert len({tuple(np.round(v, 6)) for v in MOVE_VECTORS}) == N_MOVE_ACTIONS
+
+
+def test_night_exposure_separates_nothing_built_from_nobody_went_home():
+    """The two readings of an exposed night, which the shelter statistics conflate.
+
+    Built out of a world where no shelter can ever be finished (a policy that never
+    builds): every exposed tick must be attributed to "nothing built", and none to
+    distance. If that attribution were reversed, m4h's night finding -- a finished
+    shelter available for 100% of its exposed ticks -- would be meaningless.
+    """
+    from sim.config import load_config
+    from sim.navigation import night_exposure
+
+    cfg = load_config("config/m4h.yaml").replace(**{"world.max_ticks": 200})
+    idle = np.full(cfg.world.num_agents, 8, dtype=np.int64)   # 8 == idle
+    r = night_exposure(cfg, lambda obs, mask: idle, episodes=1)
+
+    assert r["night_ticks"] > 0, "fixture saw no night at all"
+    assert r["shelters"] == 0.0
+    assert r["exposed"] == pytest.approx(1.0)
+    assert r["none_finished"] == pytest.approx(1.0)
+    assert np.isnan(r["mean_distance"]), (
+        "no finished shelter can be a distance away; a number here means the "
+        "distance branch is counting sites that are not done")

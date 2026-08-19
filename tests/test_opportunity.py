@@ -102,3 +102,52 @@ def test_taken_while_masked_stays_zero_for_a_mask_respecting_policy(masked):
     assert all(a["taken_while_masked"] == 0 for a in report["actions"])
     assert len(report["actions"]) == num_actions(masked)
     assert report["masked"] is True
+
+
+def test_per_span_uptake_ignores_how_long_an_opportunity_persists(masked):
+    """The counting error this module was extended to prevent.
+
+    A policy that takes the action on the FIRST legal tick of each run and then
+    stops has perfect uptake per opportunity. Per legal tick it looks like a
+    refusal, because the mask keeps saying yes while nothing about the chance has
+    changed. `m4h`'s `build` read 30.6% per tick and 77.4% per span for exactly
+    this reason.
+    """
+    gather = action_names(masked).index("gather")
+    idle = action_names(masked).index("idle")
+    seen = {"prev": None}
+
+    def once_per_span(obs, mask):
+        # Take gather only on a tick where it was NOT legal the tick before.
+        prev = seen["prev"]
+        fresh = mask[:, gather] if prev is None else (mask[:, gather] & ~prev)
+        seen["prev"] = mask[:, gather].copy()
+        actions = greedy_forager_actions(obs, masked).astype(np.int64)
+        actions = np.where(actions == gather, idle, actions)      # never gather otherwise
+        return np.where(fresh, gather, actions)
+
+    report = measure(masked, once_per_span, episodes=2)
+    g = _by_name(report)["gather"]
+    assert g["spans"] > 0, "fixture produced no gather opportunities"
+    assert g["uptake_per_span"] == pytest.approx(1.0), (
+        "one take per opportunity must read as 100% per span")
+    assert g["uptake"] < g["uptake_per_span"], (
+        "per-tick uptake must be the lower, confounded number whenever spans "
+        "last more than one tick")
+    assert g["mean_span_ticks"] > 1.0
+
+
+def test_a_dead_agents_span_cannot_stay_open_to_the_horizon(masked):
+    """Spans are closed by death, not left running.
+
+    A corpse keeps its slot and is forced to idle, so if the mask were read without
+    the liveness term an agent that died standing at a bush would hold one span
+    open for the rest of the episode -- inflating mean span length and deflating
+    per-span uptake, silently.
+    """
+    idle = action_names(masked).index("idle")
+    report = measure(masked, lambda obs, mask: np.full(mask.shape[0], idle, dtype=np.int64),
+                     episodes=2)
+    for a in report["actions"]:
+        if a["spans"]:
+            assert a["mean_span_ticks"] <= masked.world.max_ticks

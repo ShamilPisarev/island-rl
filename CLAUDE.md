@@ -25,9 +25,10 @@ rather than smoothing it over.
 
 ## Plan for the next session
 
-Written 2026-08-19, at the end of the session that ran `nav-move` and closed the
-navigation hypothesis. Ordered by what it would teach; each item says what has
-already been ruled out so nothing gets re-run.
+Written 2026-08-19, at the end of the session that ran `nav-move`, closed the
+navigation hypothesis, and closed both uptake items as counting artefacts. Ordered
+by what it would teach; each item says what has already been ruled out so nothing
+gets re-run.
 
 ### 0. What last session settled, so it is not reopened
 
@@ -46,44 +47,65 @@ travel helps a wanderer more than it helps something that already walks straight
 Whatever the residual is, the toward-food share does not measure it. Full write-up
 in the M3 section under "`nav-move` — the ratio moved, navigation did not".
 
+**And the uptake headroom that replaced it was a counting artefact.** Per legal
+tick, `steal` uptake is 46% and `build` 29%; per *distinct opportunity* they are
+**85%** and **73%**. Forcing the remainder pays nothing (+3.6 ± 7.7 for `build`,
+−8.3 ± 4.1 for `steal`) while suppressing it is catastrophic. Both behaviours are
+already saturated — see plan item 2.
+
 Do not re-run: `exclusive_bushes` (`nav-compete`, flat), `move_step` (`nav-move`,
 flat), entropy, γ, contest perception, brain sharing, 3.3× budget (all flat, see
-the seven-intervention table).
+the seven-intervention table). Do not chase `build` or `steal` uptake.
 
-### 1. Declined theft — the largest measured headroom (start here)
+### 1. Go home at dusk — the largest measured gap (start here)
 
-`sim.opportunity` on `m3-masked`: `steal` is legal on 11.6% of living ticks and
-taken on **46.4%** of them; `gather` is legal on 1.3% and taken on **98.6%**.
-Gather uptake is saturated, so foraging has nothing left to convert — but half of
-every legal steal is refused, and the scripted thief that takes them is
-**+50.8 ± 12.2** ticks ahead on 40 paired islands, three times the forager's edge.
+**m4h is exposed on 18–19% of night agent-ticks, and on 100% of them a finished
+shelter already existed**, a mean 13.6 units away (median 8.0, ~17 ticks of
+walking). The scripted builder is exposed 0% of the time and is +72.6 ± 10.5 ahead
+on 40 paired islands. Its build volume is barely higher (14.8 against a forced
+11.9) and its shelters barely more (3.52 against 2.90), so **the edge is being
+indoors, not building more**.
 
 ```bash
-python -m sim.opportunity --checkpoint checkpoints/m3-masked/latest.pt
+python -m sim.navigation --checkpoint checkpoints/m4h/latest.pt --nights
 ```
 
-What is *not* yet known, and is one cheap run each: whether the refusal is
-sampling (compare mean P(steal) on legal ticks against uptake, and argmax play —
-this is exactly the m4h `build` diagnostic, which found sampling and found argmax
-made things worse), or whether stolen berries genuinely do not help *this* policy
-because it is already fed at the moment the mask says yes. Measure hunger at the
-declined steals before choosing a lever.
+Night behaviour is better than chance (19% exposed against a 30% floor), so this is
+a partial competence to finish, not one to install. Two things to know before
+choosing a lever:
 
-Note this is the same shape as item 2 below, one milestone earlier. If a single
-explanation covers `steal` at 46% and `build` at 29%, that is the biggest
-available result in the project — both are "the mask says yes and the policy
-shrugs".
+* The floor needs the hybrid control that `--nights` builds — the learned policy by
+  day, uniform legal actions at night. Ordinary baselines never finish a shelter, so
+  they produce no night rows at all.
+* This is the shelter-side twin of the navigation collapse: `sim.navigation`'s
+  toward-SHELTER rows sit at 41.7% / 51.8% / 55.3% at 0–3 / 3–6 / 6–10 units, and
+  **no random floor is measurable for them** (see above), so read them as
+  suggestive, not settled.
 
-### 2. M4 residual: `build` uptake
+Candidate levers, in the order rule 2 would try them: a night channel in the
+observation (does the policy even know it is dusk?), then `shelter_radius`, then
+site count. Measure which before spending a run.
 
-`build` is legal on 1.5% of ticks and taken on 28.6% of them, down from 48% in
-`m4g` — uptake *fell* as opportunity rose. Measured: it is sampling, not
-preference (mean P(build) 30.0%, argmax 55.7%, and uptake ≈ P). Argmax play is
-**worse** overall (470.4 vs 484.9, steals 87 → 243), so determinism is not the
-fix. Reproduce the numbers with `python -m sim.opportunity --checkpoint
-checkpoints/m4h/latest.pt`. The note that this "may dissolve if the navigation
-item lands" is withdrawn — the navigation item did not land, and this is not
-waiting on it.
+### 2. Uptake is closed — do not reopen it
+
+Both "the mask says yes and the policy shrugs" items from the last plan are
+answered, and they were the same error twice.
+
+* **Per legal tick was the wrong denominator.** Per distinct opportunity (a span of
+  consecutive legal ticks for one agent), `build` uptake is 72.6% not 28.6%, and
+  `steal` is 85.0% not 46.4%. `sim.opportunity` prints both and says which to read.
+* **The residue is worth nothing.** `--force` runs the action taken-whenever-legal
+  and suppressed-entirely, paired: forcing `build` gives +3.6 ± 7.7, forcing `steal`
+  gives −8.3 ± 4.1. Suppressing them is catastrophic (−104.5 ± 8.7 and −15.6 ± 5.9),
+  so both behaviours are valuable *and* saturated.
+* **The refusals were sampling, not preference**, in both cases: mean P(steal) 45.1%
+  against 44.4% uptake. Hunger does not select the declined steals either (95.6%
+  above the eat threshold, against 95.7% of the taken ones).
+
+What is left of the thief's +87.8 in the M3 world is opportunity *generation*:
+forcing every legal steal yields 423 an episode against the thief's 1111, because
+the thief positions itself beside loaded neighbours. Same shape as item 1 — going
+somewhere, not choosing differently.
 
 ### 3. Perception beyond 20 units, if you want the navigation thread anyway
 
@@ -221,9 +243,11 @@ In rough order of how much they would teach:
    83% of nights indoors, and the gap to the builder halved from 82 to 50 while
    the builder stood still.** This is the best policy in the project and the first
    since M1 to beat any scripted reference.
-   **What is left:** `build` is available on 1.5% of ticks and taken on only
-   28.6% — uptake *fell* as opportunity rose, which is the clearest remaining
-   inefficiency and costs nothing to investigate.
+   **What is left is NOT `build` uptake** — that read 28.6% per legal tick and is
+   **72.6% per distinct opportunity**, with forcing the remainder worth +3.6 ± 7.7.
+   It is the night: m4h is exposed on 18–19% of night ticks and **a finished
+   shelter existed for 100% of them**, 13.6 units away on average, while the
+   builder is exposed 0% and is +72.6 ± 10.5 ahead. See "What is left in M4".
 3. **Exchange needs a mechanism, not a bigger number.** M5 showed the unpaid
    chain is too weak and a flat payment produces a gift farm. **`m5b` retested it
    on `m4h`'s working economy** — the original verdict was reached in a world
@@ -275,7 +299,7 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   original verdict was reached where nothing was worth trading: giving stops being
   selected against and the flow turns directional, but it still buys no survival.
   Best checkpoint: `checkpoints/m5b` (497.5 lifespan).
-- `pytest` passes (247 tests).
+- `pytest` passes (250 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -355,6 +379,14 @@ python -m sim.train --config config/nav_move.yaml --run-name nav-move-m2zero \
 python -m sim.navigation --checkpoint checkpoints/nav-move/latest.pt --baselines
 python -m sim.opportunity --checkpoint checkpoints/nav-move/latest.pt
 python -m sim.evaluate --checkpoint checkpoints/nav-move/latest.pt --baselines --episodes 40
+
+# the uptake postmortem: per-opportunity uptake, then the counterfactual that says
+# whether the declined remainder is worth anything (it is not, in either world)
+python -m sim.opportunity --checkpoint checkpoints/m3-masked/latest.pt --force steal
+python -m sim.opportunity --checkpoint checkpoints/m4h/latest.pt --force build
+
+# what M4's remaining gap actually is: nights spent outside a shelter that exists
+python -m sim.navigation --checkpoint checkpoints/m4h/latest.pt --nights
 ```
 
 ## Compute budget — runs are longer than they need to be
@@ -407,11 +439,19 @@ did not list:
   view.
 - `sim/navigation.py` — the distance-bucketed toward-target measurement, plus a
   "could the policy see the target at all" block (target present in the
-  observation, offset clipping, and the toward-share split by visibility).
+  observation, offset clipping, and the toward-share split by visibility), plus
+  `--nights`: why a night tick is spent outside, with a night-behaviour floor that
+  keeps the policy by day and randomises only the night. That floor exists because
+  the ordinary baselines never finish a shelter and so produce no night rows.
 - `sim/opportunity.py` — opportunity versus uptake per action, read off the action
-  mask. It exists because "the policy rarely does X" has meant two unrelated
-  things here: X almost never legal (`m4f`'s `chop`, a world problem) and X legal
-  and declined (`m4h`'s `build`, a policy problem).
+  mask. It exists because "the policy rarely does X" has meant three unrelated
+  things here: X almost never legal (`m4f`'s `chop`, a world problem), X legal and
+  declined (a policy problem), and X legal for many consecutive ticks after one
+  take already used the chance (a *metric* problem — the one that actually
+  applied). It prints uptake per legal tick **and per distinct opportunity**, and
+  `--force ACTION` runs the counterfactual: the action taken whenever legal and
+  suppressed entirely, paired per island, which is what says whether a low uptake
+  is headroom at all.
 
 **`sim.evaluate` prints paired per-island differences** whenever a learned policy
 runs alongside baselines. Same seed block for every policy, so island noise
@@ -1066,6 +1106,53 @@ of legal steals are declined, and the scripted thief — which takes them — is
 **+50.8 ± 12.2** ahead on the same islands, three times the forager's edge. The
 largest measured headroom in the M3 world is theft uptake, not navigation.
 
+### Declined theft was a counting artefact — and the steals it declines are worth nothing
+
+Plan item 1 said theft uptake was "the largest measured headroom in the M3 world":
+`steal` legal on 11.6% of living ticks, taken on 46.4%, against a scripted thief
++50.8 ± 12.2 ahead. **Both halves of that framing are now dead**, and the second
+kill is the useful one.
+
+**1. The rate was confounded.** `steal` uptake is 48.1% per legal *tick* and
+**85.0% per distinct opportunity** — a "span", i.e. a maximal run of consecutive
+ticks on which the mask kept saying yes to one agent. Steal spans average 3.4
+ticks, so the per-tick number divides one chance by however long it persisted.
+`gather` spans last 1.2 ticks, which is why its 97.8% per tick and 99.3% per span
+agree — and why the error was invisible until an action with long spans turned up.
+`sim.opportunity` now prints both columns and says which to read. Rule 6 again, in
+a new place.
+
+**2. The remaining steals are worth nothing.** `sim.opportunity --force steal`
+runs the same weights with `steal` taken whenever legal, and again suppressed
+entirely, with common random numbers and paired islands:
+
+| m3-masked, 40 paired islands | lifespan | steals/ep | vs the unmodified policy |
+|---|---|---|---|
+| learned (control) | 463.9 | 125.7 | — |
+| **ALWAYS steal** | 455.6 | **422.9** | **−8.3 ± 4.1 (better on 10/40)** |
+| **NEVER steal** | 448.3 | 0 | **−15.6 ± 5.9 (better on 13/40)** |
+| scripted thief | 551.7 | 1111.0 | +87.8 ± 10.3 |
+
+**3.4× the theft buys nothing** (if anything it costs 8 ticks), while removing
+theft costs 15.6. So the ~45% rate is near its own optimum: the steals the policy
+takes are worth ~16 ticks of life and the ones it declines are worth nothing. There
+was no headroom to convert.
+
+**And the refusal was never a decision.** Mean P(steal) on legal ticks is 45.1%
+against a 44.4% sampled uptake — the policy holds a preference and the dice do the
+rest, exactly as `m4h`'s `build` did. Note the direction, which is opposite to
+`build`: `steal` is the *argmax* action on only 27% of its legal ticks, so argmax
+play would steal **less**, not more. Hunger does not select either — 95.6% of
+declined steals and 95.7% of taken ones happen above the eat threshold, with mean
+hunger 74.2 against 73.4. The policy is not passing on steals it needs.
+
+**Where the thief's +87.8 actually comes from: opportunity, not uptake.** Forcing
+every legal steal gets 423 an episode against the thief's 1111. The thief has ~2.6×
+more *chances* because it positions itself next to loaded neighbours — it
+manufactures the opportunity rather than converting it. That is a behaviour, not a
+rate, and it is the same shape as everything else in this file: the gap is in going
+somewhere.
+
 ### The fix that worked: action masking
 
 `competition.mask_invalid_actions` hides `gather` and `steal` when they cannot
@@ -1574,13 +1661,55 @@ forager and thief ignore construction entirely, so in a world where shelter is
 load-bearing they are handicapped by design. The builder, which does build, is
 still ahead by 50.
 
-### What is left in M4
+### What is left in M4 — not `build` uptake. It is going home at dusk.
 
-Headroom is now visible in one number: **`build` is available on 1.5% of ticks and
-taken on only 28.6% of them**, down from 48% in m4g. As delivering got easier the
-policy got *less* likely to take the opportunity, which is the clearest remaining
-inefficiency and is cheap to look at. Beyond that, 11.25 units an episode still
-die in inventories and the delivery rate is 52% against the builder's 81%.
+**The `build`-uptake open problem is closed, and it was a counting error.** This
+section used to say the headroom was "`build` available on 1.5% of ticks and taken
+on only 28.6%". Measured per *distinct opportunity* rather than per legal tick —
+one loaded agent standing at a site that wants its material is one chance, however
+many ticks it lingers — uptake is **72.6%**, on spans averaging 4.2 ticks. Same
+correction as `steal` in the M3 section, same rule 6.
+
+And the residue is worth nothing. `sim.opportunity --force build`, common random
+numbers, 40 paired islands:
+
+| m4h | lifespan | builds/ep | shelters/ep | vs the unmodified policy |
+|---|---|---|---|---|
+| learned (control) | 467.1 | 11.5 | 2.77 | — |
+| **ALWAYS build** | 470.7 | **11.9** | 2.90 | **+3.6 ± 7.7 (21/40)** |
+| **NEVER build** | 362.7 | 0 | 0 | **−104.5 ± 8.7 (2/40)** |
+| scripted builder | 539.8 | 14.8 | 3.52 | +72.6 ± 10.5 |
+
+Forcing every legal build raises builds by 0.4 an episode, because the extra legal
+ticks were the *same* opportunities: a build spends the material, so one take ends
+the span. Construction itself is worth **104 ticks** — by far the largest measured
+effect in the project — and it is essentially saturated.
+
+**So where is the builder's +72.6?** Not in build volume (14.8 against a forced
+11.9) and not in shelters (3.52 against 2.90). It is at night. Measured with
+`sim.navigation --nights`:
+
+| m4h, night agent-ticks | learned | random AT NIGHT (floor) | scripted builder |
+|---|---|---|---|
+| exposed (not inside a finished shelter) | **18–19%** | **30%** | **0%** |
+| of those, no shelter finished anywhere | **0.0%** | — | — |
+| ...one existed, mean distance | **13.6 units (median 8.0)** | — | — |
+
+**Every single exposed night tick has a finished shelter available**, a mean 13.6
+units away — about 17 ticks of walking — and the policy stays out. Its night
+behaviour is better than chance (19% against the 30% floor), so this is a partial
+competence, not an absence; the builder closes the whole thing by running home at
+dusk. Note the floor had to be built specially: random and foraging baselines never
+finish a shelter, so they generate no night rows at all, and the floor is therefore
+the learned policy by day with uniform legal actions at night.
+
+Crude size check, from one point rather than a curve: the night-random floor costs
+23.6 ticks of life for 11.5 extra points of exposure, so ~19 points is order-40
+ticks — roughly half the builder's edge. Treat that as an order of magnitude, not a
+measurement.
+
+Beyond that, 11.25 units an episode still die in inventories and the delivery rate
+is 52% against the builder's 81%.
 
 ## Milestone 5 — exchange
 
@@ -1838,6 +1967,16 @@ result in this file that ignored one of them turned out to be wrong.
    plainly reached the food (mean distance 3.8 against random's 24.0) while
    "scoring" 54.8% toward it. **When two of your numbers cannot both be true,
    stop and fix the metric.**
+   **It happened again, in a different disguise, and cost two open problems.**
+   "`build` legal on 1.5% of ticks and taken on 28.6%" was the headline M4
+   inefficiency for a milestone, and "`steal` taken on 46.4%" was promoted to the
+   largest headroom in M3. Both divide by *ticks*, and a build spends the material
+   that made it legal — so one take ends a run of legal ticks averaging 4.2 of them.
+   Per distinct opportunity the figures are **72.6%** and **85.0%**, and forcing the
+   remainder buys nothing. `gather` was the reason it hid: its spans last 1.2 ticks,
+   so per-tick and per-opportunity agree there (98% and 99%) and the metric looked
+   sound wherever anyone had checked it. **Ask what one opportunity is before
+   dividing by anything.**
 7. **Compare policies island by island, not mean against mean.** Island-to-island
    variation here is ±60 ticks, so a 20-episode mean carries ~13 ticks of unpaired
    standard error — wider than most effects in this file. On 20 episodes `nav-move`
