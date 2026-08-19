@@ -31,9 +31,10 @@ switch.
 ## Plan for the next session
 
 Written 2026-08-19, at the end of the session that measured the advantage signal
-(`sim.advantage`), ran the k-tick commitment lever (`nav-commit`), and killed the
-equilibrium explanation (`spread-nav`). Ordered by what it would teach; each item
-says what has already been ruled out so nothing gets re-run.
+(`sim.advantage`), ran the k-tick commitment lever (`nav-commit`), killed the
+equilibrium explanation (`spread-nav`), and refuted the capacity corollary
+(`spread-nav512`). Ordered by what it would teach; each item says what has
+already been ruled out so nothing gets re-run.
 
 ### 0. What last session settled, so it is not reopened
 
@@ -70,47 +71,59 @@ prevent it — while survival climbs (334.5 → 376.2, still below the m2 lineag
 433.4; rule 3 cuts both ways). Making navigation worth +140.9 and camping fatal
 does not make PPO retain it.
 
-**The one suspect left standing: the on-policy sample distribution itself.** ~90%
-of transitions are near-field ticks whose gradients simultaneously price leaving
-the camp as a loss and overwrite far-field structure in the shared 128×128 trunk
-by sheer sample weight — rule 6's 87:1 weighting problem operating on the
-*gradient* rather than on a metric. It retro-dicts every null in this file and
-explains the one world where navigation survives (`nav_probe`, where the walk IS
-the dominant state). The state distribution is the curriculum. Untested — item 1.
+**The capacity corollary is already tested, and it is refuted.** A 512×512 probe
+learns navigation *better* (99.9% toward-food at 20+ against the 128-wide probe's
+86.1%) and the spread world strips it *faster* (+0.7 over floor at 200 updates,
+where the narrow lineage still held +6.3) — while banking **+67.7 ± 8.3** of
+survival (36/40 islands) out of pure local competence. So the unlearning is not
+passive interference in a too-small trunk; it is **gradient-following**: the
+on-policy advantage actively trains far-field navigation away at any capacity,
+exactly as the measured negative 20+ δ gap says it should. See "The capacity
+probe" in the M3 section.
+
+**What is left standing is one question: is that negative pricing *correct*?**
+`sim.steering`'s +140.9 steers all six agents at once — a group counterfactual.
+PPO's gradient sees the individual one. Nothing yet measures whether ONE agent
+that navigates, among five that do not, gains anything. Item 1.
 
 Do not re-run: `exclusive_bushes` (`nav-compete`, flat), `move_step` (`nav-move`,
 flat), entropy, γ, contest perception, brain sharing, 3.3× budget (all flat, see
 the seven-intervention table); re-forking navigators into scarce worlds — both
 destinations are done (`nav-refork` where camping pays, `spread-nav` where it
-cannot, decay either way); `decision_interval` at any k (k=4 verified the
-mechanism and moved nothing; the anti-gradient multiplies with k, and k=8 commits
-6.4 units past a 2.0 gather radius). Do not chase `build` or `steal` uptake.
+cannot, decay either way), and at both widths (`spread-nav512`, faster decay);
+`decision_interval` at any k (k=4 verified the mechanism and moved nothing; the
+anti-gradient multiplies with k, and k=8 commits 6.4 units past a 2.0 gather
+radius). Do not chase `build` or `steal` uptake.
 
-### 1. Navigation — the +89 to +113 is real and unclaimed; the open question is retention (start here)
+### 1. Navigation — the +89 to +113 is real and unclaimed; the open question is WHOSE counterfactual it is (start here)
 
 `sim.steering` still prices perfect navigation at **+89.1 ± 11.4** on m4h
 (**+113.2 ± 10.7** with the night home-run, **+140.9 ± 8.2** in the spread world,
 **+93.6 ± 7.5** under commitment). Nothing else measured comes close, and every
 mechanism-level explanation for why PPO will not claim it is now dead: not the
 world's incentives, not the signal's size, not the critic's gradient, not the
-starting policy. What remains is the interference hypothesis in item 0, and it
-makes cheap, testable predictions:
+starting policy, not capacity. What remains:
 
-* **Capacity should slow the decay.** Train a wider probe from scratch
-  (`nav_probe` with `--set policy.hidden_sizes=[512,512]` — the probe world is
-  easy), fork it into the spread world exactly as `spread-nav` did, and read the
-  20+ band at 200 and 400 updates against spread-nav's +6.3 → +2.1. Holding the
-  band confirms interference and makes capacity the lever; identical decay says
-  the distribution story needs sharpening, not the network. ~25 minutes end to
-  end, controls included. **Untested.**
-* **Interleave the distributions, do not sequence them.** Every failure so far
-  trained on one world at a time; the direct distribution-level lever is a batch
-  that always contains far-field states — probe-world episodes mixed into scarce
-  training. Needs `VecWorld` to run two configs side by side, which is a real
-  change; size it only after the capacity probe says interference is real.
-* **No reward-side lever can work if the hypothesis is right.** Treat any new
-  payment, premium, or ratio proposal for navigation as pre-refuted unless it
-  changes what states end up in the batch.
+* **Steer ONE agent, not six.** Add an `--agents` option to `sim.steering` that
+  steers only agent 0's moves and leaves the rest to the policy, paired per
+  island. If the steered individual gains, individual navigation pays, the
+  critic's negative far-field pricing is *wrong*, and the failure is
+  optimisation — worth attacking. If it does not gain, navigation in these
+  worlds only pays **collectively** (six navigators share six spread clusters;
+  one navigator arrives at bushes the campers already hold), no
+  individual-gradient method can find it, and the +89 to +141 headroom is a
+  coordination prize, not a skill gap. Either answer reframes the file's oldest
+  open problem. ~15 minutes including the flag. **Unmeasured.**
+* **Interleave the distributions, do not sequence them.** A batch that always
+  contains probe-world episodes keeps states where toward-moves pay *positively*
+  in every update — the rationale is no longer weight protection (capacity
+  refuted that) but keeping a positive navigation gradient present to balance the
+  scarce world's negative one. Needs `VecWorld` to run two configs side by side;
+  size it only if the one-agent steering test says individual navigation pays.
+* **No reward-side lever can work.** The gradient is negative because of what the
+  world does to a lone traveller, not because of what it pays; treat any new
+  payment, premium, or ratio proposal as pre-refuted unless it changes what
+  states end up in the batch or how many agents travel at once.
 * **Not shaping.** Paying for approach would produce approach; rule 1.
 
 ### 2. Nights are NOT the gap — closed, do not reopen
@@ -504,6 +517,20 @@ python -m sim.train --config config/nav_spread.yaml --run-name spread-nav --upda
 python -m sim.train --config config/nav_spread.yaml --run-name spread-nav2 --updates 200 \
     --policy-mode individual --init-from checkpoints/spread-nav/latest.pt
 python -m sim.navigation --checkpoint checkpoints/spread-nav2/latest.pt --baselines
+
+# the capacity probe: same fork at 512x512. REFUTES interference -- the wide net
+# navigates better in the probe world (99.9% at 20+) and loses it faster in the
+# spread world (+0.7 over floor at 200 updates), while gaining +67.7 +- 8.3 of
+# survival from local competence alone.
+python -m sim.train --config config/nav_probe.yaml --run-name nav-probe-512 \
+    --updates 200 --set "policy.hidden_sizes=[512,512]"
+python -m sim.train --config config/nav_spread.yaml --run-name spread-nav512 --updates 200 \
+    --policy-mode individual --init-from checkpoints/nav-probe-512/latest.pt \
+    --set "policy.hidden_sizes=[512,512]"
+python -m sim.train --config config/nav_spread.yaml --run-name spread-nav512-2 --updates 200 \
+    --policy-mode individual --init-from checkpoints/spread-nav512/latest.pt \
+    --set "policy.hidden_sizes=[512,512]"
+python -m sim.navigation --checkpoint checkpoints/spread-nav512-2/latest.pt --baselines
 ```
 
 ## Compute budget — runs are longer than they need to be
@@ -1554,7 +1581,57 @@ explains the one world where navigation survives: in `nav_probe` the walk IS the
 dominant state, so the distribution protects the competence instead of eroding it.
 The state distribution is the curriculum. Untested corollaries: more capacity
 should slow the decay (train a wider nav-probe, fork it, watch the 20+ band), and
-no reward-side lever should be able to fix it.
+no reward-side lever should be able to fix it. **The capacity corollary was tested
+the same day and refuted — see the next section.**
+
+### The capacity probe — a wider net unlearns navigation just as completely, and banks +68 of survival instead
+
+The interference hypothesis made one cheap prediction: a wider trunk has room for
+both competences, so forking a wider navigator into the spread world should slow
+the far-field decay. Run exactly as `spread-nav` was, with one change
+(`--set policy.hidden_sizes=[512,512]`, ~11× the parameters):
+
+**The wide probe navigates better than the narrow one ever did.** In the probe
+world, 200 updates from scratch: **99.9% toward-food at 20+** (n=820, floor
+50.3%), where the 128-wide probe reached 86.1%. Capacity helps *acquisition*
+where the state distribution supports navigation — worth knowing on its own.
+
+**And the spread world strips it anyway, faster if anything.** Bands over the
+floor measured in the same world:
+
+| | updates | lifespan | berries | 3–6 | 6–10 | 10–20 | **20+** |
+|---|---|---|---|---|---|---|---|
+| `spread-nav512` | 200 | 398.6 ± 63.1 | 19.1 | +2.3 | +4.1 | +3.3 | **+0.7** |
+| `spread-nav512-2` | 400 | 442.1 ± 50.9 | 24.1 | +2.6 | +6.0 | +1.1 | **+0.9** |
+| `spread-nav` / `-2` (128-wide) | 200 → 400 | 334.5 → 376.2 | 12.6 → 17.4 | | | | **+6.3 → +2.1** |
+
+At 200 updates the wide net's far-field navigation is already gone (+0.7), where
+the narrow one still held +6.3 — despite starting from 99.9% instead of 86%. **So
+the decay is not passive interference: a net with room to spare followed the same
+gradient to the same place, faster.** The unlearning is gradient-following. That
+is consistent with what `sim.advantage` measured directly — the on-policy δ gap
+at 20+ is *negative* — and it retires "capacity" as a lever for retention.
+
+**What capacity did buy is survival, and a lot of it.** Paired on 40 islands,
+`spread-nav512-2` − `spread-nav2`: **+67.7 ± 8.3, better on 36 of 40** (444.6 vs
+376.9, berries 24.3 vs 16.9, deaths 3.80 vs 4.90) — at or above the m2 lineage's
+433.4 in this world (unpaired, 20 eps). A bigger trunk converts straight into
+better *local* competence while far-field navigation sits at the floor. The two
+are simply not in tension for PPO here: it spends all capacity on the behaviour
+its own advantage endorses.
+
+**Where this leaves the diagnosis.** Part (b) of the sample-distribution story —
+overwrite-by-sample-weight — is dead: capacity would have helped. Part (a) stands
+alone and sharper: **the on-policy advantage actively trains far-field navigation
+away**, at any capacity, because A^π under the training distribution prices
+toward-moves negative beyond 20 units. The open question that now matters is
+whether that pricing is *correct*: `sim.steering` steers all six agents at once
+(+140.9 here), which is a group counterfactual, while PPO's gradient sees the
+individual one. Steering a SINGLE agent's moves and leaving the other five to the
+policy would say whether individual navigation pays at all in this world — if it
+does, the critic is wrong and this is an optimisation failure; if it does not,
+navigation only pays collectively and no individual-gradient method can find it.
+Unmeasured; it needs a small `--agents` option on `sim.steering`.
 
 ### Declined theft was a counting artefact — and the steals it declines are worth nothing
 
