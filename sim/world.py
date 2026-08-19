@@ -667,8 +667,37 @@ class VecWorld:
         # Distinct, reproducible stream per env; SeedSequence avoids the
         # correlated-stream trap of seeding with seed+0, seed+1, ...
         seeds = np.random.SeedSequence(seed).generate_state(self.num_envs, dtype=np.uint32)
-        self.worlds = [World(cfg, int(s)) for s in seeds]
+
+        # cfg.mix: run a share of the envs on a SECOND world config, so one policy
+        # trains on both distributions in the same update. See MixConfig for why.
+        # The two configs must agree on everything the policy sees, or trained
+        # weights would read off the wrong features with nothing printed -- the
+        # same failure --init-from's column_map exists to prevent.
+        self.mix_cfg: Config | None = None
+        n_mix = 0
+        if cfg.mix.config and cfg.mix.fraction > 0.0:
+            from .config import load_config
+            self.mix_cfg = load_config(cfg.mix.config)
+            checks = (
+                ("observation dim", observation_dim(self.mix_cfg), self.obs_dim),
+                ("action count", num_actions(self.mix_cfg), num_actions(cfg)),
+                ("agent count", self.mix_cfg.world.num_agents, self.num_agents),
+            )
+            for what, got, want in checks:
+                if got != want:
+                    raise ValueError(
+                        f"mix config {cfg.mix.config!r} disagrees on {what}: "
+                        f"{got} vs the primary world's {want}. One policy trains on "
+                        f"both, so these must match exactly."
+                    )
+            n_mix = int(round(self.num_envs * cfg.mix.fraction))
+        # Mixed envs occupy the low indices, which keeps the split reproducible
+        # and lets a test name exactly which worlds should be which.
+        self.is_mix = [i < n_mix for i in range(self.num_envs)]
+        self.worlds = [World(self.mix_cfg if self.is_mix[i] else cfg, int(s))
+                       for i, s in enumerate(seeds)]
         self.finished_episodes: list[EpisodeStats] = []
+        self.mix_episodes = 0
 
     def reset(self) -> np.ndarray:
         return np.stack([w.reset() for w in self.worlds])
@@ -712,7 +741,15 @@ class VecWorld:
                     # Survivors at max_ticks are truncated, not terminated.
                     truncated[e] = res.truncated & world.pool.alive
                     final_obs[e] = res.obs
-                    self.finished_episodes.append(world.stats())
+                    # A mixed env's episode still TRAINS the policy -- its
+                    # transitions are in the rollout like any other -- but it does
+                    # not get logged: a lifespan averaged over an easy probe world
+                    # and a scarce one describes neither, and this project has
+                    # been wrong twice from exactly that (rule 6).
+                    if self.is_mix[e]:
+                        self.mix_episodes += 1
+                    else:
+                        self.finished_episodes.append(world.stats())
                     obs[e] = world.reset()
                     break
             else:

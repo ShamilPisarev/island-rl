@@ -1,0 +1,45 @@
+# The navigation probe, re-clothed in the SCARCE world's observation and action
+# layout so one policy can train on both. Not a standalone experiment.
+#
+# WHY IT EXISTS. config/nav_probe.yaml extends default.yaml and is 26 dims / 10
+# actions; nav_spread is 29 / 11 (steal, plus the neighbour-food channel). A
+# policy cannot train on both, so the probe's GEOGRAPHY is transplanted onto
+# m3_masked's interface instead: same observation layout, same action set, same
+# masking, same agent count -- the only differences are where the food is and how
+# much of it there is.
+#
+#   bushes.num_clusters 1        one destination, unambiguous
+#   bushes_per_cluster 6         with capacity 12 and regrow 20, deep supply
+#   cluster_std 3.0              tight, so "toward the cluster" is one direction
+#   spawn_radius_frac 0.9        spawn far and wide, so the walk is real
+#
+# TWO DELIBERATE DEPARTURES from a straight m3_masked, both to keep the
+# navigation gradient clean, and NEITHER changes the observation layout
+# (exclusive_bushes and contest_bushes add no channels; observe_bush_contested
+# would, and stays off):
+#
+#   * exclusive_bushes: false -- in the real probe, arriving always pays. With
+#     exclusivity on, six agents converging on one cluster would mean only the
+#     closest may harvest, which reintroduces the "you arrive second" penalty
+#     that this leg exists to be free of.
+#   * contest_bushes: false -- same reason, one tick finer.
+#
+# `enable_steal` and `observe_neighbour_food` STAY ON: they are what make the
+# vector 29 dims and the action set 11. Stealing being available in the probe leg
+# is harmless -- food is abundant, so it is rarely worth anything.
+extends: m3_masked.yaml
+
+world:
+  spawn_radius_frac: 0.9
+
+competition:
+  exclusive_bushes: false
+  contest_bushes: false
+
+bushes:
+  num_clusters: 1
+  bushes_per_cluster: 6
+  cluster_std: 3.0
+  capacity: 12
+  initial_berries: 12
+  regrow_ticks: 20

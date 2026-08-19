@@ -33,9 +33,19 @@ switch.
 Written 2026-08-19, at the end of the session that measured the advantage signal
 (`sim.advantage`), ran the k-tick commitment lever (`nav-commit`), killed the
 equilibrium explanation (`spread-nav`), refuted the capacity corollary
-(`spread-nav512`), and priced the individual navigation prize
-(`sim.steering --subset`). Ordered by what it would teach; each item says what
-has already been ruled out so nothing gets re-run.
+(`spread-nav512`), priced the individual navigation prize
+(`sim.steering --subset`), and finally showed the competence and the refusal
+living in one set of weights (`spread-mix`). Ordered by what it would teach;
+each item says what has already been ruled out so nothing gets re-run.
+
+**If you read one thing, read this.** The project's oldest open problem has
+changed shape. It is not "PPO cannot learn to navigate here" — a policy trained
+half on a probe geography navigates at 98.3% and, in a zero-shot 2×2, applies
+that navigation in every food layout except one: far *and* thin, which is the
+scarce world. There a sustained crossing is worth +173 and every single step of
+it is correctly priced ≤ 0. The remaining problem is an optimisation-operator
+problem, and the file's older framings ("the chain loses navigation", "the world
+erases it", "the signal is too small") are all superseded by it.
 
 ### 0. What last session settled, so it is not reopened
 
@@ -94,6 +104,17 @@ correctly priced ≤ 0 under a wandering π, a sustained walk pays +173, and
 the signal, not the critic, not capacity, not coordination — the improvement
 operator itself.
 
+**Interleaving proved that in the strongest possible form: the competence and
+the refusal now live in ONE set of weights.** Training half the envs on the probe
+geography (`spread-mix`, `cfg.mix`) leaves the scarce world's bands flat
+(+0.3 over floor at 20+) while the *same policy* navigates at **98.3%** in the
+probe half — and a zero-shot 2×2 shows the switch is conditioned on whether a
+trip pays: three of four cells navigate at +46 to +50, and the only one that
+does not is food that is both far and thin, i.e. the real scarce world. **So the
+policy is not missing navigation. It has it, and correctly declines to use it one
+step at a time, in the one world where using it sustained is worth +173.** Every
+"the chain loses navigation" framing in this file is retired by that.
+
 Do not re-run: `exclusive_bushes` (`nav-compete`, flat), `move_step` (`nav-move`,
 flat), entropy, γ, contest perception, brain sharing, 3.3× budget (all flat, see
 the seven-intervention table); re-forking navigators into scarce worlds — both
@@ -103,44 +124,54 @@ cannot, decay either way), and at both widths (`spread-nav512`, faster decay);
 anti-gradient multiplies with k, and k=8 commits 6.4 units past a 2.0 gather
 radius). Do not chase `build` or `steal` uptake.
 
-### 1. Navigation — a +173 individual prize behind a ~20-step wall one-step improvement cannot see (start here)
+### 1. The policy HAS navigation and declines to use it — the remaining question is how to move a decision it makes correctly one step at a time (start here)
 
-`sim.steering --subset` settled whose counterfactual the headroom is: a lone
-navigator gains **+173.0 ± 19.0** (spread) / **+138.3 ± 23.0** (m4h), campers
-gain from its departure, and the per-navigator return *falls* as more agents
-navigate (173 → 141 across n=1…6). The barrier is now precisely named: every
-sub-~20-tick deviation toward far food is correctly priced ≤ 0 under the current
-policy, so nothing PPO's one-step improvement can propose ever touches the
-prize. What follows has to put **sustained excursions into the training data**,
-and the options are ordered by how little scripted competence they inject:
+This is no longer "why can't it learn to navigate". `spread-mix` holds a
+navigation controller worth 98.3% toward-food in the probe half and applies it
+in three of four zero-shot 2×2 cells; the only cell it withholds in is food that
+is far *and* thin — the scarce world — where a sustained crossing pays
+**+173.0 ± 19.0** and every one-step prefix is correctly priced ≤ 0. The
+competence, the world's incentive, the critic and the capacity are all in place.
 
-* **Interleave the probe distribution, do not sequence it.** Mix probe-world
-  episodes into scarce training so every batch contains states where crossings
-  *complete* and toward-moves are priced positive. This attacks the wall
-  indirectly (the policy carries crossing behaviour the scarce world can then
-  price on its own states) and injects no script. Needs `VecWorld` to run two
-  configs side by side — a real change. The open risk, from `spread-nav`: the
-  scarce world's gradient may simply out-vote the probe's in the same trunk.
-* **Temporally-extended exploration.** The desert is only invisible because no
-  trajectory ever crosses it; ~20-tick correlated exploration (an agent
-  occasionally holds a sampled direction, decaying over training) would put
-  completed crossings into the data without steering at anything. The PPO
-  wrinkle: held actions are off-policy for the ratio, so they must either come
-  from the policy's own sampled move (repeated, like `decision_interval` but
-  stochastic and per-agent) or be masked out of the loss and used only to feed
-  the critic. Design before running.
+**Interleaving is answered — do not re-run it at another fraction.** 50% left
+the scarce bands flat (+0.3 at 20+) while costing nothing in lifespan or in the
+probe leg. A smaller fraction cannot do more; the failure is not dilution.
+
+What is genuinely left, ordered by how little scripted competence it injects:
+
+* **Temporally-extended exploration** — the last lever that changes nothing
+  about the world or the reward. ~20-tick correlated exploration puts *completed*
+  crossings into the batch, which is the only thing a one-step operator has never
+  been offered in the scarce world. The PPO wrinkle to design around first: held
+  actions are off-policy for the ratio, so they must either repeat the policy's
+  own sampled move (like `decision_interval` but stochastic and per-agent) or be
+  excluded from the policy loss and used only to fit the critic. Worth doing
+  properly rather than quickly.
+* **Anneal the mix, and measure at every step.** `spread-mix` is a policy that
+  navigates when a trip looks worth it. Lower `mix.fraction` toward zero over
+  training and watch the scarce-world bands: if they ever rise before the probe
+  branch decays, the crossing behaviour transferred and the barrier is
+  surmountable from inside PPO. If the branch simply decays (the `spread-nav`
+  outcome), that is a clean negative and the one-step story is complete. Cheap —
+  the mechanism already exists and this is a schedule on one number.
 * **A travel option** — an appended action "walk toward the nearest visible
-  loaded bush for up to k ticks" — would cross the wall in one decision and is
-  exactly the shape of fix that worked before (the mask says what is reachable;
-  an option says how long to persist). The honest cost: it hands the policy a
-  scripted micro-controller, so what emerges is *when to travel*, not travel
-  itself. Decide whether that is still the project's question before building it.
+  loaded bush for up to k ticks" — crosses the wall in one decision, and is the
+  shape of fix that has worked here before (the mask says what is *reachable*; an
+  option says how long to *persist*). The honest cost, unchanged: it hands the
+  policy a scripted micro-controller, so what emerges is *when* to travel rather
+  than travel itself. Given that the policy already has the controller and only
+  the persistence is missing, this is now the most defensible version of the
+  idea — but decide whether it is still the project's question before building it.
 * **No reward-side lever can work.** The one-step pricing is *correct*; paying
   more does not lengthen the deviation PPO can evaluate. And **not shaping**:
   paying for approach would produce approach; rule 1.
 * **Not bigger frame-skip.** k=4 shortened the desert to 5–6 decisions and moved
   nothing; each decision is still priced by the same one-step rule, and k=16
   destroys near-field control (12.8 units per commitment, gather radius 2.0).
+* **Not another world shape.** Six have been tried (`nav_compete`, `nav_move`,
+  `nav_spread`, deep/thin × tight/spread in the 2×2). The 2×2 in particular says
+  a world where navigation *is* one-step-rational already gets navigation, for
+  free, from weights that were never trained in it.
 
 ### 2. Nights are NOT the gap — closed, do not reopen
 
@@ -552,6 +583,16 @@ python -m sim.navigation --checkpoint checkpoints/spread-nav512-2/latest.pt --ba
 # Steers only the first n agents and pairs each agent against itself unsteered.
 python -m sim.steering --checkpoint checkpoints/nav-spread2/latest.pt --subset 1,2,3,6
 python -m sim.steering --checkpoint checkpoints/m4h/latest.pt --subset 1,2,3,6
+
+# INTERLEAVING: half the envs run the probe geography in the scarce world's
+# observation/action clothing. The scarce bands stay flat while the SAME weights
+# navigate at 98.3% in the probe half -- the competence is present and withheld.
+python -m sim.train --config config/nav_spread_mix.yaml --run-name spread-mix --updates 200 \
+    --policy-mode individual --init-from checkpoints/m2/latest.pt
+python -m sim.navigation --checkpoint checkpoints/spread-mix/latest.pt --baselines
+# the control that says the probe leg still teaches navigation on its own (99.3%)
+python -m sim.train --config config/nav_probe_mix.yaml --run-name probe-mix-solo --updates 200 \
+    --policy-mode individual --init-from checkpoints/m2/latest.pt
 ```
 
 ## Compute budget — runs are longer than they need to be
@@ -1692,6 +1733,100 @@ current policy, and PPO climbs one step at a time. `nav-commit`'s k=4 does not
 escape this — it shortens the desert to 5–6 decisions, each still priced by the
 same one-step rule — which is why uniform frame-skip failed while a full-episode
 override pays.
+
+### `spread-mix` — interleaving: the SAME weights navigate at 98% and camp at chance, in one policy
+
+The lever the subset result pointed at: stop *sequencing* the worlds and put both
+in every batch, so a positive navigation gradient is present while the scarce
+world's negative one is applied. `cfg.mix` runs a share of the training envs on a
+second world config — one policy, both distributions, same update.
+
+**The blocker was real and is not the one this file warned about.** `nav_probe`
+extends `default.yaml` at 26 dims / 10 actions; the spread world is 29 / 11. One
+policy cannot train on both, so `config/nav_probe_mix.yaml` transplants the
+probe's *geography* onto m3_masked's interface — identical observation layout,
+action set, masking and agent count, with `exclusive_bushes`/`contest_bushes`
+turned off (neither adds a channel) so arriving always pays on the probe leg.
+`config/nav_spread_mix.yaml` is `nav_spread` plus `mix.fraction: 0.5`.
+
+**In the scarce world it changed nothing.** 200 updates from m2, bands over the
+floor measured in the spread world:
+
+| | 3–6 | 6–10 | 10–20 | 20+ | lifespan |
+|---|---|---|---|---|---|
+| `spread-mix` (50% interleaved) | +3.0 | +5.6 | +1.5 | **+0.3** | 431.7 |
+| `nav-spread` (same budget, no mix) | +2.5 | +4.4 | +0.8 | +1.1 | 424.8 |
+
+Note the confound resolving *favourably* and being irrelevant anyway: the mixed
+run sees **half** the scarce-world transitions per update and still matches on
+lifespan, so dilution is not hiding an effect. The bands are flat.
+
+**And then the same checkpoint measured in the other half, which is the result.**
+The layouts are identical by construction, so the same weights run in either
+world with no remapping:
+
+| `spread-mix`, one policy | 3–6 | 6–10 | 10–20 | **20+** |
+|---|---|---|---|---|
+| in the **spread** world, over floor | +3.6 | +3.6 | +2.9 | **+1.2** (51.5%) |
+| in the **probe** world, over floor | +22.9 | +36.0 | +45.1 | **+47.6 (98.3%)** |
+
+**The competence is not missing, not decayed, and not out of reach. It is
+present, at 98.3%, in the very weights that walk at chance in the scarce world.**
+Every framing this file has carried is now too weak: the chain does not "lose"
+navigation and the scarce world does not "erase" it — under interleaving the
+policy *keeps* navigation and *declines to apply it* where it would pay +173.
+The behaviour is conditional on what the observation says about the food, and
+both branches are locally rational: walk when arrival pays, camp when the
+one-step gradient says camp. That is exactly the policy `sim.advantage`
+described, now demonstrated to coexist with full navigation competence in one
+network.
+
+**What this rules out, and what is left.** Not representation (the same trunk
+holds both behaviours). Not capacity (already refuted, and now doubly). Not
+retention, and note the stronger form: the probe leg did not merely *preserve*
+navigation, it **taught** it — m2, which both lineages start from, sits at 72.8%
+in the 10–20 band and this policy reaches 96.7% there — and 200 updates of
+scarce-world gradient applied to the same weights did not take it back. Not
+perception, not the world's incentives, not coordination. What remains is the thing three measurements now agree on: **PPO
+will not take a ~20-step excursion whose every prefix its own accurate critic
+prices at ≤ 0, even holding the finished competence to do it.** The gap between
++1.2 and +47.6 in one network is the sharpest form of that statement in the
+file, and it is an argument about the improvement operator, not about the agent.
+
+**The control says the probe leg is doing what it should.** `probe-mix-solo`
+(the same world trained alone from m2, 200 updates) reaches 99.3% at 20+, so
+interleaving cost the probe leg essentially nothing — 98.3% against 99.3%. The
+policy learned **both branches near-optimally at once**, which is the part that
+makes the flat scarce-world bands a choice rather than a failure to fit.
+
+**And the 2×2 says what the switch is conditioned on: expected payoff of the
+trip, not a perceptual quirk.** The probe and spread worlds differ in two things
+at once — cluster geometry and bush depth — so they were crossed, zero-shot, on
+the `spread-mix` weights with no training:
+
+| | thin bushes (cap 2) | deep bushes (cap 12) |
+|---|---|---|
+| **1 tight cluster** | +47.4 (n=697) | +47.2 (n=681) |
+| **6 spread clusters** | **−0.6 (n=9434)** | +46.3 (n=99) |
+
+*(points over the floor at 20+, measured per cell; the deep cells have small n
+because a policy that walks to food and stays generates few far-field ticks —
+read them against their floors, which is what the numbers already are.)*
+
+**Three of the four cells navigate at +46 to +50. The one that does not is
+exactly the real scarce world.** Neither factor explains it alone: a tight
+cluster of *thin* bushes still gets +47.4, and *spread* deep bushes still get
++46.3. Only the conjunction — food that is both far away and individually
+meagre — turns navigation off. That is not a broken trigger; it is close to the
+correct *local* value judgement, and it is the same quantity `sim.advantage`
+measured: a trip is worth taking when arrival pays enough, and in the spread
+world one thin bush at the end of a 20-tick walk does not, one step at a time.
+
+So the policy has a working navigation controller and deploys it exactly where
+one-step reasoning endorses it. The single world where it withholds it is the
+world where `sim.steering --subset` says a *sustained* crossing pays
+**+173.0 ± 19.0**. Locally right, globally wrong, by the exact margin this
+investigation has been chasing.
 
 ### Declined theft was a counting artefact — and the steals it declines are worth nothing
 

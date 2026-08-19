@@ -1,0 +1,56 @@
+# INTERLEAVE the two distributions instead of sequencing them.
+#
+# One variable off nav_spread: half the training envs run the probe geography
+# (config/nav_probe_mix.yaml) instead of the spread one. Same policy, same
+# update, both worlds in every batch.
+#
+# WHY THIS AND NOT ANOTHER WORLD CHANGE. The barrier is now measured rather than
+# guessed at, and it is not in the world:
+#
+#   * sim.advantage: the one-step toward-food signal is +0.083 near food, ~zero
+#     at 6-20 units and NEGATIVE beyond 20 (delta -0.028 +- 0.007). 82% of
+#     far-field movers are camped at an empty bush, where leaving scores
+#     -0.045 +- 0.008. The critic prices that correctly under a wandering policy.
+#   * sim.steering --subset: a LONE navigator among five campers gains
+#     +173.0 +- 19.0, more than the +140.9 each gets when all six navigate, and
+#     the campers gain +19.5 too. So the prize is individual and uncontested.
+#
+# Both are right, and together they name the failure: every sub-~20-tick
+# excursion is correctly priced <= 0, the sustained one pays +173, and one-step
+# policy improvement cannot see a 20-step prize. Sequencing does not fix it --
+# `spread-nav` and `nav-refork` hand the world a navigator and watch it decay,
+# at 128 and at 512 width. What is left is to put states where crossings COMPLETE
+# into the same batch as the scarce world's states, so a positive navigation
+# gradient is present while the negative one is being applied.
+#
+# THE FRACTION. 0.5 (16 of 32 envs), deliberately generous: if half the batch
+# cannot hold navigation in place, a quarter will not either, and the cheap
+# failure is worth more than a cheap ambiguous success. The cost is named below.
+#
+# PREDICTIONS, written before the run.
+#
+#   * If interleaving works: the 6-10 and 10-20 bands clear the random floor
+#     MEASURED IN THE SPREAD WORLD by clearly more than nav-spread's +4.4 / +0.8
+#     at the same 200 updates, and lifespan is at least level with it. That is
+#     the result -- band improvement in the SCARCE world, measured on a scarce
+#     World, since the checkpoint carries the primary config.
+#   * If the bands stay flat, the scarce world's gradient out-votes the probe's
+#     in the same trunk even at 50%, and no distribution-level fix survives
+#     without changing the improvement operator itself. That would leave the
+#     travel option (a macro-action) as the only untried lever, at the cost of
+#     making "when to travel" the emergent question rather than travel itself.
+#   * THE CONFOUND, named rather than assumed: at 50% the run sees HALF the
+#     scarce-world transitions per update that nav-spread saw. So a lifespan
+#     deficit is expected and is not evidence against the hypothesis; a lifespan
+#     GAIN would be strong. The bands are the metric, not survival.
+#   * Only primary-world episodes are logged and evaluation builds a spread
+#     World, so nothing reported here is an average over the two worlds.
+#
+#   python -m sim.train --config config/nav_spread_mix.yaml --run-name spread-mix \
+#       --updates 200 --policy-mode individual --init-from checkpoints/m2/latest.pt
+#   python -m sim.navigation --checkpoint checkpoints/spread-mix/latest.pt --baselines
+extends: nav_spread.yaml
+
+mix:
+  config: config/nav_probe_mix.yaml
+  fraction: 0.5

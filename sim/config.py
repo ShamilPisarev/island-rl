@@ -176,6 +176,33 @@ class ExchangeConfig:
 
 
 @dataclass(frozen=True)
+class MixConfig:
+    """Train on TWO worlds at once: a share of the envs run a second config.
+
+    The lever the subset-steering result points at. Navigation fails here because
+    every sub-~20-tick deviation toward far food is correctly priced <= 0 under a
+    wandering policy, so one-step improvement never proposes the excursion that
+    pays +173. Sequencing worlds does not fix it -- `spread-nav` and `nav-refork`
+    both show the scarce world erasing a navigator it was handed. Interleaving
+    puts states where crossings COMPLETE into every batch instead, so a positive
+    navigation gradient is present in the same update as the scarce world's
+    negative one.
+
+    Both configs must agree on the observation layout, the action set and the
+    agent count -- one policy trains on both, and a mismatch would feed trained
+    weights the wrong features. VecWorld raises rather than reshaping anything.
+
+    Only the PRIMARY config's episodes reach the metrics log, and evaluation
+    builds a primary World, so every reported number stays a statement about the
+    world the run is named for. Blending two worlds' lifespans into one mean
+    would describe neither (rule 6).
+    """
+
+    config: str | None = None   # path to the second world config
+    fraction: float = 0.0       # share of envs running it
+
+
+@dataclass(frozen=True)
 class ObservationConfig:
     k_bushes: int = 4
     k_agents: int = 3
@@ -259,6 +286,7 @@ class Config:
     competition: CompetitionConfig = field(default_factory=CompetitionConfig)
     construction: ConstructionConfig = field(default_factory=ConstructionConfig)
     exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
+    mix: MixConfig = field(default_factory=MixConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
@@ -312,6 +340,7 @@ _SECTIONS: dict[str, type] = {
     "competition": CompetitionConfig,
     "construction": ConstructionConfig,
     "exchange": ExchangeConfig,
+    "mix": MixConfig,
     "observation": ObservationConfig,
     "reward": RewardConfig,
     "policy": PolicyConfig,
