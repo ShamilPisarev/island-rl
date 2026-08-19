@@ -25,51 +25,86 @@ rather than smoothing it over.
 
 ## Plan for the next session
 
-Written 2026-08-19, at the end of the session that closed M4 and retested M5.
-Everything below is ordered by what it would teach, and each item says what has
+Written 2026-08-19, at the end of the session that ran `nav-move` and closed the
+navigation hypothesis. Ordered by what it would teach; each item says what has
 already been ruled out so nothing gets re-run.
 
-### 1. The navigation collapse — the one real open problem (start here)
+### 0. What last session settled, so it is not reopened
 
-`m1` navigates (+12 to +27 points over its own random floor at 3–20 units).
-`m3-masked` and `m4h` do not (+9 at best, +0 beyond 20 units). Measured cause:
-in the scarce world a berry lasts 25.7 ticks and takes 22.3 ticks to reach, a
-ratio of **1.15×** against **22×** in the M1 world. Navigation stops being
-learnable when the target expires in about the time needed to reach it.
+**The navigation collapse is real and none of the explanations for it are.**
+`nav-move` (`move_step` 0.8 → 1.6) moved the berry-lifetime ÷ travel-time ratio
+from 1.22× to **2.96×**, measured, with the endogenous confound resolving
+favourably — and navigation stayed flat (+6 / +11 / +3 / +1 over the random floor
+in that world, against m3-masked's −1 / +9 / +6 / +0). Perception is acquitted
+below 20 units: the target is in the observation 94–100% of the time, the ±1 clip
+provably cannot bite under 20 units, and the toward-food share is flat anyway.
 
-**The untried lever is `world.move_step`.** It changes travel time and touches
-nothing else in the food economy. 0.8 → 1.6 takes the ratio to ~2.3×.
+**And the framing this file carried was wrong.** Navigation is *not* "what the gap
+to the scripted references actually is": the paired gap to the forager halved
+(−32.7 ± 10.8 → −15.4 ± 10.0 ticks) with navigation unchanged, because faster
+travel helps a wanderer more than it helps something that already walks straight.
+Whatever the residual is, the toward-food share does not measure it. Full write-up
+in the M3 section under "`nav-move` — the ratio moved, navigation did not".
+
+Do not re-run: `exclusive_bushes` (`nav-compete`, flat), `move_step` (`nav-move`,
+flat), entropy, γ, contest perception, brain sharing, 3.3× budget (all flat, see
+the seven-intervention table).
+
+### 1. Declined theft — the largest measured headroom (start here)
+
+`sim.opportunity` on `m3-masked`: `steal` is legal on 11.6% of living ticks and
+taken on **46.4%** of them; `gather` is legal on 1.3% and taken on **98.6%**.
+Gather uptake is saturated, so foraging has nothing left to convert — but half of
+every legal steal is refused, and the scripted thief that takes them is
+**+50.8 ± 12.2** ticks ahead on 40 paired islands, three times the forager's edge.
 
 ```bash
-# nav_move.yaml does not exist yet: m3_masked.yaml + world.move_step 1.6
-python -m sim.train --config config/nav_move.yaml --run-name nav-move \
-    --updates 200 --policy-mode individual --init-from checkpoints/m2/latest.pt
-python -m sim.navigation --checkpoint checkpoints/nav-move/latest.pt --baselines
+python -m sim.opportunity --checkpoint checkpoints/m3-masked/latest.pt
 ```
 
-Read `sim/navigation.py` output, bucketed, against the **random floor measured in
-that same world** (`--baselines`). Success = the 6–10 and 10–20 bands clear their
-floor by more than m3-masked's +9/+6, ideally toward m1's +17/+27.
+What is *not* yet known, and is one cheap run each: whether the refusal is
+sampling (compare mean P(steal) on legal ticks against uptake, and argmax play —
+this is exactly the m4h `build` diagnostic, which found sampling and found argmax
+made things worse), or whether stolen berries genuinely do not help *this* policy
+because it is already fed at the moment the mask says yes. Measure hunger at the
+declined steals before choosing a lever.
 
-Already ruled out, do not repeat: `exclusive_bushes` is not the cause
-(`nav-compete`, flat). Entropy, γ, contest perception, brain sharing and 3.3×
-budget were all tried in M3 and were all flat — see the seven-intervention table.
-
-**If `move_step` works,** the interesting follow-up is whether M3–M5 can be
-re-derived on top of a policy that still navigates, i.e. re-fork the chain from a
-navigating checkpoint and see whether the scripted-reference gap closes
-everywhere. That is the biggest available result in the project.
+Note this is the same shape as item 2 below, one milestone earlier. If a single
+explanation covers `steal` at 46% and `build` at 29%, that is the biggest
+available result in the project — both are "the mask says yes and the policy
+shrugs".
 
 ### 2. M4 residual: `build` uptake
 
 `build` is legal on 1.5% of ticks and taken on 28.6% of them, down from 48% in
 `m4g` — uptake *fell* as opportunity rose. Measured: it is sampling, not
 preference (mean P(build) 30.0%, argmax 55.7%, and uptake ≈ P). Argmax play is
-**worse** overall (470.4 vs 484.9, steals 87 → 243), so determinism is not the fix.
-This is probably the same imprecise-movement problem as item 1 and may dissolve if
-item 1 lands. Do not spend a run on it first.
+**worse** overall (470.4 vs 484.9, steals 87 → 243), so determinism is not the
+fix. Reproduce the numbers with `python -m sim.opportunity --checkpoint
+checkpoints/m4h/latest.pt`. The note that this "may dissolve if the navigation
+item lands" is withdrawn — the navigation item did not land, and this is not
+waiting on it.
 
-### 3. Exchange, if you want to push M5 further
+### 3. Perception beyond 20 units, if you want the navigation thread anyway
+
+The one place perception *is* deficient: at 20+ units the target is absent from
+the observation 31% of the time and its direction is clipped on 90% of ticks
+(15.9% on both axes, which loses direction to a diagonal). Two levers, and the
+cheap one is safe:
+
+* **`observation.distance_scale` 20 → 40** changes no dimension, so an existing
+  checkpoint forks straight into it. It also halves near-field resolution, which
+  is the reason it was set to 20 in the first place — read the *near* bands as
+  carefully as the far ones.
+* **`observation.k_bushes` 4 → 6** is a trap. It inserts columns in the *middle*
+  of the observation vector, so `grow_policy` cannot fork an M2/M3 checkpoint into
+  it without misaligning every later channel. Do not use `--init-from` across that
+  change without fixing the alignment first.
+
+Expect little from either: the 3–20 bands, where the collapse lives, have neither
+problem.
+
+### 4. Exchange, if you want to push M5 further
 
 `m5b` retested exchange on the working economy: giving stopped being selected
 against and the flow turned directional (reciprocity 0.85 → 0.65), but it still
@@ -83,7 +118,7 @@ shortened, not its deliveries made fungible.
 ### Housekeeping
 
 * **Back up `checkpoints/` before switching machines.** `./backup_checkpoints.sh <dest>`
-  copies the 34 `latest.pt` files (53MB) plus `runs/`. Both directories are
+  copies the 37 `latest.pt` files (~58MB) plus `runs/`. Both directories are
   gitignored and the chain is unlearnable from scratch, so this is the one piece
   of state git will not save for you.
 * A GPU will not help: measured, the network is **7.3%** of per-tick cost and the
@@ -115,9 +150,9 @@ Where each milestone landed, in one line each:
 
 In rough order of how much they would teach:
 
-1. **The milestone chain LOSES navigation, and that is what the gap to the
-   scripted references actually is.** Measured, toward-food share by current
-   distance (50% = a coin flip):
+1. **The milestone chain LOSES navigation — but that is NOT the gap to the
+   scripted references, and every explanation for it has now failed.** Measured,
+   toward-food share by current distance (50% = a coin flip):
 
    | | 0–3 | 3–6 | 6–10 | 10–20 | 20+ |
    |---|---|---|---|---|---|
@@ -139,15 +174,23 @@ In rough order of how much they would teach:
    fourth site, fungible deliveries — works by bringing things TO an agent whose
    navigation has decayed to chance. The seven M3 interventions all failed
    because none of them touched navigation.
-   **Why, measured:** *not* competition. `nav-compete` turns `exclusive_bushes`
-   off and changes nothing (53.0% / 54.4% / 57.0% against m3-masked's 50.8% /
-   55.8% / 53.6%). The cause is that **the target does not survive the walk**: in
-   the scarce world a berry lasts 25.7 ticks and takes 22.3 ticks to reach — a
-   ratio of **1.15×**, against **22×** in the M1 world. Navigation stops being
-   learnable when a target's expected lifetime is comparable to the time needed
-   to reach it, and unlearning it is then correct.
-   **The untried lever is `world.move_step`**, which changes travel time without
-   touching the food economy: 0.8 → 1.6 takes the ratio to ~2.3×.
+   **Why: four explanations tried, four dead.** *Not* competition —
+   `nav-compete` turns `exclusive_bushes` off and changes nothing (53.0% / 54.4% /
+   57.0% against m3-masked's 50.8% / 55.8% / 53.6%). *Not* the target expiring
+   during the walk, which was the leading candidate and was quantitative: a berry
+   lasts ~27 ticks and takes ~22 to reach, a ratio of 1.22× against 22× in the M1
+   world. `nav-move` doubled `move_step` and took the measured ratio to **2.96×**;
+   navigation stayed flat (+6 / +11 / +3 / +1 over that world's floor). *Not*
+   perception below 20 units — the target is in the observation 94–100% of the
+   time there and the ±1 offset clip cannot bite under 20 units by arithmetic, yet
+   the bands are flat with the target plainly visible. *Not* entropy, γ, contest
+   perception, brain sharing or budget (the seven-intervention table).
+   **The premise was also wrong.** The paired gap to the forager halved
+   (−32.7 ± 10.8 → −15.4 ± 10.0 ticks) between the slow and fast worlds with
+   navigation unchanged, so the toward-food share is not measuring the gap. What
+   the numbers point at instead is **declined theft**: `steal` legal on 11.6% of
+   ticks and taken on 46.4%, against a scripted thief that takes them and is
+   +50.8 ± 12.2 ahead. See plan item 1.
 
    *Metric warning, learned the hard way.* An aggregate toward-food share is
    **confounded and must not be used** — an agent parked on its target scores
@@ -211,7 +254,8 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   **2.11× random** (471.6), theft emerging *unpaid* at 115 steals/ep, zero doomed
   actions — still honestly below the scripted forager (495.5). Territoriality
   appeared as inequality rather than as spatial partitioning. Canonical
-  checkpoint: `checkpoints/m3-masked`.
+  checkpoint: `checkpoints/m3-masked` — `nav-move` (faster travel) is a negative
+  and does not replace it.
 - M4: wood/stone/shelter/night mechanics, day/night hazard, replay schema v2.
   Construction emerged and shelters now complete — **1.10 an episode against the
   scripted builder's 2.80**, with every construction shaping term at zero. The
@@ -231,7 +275,7 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   original verdict was reached where nothing was worth trading: giving stops being
   selected against and the flow turns directional, but it still buys no survival.
   Best checkpoint: `checkpoints/m5b` (497.5 lifespan).
-- `pytest` passes (242 tests).
+- `pytest` passes (247 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -298,6 +342,19 @@ python -m sim.exchange --checkpoint checkpoints/m5b/latest.pt
 python -m sim.train --config config/nav_probe.yaml --run-name nav-probe --updates 200
 python -m sim.train --config config/nav_compete.yaml --run-name nav-compete \
     --updates 200 --policy-mode individual --init-from checkpoints/m2/latest.pt
+
+# faster travel: the ratio hypothesis, a NEGATIVE result. The two `--updates 0`
+# runs are the controls -- they retrain nothing and exist only so the checkpoint
+# carries the new world, which is how every zero-shot control here is done.
+python -m sim.train --config config/nav_move.yaml --run-name nav-move \
+    --updates 200 --policy-mode individual --init-from checkpoints/m2/latest.pt
+python -m sim.train --config config/nav_move.yaml --run-name nav-move-zero \
+    --updates 0 --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
+python -m sim.train --config config/nav_move.yaml --run-name nav-move-m2zero \
+    --updates 0 --policy-mode individual --init-from checkpoints/m2/latest.pt
+python -m sim.navigation --checkpoint checkpoints/nav-move/latest.pt --baselines
+python -m sim.opportunity --checkpoint checkpoints/nav-move/latest.pt
+python -m sim.evaluate --checkpoint checkpoints/nav-move/latest.pt --baselines --episodes 40
 ```
 
 ## Compute budget — runs are longer than they need to be
@@ -348,6 +405,18 @@ did not list:
   could be built and verified before a policy existed (brief §5.2).
 - `sim/divergence.py` + `viewer/divergence.html` — the M2 behavioural-divergence
   view.
+- `sim/navigation.py` — the distance-bucketed toward-target measurement, plus a
+  "could the policy see the target at all" block (target present in the
+  observation, offset clipping, and the toward-share split by visibility).
+- `sim/opportunity.py` — opportunity versus uptake per action, read off the action
+  mask. It exists because "the policy rarely does X" has meant two unrelated
+  things here: X almost never legal (`m4f`'s `chop`, a world problem) and X legal
+  and declined (`m4h`'s `build`, a policy problem).
+
+**`sim.evaluate` prints paired per-island differences** whenever a learned policy
+runs alongside baselines. Same seed block for every policy, so island noise
+cancels; it costs no extra rollouts. Read those lines rather than the ± column —
+see rule 7.
 
 **Checkpoints are scoped by run** (`checkpoints/<run_name>/latest.pt`). They were
 flat until M2, at which point a run that forks from `checkpoints/latest.pt`
@@ -875,13 +944,127 @@ the berry is already eaten when you get there.
 
 That ratio is the lever, and it can be moved without touching the food economy at
 all: `world.move_step` changes travel time and nothing else. Doubling it to 1.6
-takes the M3 ratio from 1.15× to ~2.3×.
+takes the M3 ratio from 1.15× to ~2.3×. **It was tried as `nav-move`, the ratio
+moved as predicted, and navigation did not — see the next section.**
 
 **The metric warning is part of the finding** — see rule 6. Briefly: the first
 version of this measured the toward-food share aggregated over all distances,
 scored m1 at 51.3%, and concluded the project had never learned to navigate.
 That was sample-weighting (17,347 near-field ticks against 199 far ones), not a
 result. Bucket by distance, always, and print the counts.
+
+### `nav-move` — the ratio moved, navigation did not, and the premise was wrong
+
+`config/nav_move.yaml` is `m3_masked` with `world.move_step` 0.8 → 1.6 and nothing
+else, trained 200 updates from the M2 checkpoint. 1.6 rather than more because
+`gather_radius` is 2.0 and a step above it lets an agent straddle a bush without
+ever landing in range — that would have added a movement-precision failure on top
+of the thing being tested.
+
+**The lever worked mechanically.** Measured in both worlds with one estimator
+(10 episodes, learned policy driving; berries still on a bush at episode end are
+censored out, equally in both):
+
+| | m3-masked world (0.8) | **nav-move world (1.6)** |
+|---|---|---|
+| bushes holding a berry | 2.58 of 6 | 2.42 of 6 |
+| distance to the nearest one | 18.0 | 18.4 |
+| travel time | 22.5 ticks | **11.5 ticks** |
+| a berry survives | 27.5 ticks | **34.0 ticks** |
+| **lifetime ÷ travel time** | **1.22×** | **2.96×** |
+
+Note the pre-registered confound resolving in the *favourable* direction: berry
+lifetime is endogenous and could have fallen along with travel time, leaving the
+ratio flat. It rose, so the ratio landed at 2.96× against the config's
+pre-registered ~2.3×.
+
+**Navigation did not move.** Over the random floor measured in the same world:
+
+| toward-food, over floor | 3–6 | 6–10 | 10–20 | 20+ |
+|---|---|---|---|---|
+| m3-masked (0.8) | −1 | +9 | +6 | +0 |
+| **nav-move (1.6)** | **+6** | **+11** | **+3** | **+1** |
+| m1, for scale | +12 | +17 | +27 | (+40) |
+
+**So the lifetime/travel ratio is not what stops navigation being learned.** The
+hypothesis was quantitative, the lever moved it 2.4× (1.22× → 2.96×), and the
+measurement it predicted is flat. That retires the leading explanation for the
+collapse, as `nav-compete` retired competition — and it does so with the
+confound measured rather than assumed.
+
+**And training added nothing on top of the world change.** Same world, 40 paired
+islands, `--baselines`:
+
+| in the nav-move world | lifespan | vs the forager, paired |
+|---|---|---|
+| M2 weights, zero-shot (what training starts from) | 469.0 | −41.0 ± 9.4 (10/40) |
+| **m3-masked weights, zero-shot, no training at all** | **494.6** | **−15.4 ± 10.0 (15/40)** |
+| **nav-move, 200 updates from M2** | **491.0** | **−19.0 ± 10.1 (16/40)** |
+| scripted forager | 510.0 | — |
+| scripted thief | 541.9 | −50.8 ± 12.2 (13/40) |
+| random actions | 229.5 | — |
+
+The unchanged M3 policy scores 494.6 in the faster world with zero training;
+200 updates from M2 lands at 491.0. Rule 4 again, and the same shape as `m4f` —
+the world did all the work — except here the metric it was aimed at never moved.
+
+**The premise of the open problem is what actually broke.** The handoff said the
+chain's lost navigation "is what the gap to the scripted references actually is".
+It is not: in the slow world the gap to the forager is −32.7 ± 10.8 paired, in the
+fast world it is −15.4 ± 10.0, and **navigation is flat across that halving.**
+Faster travel helps a policy that wanders more than it helps one that already
+walks straight to food, so half the gap closed without a point of navigation being
+recovered. Whatever the residual gap is, it is not measured by the toward-food
+share.
+
+**Perception is acquitted below 20 units, and there is a correction.**
+`sim.navigation` now also reports whether the bush it scores against was
+*perceivable*: the observation carries the `k_bushes` **nearest** bushes whether or
+not they hold berries, so in a scarce world the nearest berry-bearing bush can
+rank outside that set and be absent entirely. nav-move, learned policy:
+
+| | 3–6 | 6–10 | 10–20 | 20+ |
+|---|---|---|---|---|
+| target present in the observation | 99.8% | 93.6% | 96.8% | **68.8%** |
+| offset saturates the ±1 clip, one axis | 0% | 0% | 0% | **90.4%** |
+| ...both axes (direction lost to a diagonal) | 0% | 0% | 0% | **15.9%** |
+| toward-food **when the target is visible** | 54.3% | 58.1% | 52.3% | 50.8% |
+
+Below 20 units the target is visible almost always, the clip cannot bite at all
+(|dx| ≥ 20 requires d ≥ 20, by arithmetic), and the policy is *still* flat — so
+neither perception channel explains the bands where the collapse lives. Beyond 20
+units there is a real deficit: a third of the time the target is not in the
+observation, and 90% of the time its direction is degraded by the clip. `m4h` is
+worse on both counts (45.7% visible at 20+, with eight bushes competing for the
+same four slots), which is worth knowing before anyone reads its 20+ band as a
+policy failure.
+
+**The correction.** The seven-intervention table above retires distance clipping
+on "0.3% of nearest-bush offsets saturate on one axis and 0.0% on both". That
+measurement was of the **nearest bush**, not the nearest **berry-bearing** bush —
+in the M1 world those are the same thing (19.8 of 20 loaded) and in the scarce
+world they are not (2.6 of 6). For the target that matters, at 20+ units, it is
+90.4% and 15.9%. The verdict for the 3–20 bands stands, because clipping provably
+cannot occur there; what is retracted is the claim that clipping was measured and
+found harmless *everywhere*.
+
+**What the numbers now point at instead: declined theft.** `sim.opportunity`
+reports, per action, the share of living ticks on which the mask says it is legal
+and the share of those on which the policy takes it (10 episodes):
+
+| | legal on | taken on | |
+|---|---|---|---|
+| `gather`, nav-move | 1.4% of ticks | **99.2%** | nothing left to convert |
+| `gather`, m3-masked | 1.3% | 98.6% | |
+| `steal`, nav-move | 10.7% | **40.1%** | 1,843 legal steals declined per 10 eps |
+| `steal`, m3-masked | 11.6% | 46.4% | |
+
+**Gather uptake is saturated.** The policy takes essentially every gather the
+world offers it, so its 34 berries are opportunity-bound, not choice-bound, and
+the only way up through foraging is more legal ticks. Theft is the opposite: 60%
+of legal steals are declined, and the scripted thief — which takes them — is
+**+50.8 ± 12.2** ahead on the same islands, three times the forager's edge. The
+largest measured headroom in the M3 world is theft uptake, not navigation.
 
 ### The fix that worked: action masking
 
@@ -914,12 +1097,16 @@ Stacking the contested-bush channel and entropy annealing *on top of* masking
 is the canonical M3 checkpoint.**
 
 **The honest residual: 471.6 still trails the scripted forager (495.5) and thief
-(553.3).** The remaining gap is not doomed actions (there are none left), not
-entropy, not budget, not perception of any mechanic we could name. Lifespan
-spread on the fixed map is 307–550: one agent roves at a 98% hit rate while
-others get excluded and starve, so the shortfall lives in the crowding/exclusion
-dynamics. Left as the open problem it is; masking is where principled
-single-change fixes stopped paying.
+(553.3).** On 40 paired islands that is −32.7 ± 10.8 against the forager and
+−87.0 ± 11.3 against the thief. The gap is not doomed actions (there are none
+left), not entropy, not budget, not perception of any mechanic we could name, and
+— since `nav-move` — not navigation either. Lifespan spread on the fixed map is
+307–550: one agent roves at a 98% hit rate while others get excluded and starve,
+so part of the shortfall lives in the crowding/exclusion dynamics. The one piece
+of it that is now *measured* rather than guessed at is theft uptake: `steal` is
+legal on 11.6% of ticks and taken on 46.4%, and the thief that takes them is 87
+ticks ahead. Masking is where principled single-change fixes stopped paying; see
+plan item 1 for where to look next.
 
 ## Milestone 4 — multi-resource + construction
 
@@ -1588,7 +1775,7 @@ run's CSV and read as blanks forever. Cost me a run.
 **`contests_lost ≈ 0` is behavioural, not a broken code path.** It is tested
 directly. See above for why the same-tick rule cannot fire in a scarce world.
 
-## The six rules that survived five milestones
+## The seven rules that survived five milestones
 
 Written down because each one was learned the expensive way, and because every
 result in this file that ignored one of them turned out to be wrong.
@@ -1651,3 +1838,13 @@ result in this file that ignored one of them turned out to be wrong.
    plainly reached the food (mean distance 3.8 against random's 24.0) while
    "scoring" 54.8% toward it. **When two of your numbers cannot both be true,
    stop and fix the metric.**
+7. **Compare policies island by island, not mean against mean.** Island-to-island
+   variation here is ±60 ticks, so a 20-episode mean carries ~13 ticks of unpaired
+   standard error — wider than most effects in this file. On 20 episodes `nav-move`
+   scored 507.0 against the scripted forager's 506.6 and read as a dead heat, and
+   the first draft of that write-up said so. On 40 *paired* islands it is
+   **−19.0 ± 10.1, better on 16 of 40** — behind, not level. Nothing about the
+   policy changed between those two sentences; the seed block did.
+   `sim.evaluate` now prints the paired differences by default, at no extra
+   compute, and the win count next to the mean is there so one lucky island cannot
+   read as a general result.

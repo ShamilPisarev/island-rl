@@ -65,10 +65,25 @@ def _band(d: float) -> int | None:
 
 def measure(cfg: Config, act_fn: ActFn, episodes: int = 10, seed: int = 10000
             ) -> dict[str, list[dict[str, float]]]:
-    """Toward-target share per distance band, for food and (if built) shelter."""
+    """Toward-target share per distance band, for food and (if built) shelter.
+
+    Also, per band, whether the food target was *perceivable* at all -- see
+    ``vision`` in the returned dict and the block main() prints from it.
+    """
     step = cfg.world.move_step
+    k_bushes = cfg.observation.k_bushes
+    scale = cfg.observation.distance_scale
     hit = {"food": np.zeros(len(BANDS)), "shelter": np.zeros(len(BANDS))}
     tot = {"food": np.zeros(len(BANDS)), "shelter": np.zeros(len(BANDS))}
+    # Vision bookkeeping, food only: was the nearest berry-bearing bush among the
+    # k_bushes NEAREST bushes (the ones the observation actually carries), and did
+    # its offset saturate the +-1 clip. Split the toward-share by visibility so a
+    # flat band can be attributed to perception or acquitted of it.
+    seen = np.zeros(len(BANDS))
+    sat1 = np.zeros(len(BANDS))
+    sat2 = np.zeros(len(BANDS))
+    vis_hit = np.zeros((2, len(BANDS)))
+    vis_tot = np.zeros((2, len(BANDS)))
 
     for e in range(episodes):
         w = World(cfg, seed=seed + e)
@@ -104,6 +119,22 @@ def measure(cfg: Config, act_fn: ActFn, episodes: int = 10, seed: int = 10000
                     if k is not None:
                         tot[key][k] += 1
                         hit[key][k] += got_closer
+                        if key == "food":
+                            d_all = np.hypot(w.bush_x - x, w.bush_z - z)
+                            tgt = int(np.flatnonzero(loaded)[np.argmin(d_all[loaded])])
+                            # Rank among ALL bushes, empty ones included: the
+                            # observation carries the k nearest bushes whether or
+                            # not they hold anything, so an empty bush standing
+                            # nearby costs a slot the target might have used.
+                            rank = int((d_all < d_all[tgt]).sum())
+                            visible = rank < k_bushes
+                            dx = abs(float(w.bush_x[tgt] - x))
+                            dz = abs(float(w.bush_z[tgt] - z))
+                            seen[k] += visible
+                            sat1[k] += (dx >= scale) or (dz >= scale)
+                            sat2[k] += (dx >= scale) and (dz >= scale)
+                            vis_tot[int(visible)][k] += 1
+                            vis_hit[int(visible)][k] += got_closer
 
             result = w.step(actions)
             obs = result.obs
@@ -117,6 +148,20 @@ def measure(cfg: Config, act_fn: ActFn, episodes: int = 10, seed: int = 10000
              "toward": float(hit[key][k] / tot[key][k]) if tot[key][k] else float("nan")}
             for k in range(len(BANDS))
         ]
+
+    def _share(num: np.ndarray, den: np.ndarray, k: int) -> float:
+        return float(num[k] / den[k]) if den[k] else float("nan")
+
+    out["vision"] = [
+        {"lo": BANDS[k][0], "hi": BANDS[k][1], "n": int(tot["food"][k]),
+         "visible": _share(seen, tot["food"], k),
+         "sat_one_axis": _share(sat1, tot["food"], k),
+         "sat_both_axes": _share(sat2, tot["food"], k),
+         "n_visible": int(vis_tot[1][k]), "n_unseen": int(vis_tot[0][k]),
+         "toward_visible": _share(vis_hit[1], vis_tot[1], k),
+         "toward_unseen": _share(vis_hit[0], vis_tot[0], k)}
+        for k in range(len(BANDS))
+    ]
     return out
 
 
@@ -168,6 +213,26 @@ def main() -> None:
         print("\n  --- toward SHELTER, at night ---")
         for k, v in rows.items():
             print(_row(label[k], v["shelter"]))
+
+    # Could the policy SEE the bush it is being scored against? The observation
+    # carries the k nearest bushes whether or not they hold berries, so in a
+    # scarce world the nearest berry-bearing one can rank outside that set and be
+    # absent altogether -- and the +-1 offset clip costs resolution beyond
+    # distance_scale. A flat band with a visible, unclipped target is a flat band
+    # that perception does not explain.
+    print(f"\n  --- can the learned policy SEE the food? (k_bushes="
+          f"{cfg.observation.k_bushes}, distance_scale={cfg.observation.distance_scale:g}) ---")
+    for b in rows["learned"]["vision"]:
+        if b["n"] == 0:
+            continue
+        span = f"{b['lo']:.0f}+" if b["hi"] > 1e8 else f"{b['lo']:.0f}-{b['hi']:.0f}"
+        vis = "  --  " if b["n_visible"] == 0 else f"{b['toward_visible']:5.1%}"
+        uns = "  --  " if b["n_unseen"] == 0 else f"{b['toward_unseen']:5.1%}"
+        print(f"  {span:>6}: target in the observation {b['visible']:5.1%}   "
+              f"offset clipped {b['sat_one_axis']:5.1%} one axis / "
+              f"{b['sat_both_axes']:5.1%} both   "
+              f"toward when seen {vis} (n={b['n_visible']:>5}) / "
+              f"unseen {uns} (n={b['n_unseen']:>5})")
 
     out = Path(args.report)
     out.parent.mkdir(parents=True, exist_ok=True)

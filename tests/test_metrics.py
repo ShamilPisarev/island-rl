@@ -79,3 +79,38 @@ def test_eval_result_line_is_one_row(cfg):
     assert r.survival_rate == pytest.approx(500.0 / cfg.world.max_ticks)
     assert "\n" not in r.line()
     assert "test" in r.line()
+
+
+def _episodes(lifespans: list[float]) -> list[EpisodeStats]:
+    return [EpisodeStats(ticks=600, mean_lifespan=v) for v in lifespans]
+
+
+def test_paired_lines_difference_is_per_island_not_of_the_means():
+    """The whole point of pairing: island noise cancels, so a consistent small
+    edge is visible even when the two spreads overlap completely.
+
+    Both policies below range over 200 ticks and their means differ by 10, but
+    the learned one is better on every island by exactly 10 -- unpaired that is
+    invisible, paired it has zero standard error.
+    """
+    from sim.evaluate import paired_lines
+
+    islands = [300.0, 400.0, 500.0]
+    runs = [("scripted forager", _episodes(islands)),
+            ("learned policy", _episodes([v + 10 for v in islands]))]
+    lines = paired_lines(runs, "learned policy")
+    body = "\n".join(lines)
+    assert "3 islands" in lines[0]
+    assert "+10.0" in body and "3/3 islands" in body
+    assert "scripted forager" in body and "learned policy" not in body[body.index("vs"):]
+
+
+def test_paired_lines_counts_wins_not_just_the_mean():
+    """One huge island must not read as a general win."""
+    from sim.evaluate import paired_lines
+
+    runs = [("scripted forager", _episodes([500.0, 500.0, 500.0, 500.0])),
+            ("learned policy", _episodes([490.0, 490.0, 490.0, 800.0]))]
+    body = "\n".join(paired_lines(runs, "learned policy"))
+    assert "+67.5" in body        # the mean says a large win
+    assert "1/4 islands" in body  # the win count says it was one island

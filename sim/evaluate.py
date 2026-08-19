@@ -117,33 +117,60 @@ def evaluate(cfg: Config, act_fn: ActFn, episodes: int, seed: int, label: str) -
                                     cfg.world.max_ticks)
 
 
+def baseline_kinds(cfg: Config) -> list[tuple[str, str]]:
+    """The scripted references that mean anything in this world, in reading order.
+
+    Factored out of ``baselines`` so a caller that wants the per-episode stats
+    (the paired comparison in ``main``) builds exactly the same reference set
+    without a second copy of these conditions.
+    """
+    kinds = [("random", "random actions"), ("greedy", "scripted forager")]
+    if cfg.competition.enable_steal and cfg.competition.observe_neighbour_food:
+        kinds.append(("thief", "scripted thief"))
+    if cfg.construction.enabled:
+        kinds.append(("builder", "scripted builder"))
+    # The trader is the builder plus gifts, so the pair reads as "what does
+    # exchange add?" rather than as a single unanchored number.
+    if cfg.exchange.enabled and cfg.exchange.observe_neighbour_materials:
+        kinds.append(("trader", "scripted trader"))
+    return kinds
+
+
 def baselines(cfg: Config, episodes: int, seed: int) -> list[EvalResult]:
-    """Random floor and scripted reference, on the same islands as everything else.
+    """Random floor and scripted references, on the same islands as everything else.
 
     When stealing is enabled the opportunistic thief joins them, so the learned
     policy can be read against both an honest and a dishonest reference.
     """
-    results = [
-        evaluate(cfg, make_act_fn("random", cfg, None, seed), episodes, seed, "random actions"),
-        evaluate(cfg, make_act_fn("greedy", cfg, None, seed), episodes, seed, "scripted forager"),
-    ]
-    if cfg.competition.enable_steal and cfg.competition.observe_neighbour_food:
-        results.append(
-            evaluate(cfg, make_act_fn("thief", cfg, None, seed), episodes, seed, "scripted thief")
-        )
-    if cfg.construction.enabled:
-        results.append(
-            evaluate(cfg, make_act_fn("builder", cfg, None, seed), episodes, seed,
-                     "scripted builder")
-        )
-    # The trader is the builder plus gifts, so the pair reads as "what does
-    # exchange add?" rather than as a single unanchored number.
-    if cfg.exchange.enabled and cfg.exchange.observe_neighbour_materials:
-        results.append(
-            evaluate(cfg, make_act_fn("trader", cfg, None, seed), episodes, seed,
-                     "scripted trader")
-        )
-    return results
+    return [evaluate(cfg, make_act_fn(kind, cfg, None, seed), episodes, seed, label)
+            for kind, label in baseline_kinds(cfg)]
+
+
+def paired_lines(runs: list[tuple[str, list[EpisodeStats]]], learned: str) -> list[str]:
+    """Per-island differences between the learned policy and each reference.
+
+    Every policy is run over the same seed block, so the islands match up and the
+    difference can be taken per island. That matters more here than it looks:
+    island-to-island variation is +-60 ticks or so, which on 20 episodes is ~13
+    ticks of unpaired standard error -- wider than most of the effects in this
+    project. The paired standard error is typically half of it, and the win count
+    says whether a mean difference is one island or all of them.
+    """
+    life = {label: np.array([e.mean_lifespan for e in stats]) for label, stats in runs}
+    n = len(life[learned])
+    out = [f"paired per-island differences, {n} islands "
+           f"(island-to-island noise cancels; read this, not the +- above):"]
+    for label, values in life.items():
+        if label == learned:
+            continue
+        d = life[learned] - values
+        se = float(d.std(ddof=1) / np.sqrt(n)) if n > 1 else 0.0
+        line = (f"  vs {label:18} {d.mean():+7.1f} ticks   "
+                f"better on {int((d > 0).sum())}/{n} islands")
+        if se > 0:
+            line += f"   (+- {se:4.1f} SE, t = {d.mean() / se:+.2f})"
+        out.append(line)
+    return out
 
 
 def main() -> None:
@@ -176,13 +203,21 @@ def main() -> None:
     if kind == "learned" and policy is None:
         parser.error("--policy learned needs --checkpoint")
 
-    results = []
+    # Per-episode stats are kept rather than only their aggregate, so the paired
+    # comparison below costs no extra rollouts.
+    runs: list[tuple[str, list[EpisodeStats]]] = []
     if args.baselines or kind != "learned":
-        results += baselines(cfg, args.episodes, args.seed)
+        for bkind, label in baseline_kinds(cfg):
+            runs.append((label, run_episodes(cfg, make_act_fn(bkind, cfg, None, args.seed),
+                                             args.episodes, args.seed)))
+    learned_label = None
     if kind == "learned":
         act = make_act_fn(kind, cfg, policy, args.seed, args.deterministic, args.device)
         suffix = " (argmax)" if args.deterministic else ""
-        results.append(evaluate(cfg, act, args.episodes, args.seed, f"learned policy{suffix}"))
+        learned_label = f"learned policy{suffix}"
+        runs.append((learned_label, run_episodes(cfg, act, args.episodes, args.seed)))
+    results = [EvalResult.from_episodes(label, stats, cfg.world.max_ticks)
+               for label, stats in runs]
 
     print(f"\n{args.episodes} episodes, {cfg.world.max_ticks} ticks max, "
           f"{cfg.world.num_agents} agents, seeds {args.seed}..{args.seed + args.episodes - 1}")
@@ -190,6 +225,11 @@ def main() -> None:
     for r in results:
         print(r.line())
     print("-" * 118)
+
+    if len(runs) > 1 and learned_label is not None:
+        print()
+        for line in paired_lines(runs, learned_label):
+            print(line)
 
     if len(results) > 1 and kind == "learned":
         floor = next(r for r in results if r.label == "random actions")

@@ -1,0 +1,62 @@
+# Does FASTER MOVEMENT restore navigation? One variable off m3_masked.
+#
+# THE FINDING THIS ACTS ON. The milestone chain loses navigation: m1 clears its
+# own random floor by +12 / +17 / +27 points at 3-6 / 6-10 / 10-20 units, while
+# m3-masked clears it by -1 / +9 / +6 and by nothing at all beyond 20 units,
+# despite forking from M2 which forked from M1. `nav_compete.yaml` killed the
+# competition explanation (exclusivity off changed nothing). The measured cause is
+# that THE TARGET DOES NOT SURVIVE THE WALK:
+#
+#                                       M1 world    M3 scarce world
+#   bushes holding a berry              19.8 / 20        2.6 / 6
+#   distance to the nearest one              2.5           17.8
+#   travel time at move_step 0.8        3.1 ticks      22.3 ticks
+#   a berry survives, on average       69.0 ticks      25.7 ticks
+#   lifetime / travel time                    22x          1.15x
+#
+# At 1.15x the berry is gone about as often as not by the time you arrive, before
+# variance. Navigation stops being learnable when a target's expected lifetime is
+# comparable to the time needed to reach it -- and unlearning it is then correct
+# play, not a failure.
+#
+# THE LEVER. `world.move_step` is the one knob that changes travel time and
+# touches nothing else in the food economy: supply stays 48 berries (6 bushes x
+# 2 cap + 6 x 6 regrowths), demand stays 48 (6 agents x 8 meals), bush layout,
+# scarcity, exclusivity, stealing and masking are all as m3_masked.
+#
+#   0.8 -> 1.6 halves travel time: 22.3 -> ~11.2 ticks, ratio 1.15x -> ~2.3x.
+#
+# WHY 1.6 AND NOT MORE. `gather_radius` is 2.0. A step must stay below it or an
+# agent can straddle a bush without ever landing inside range, and with 8 compass
+# directions the positioning error is up to one step. 1.6 < 2.0 keeps every
+# target reachable; 2.5 would introduce a movement-precision failure on top of
+# the thing being tested. `steal_radius` (2.5) is also above 1.6, so theft's
+# reachability is unchanged.
+#
+# PREDICTION, written before the run.
+#
+#   * If the ratio is the constraint: the 6-10 and 10-20 bands clear the random
+#     floor MEASURED IN THIS WORLD by more than m3-masked's +9 / +6, ideally
+#     toward m1's +17 / +27. That is the result. Run `sim.navigation --baselines`
+#     and read the over-floor rows, never the raw shares -- a bigger step drifts
+#     a random walker inward off the shoreline faster, so this world's floor is
+#     not m3-masked's floor and certainly not 50%.
+#   * If it does not move: the ratio is not the constraint either, and the next
+#     suspect is the ratio's OTHER half -- berry lifetime, i.e. bush density and
+#     regrowth, which cannot be changed without changing supply.
+#   * The pre-registered confound: berry lifetime is ENDOGENOUS. Faster agents
+#     harvest sooner, so the 25.7-tick lifetime can fall along with travel time
+#     and leave the ratio where it started. Measure the realised ratio in this
+#     world before reading a null as "speed does not help".
+#   * LIFESPAN IS NOT THE MEASUREMENT and is expected to rise for every policy
+#     here, random included, because reaching food is simply cheaper. Judge it
+#     only against the random floor and the scripted references re-measured in
+#     THIS world; m3-masked's 471.6 was scored at move_step 0.8.
+#
+#   python -m sim.train --config config/nav_move.yaml --run-name nav-move \
+#       --updates 200 --policy-mode individual --init-from checkpoints/m2/latest.pt
+#   python -m sim.navigation --checkpoint checkpoints/nav-move/latest.pt --baselines
+extends: m3_masked.yaml
+
+world:
+  move_step: 1.6
