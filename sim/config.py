@@ -25,6 +25,17 @@ class WorldConfig:
     max_ticks: int = 600
     move_step: float = 0.8
     spawn_radius_frac: float = 0.6
+    # An action, once chosen, persists for this many ticks; agents decide only on
+    # ticks where tick % decision_interval == 0. Enforced by World.step itself, so
+    # every driver (trainer, evaluation, replay, scripted baselines) lives under
+    # the same commitment and none of them can drift.
+    #
+    # The temporal-resolution lever from the nav-spread postmortem: the per-step
+    # advantage of walking toward food is ~0.01-0.05 against ~0.9 of advantage
+    # noise (sim.advantage), so a single-tick direction choice is invisible to
+    # PPO. Committing for k ticks multiplies the per-decision slope by k without
+    # touching the reward. 1 reproduces every earlier world bit-identically.
+    decision_interval: int = 1
 
 
 @dataclass(frozen=True)

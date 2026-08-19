@@ -30,106 +30,87 @@ switch.
 
 ## Plan for the next session
 
-Written 2026-08-19, at the end of the session that ran `nav-move`, closed the
-navigation hypothesis, and closed both uptake items as counting artefacts. Ordered
-by what it would teach; each item says what has already been ruled out so nothing
-gets re-run.
+Written 2026-08-19, at the end of the session that measured the advantage signal
+(`sim.advantage`), ran the k-tick commitment lever (`nav-commit`), and killed the
+equilibrium explanation (`spread-nav`). Ordered by what it would teach; each item
+says what has already been ruled out so nothing gets re-run.
 
 ### 0. What last session settled, so it is not reopened
 
-**The navigation collapse is real and none of the explanations for it are.**
-`nav-move` (`move_step` 0.8 → 1.6) moved the berry-lifetime ÷ travel-time ratio
-from 1.22× to **2.96×**, measured, with the endogenous confound resolving
-favourably — and navigation stayed flat (+6 / +11 / +3 / +1 over the random floor
-in that world, against m3-masked's −1 / +9 / +6 / +0). Perception is acquitted
-below 20 units: the target is in the observation 94–100% of the time, the ±1 clip
-provably cannot bite under 20 units, and the toward-food share is flat anyway.
+**The per-step learning signal for direction is now measured, and the arithmetic
+this plan carried was half wrong.** The noise figure was right: the std of the GAE
+advantage — what PPO's normalisation divides by — is 0.851. The signal is
+band-local, not "~0.06 everywhere": positive near food (GAE gap toward − away
+**+0.083 ± 0.045** at 3–6, stable across runs, and that is the one band
+nav-spread2 clears its floor in), ~zero at 6–20 (δ +0.013 ± 0.006, GAE
++0.010 ± 0.021), and **negative beyond 20** (δ −0.028 ± 0.007, the stablest cell
+in the table). m3-masked has the same shape. 82% of far-field move ticks are
+agents camped at an *empty* bush, for whom stepping toward distant food abandons a
+regrowth queue (δ −0.045 ± 0.008): the critic prices the camping basin correctly
+under a wandering continuation policy, so the on-policy gradient points home from
+everywhere far. Write-up: "The advantage check and `nav-commit`" in the M3 section.
 
-**And the framing this file carried was wrong.** Navigation is *not* "what the gap
-to the scripted references actually is": the paired gap to the forager halved
-(−32.7 ± 10.8 → −15.4 ± 10.0 ticks) with navigation unchanged, because faster
-travel helps a wanderer more than it helps something that already walks straight.
-Whatever the residual is, the toward-food share does not measure it. Full write-up
-in the M3 section under "`nav-move` — the ratio moved, navigation did not".
+**The k-tick lever is run, and it is a clean negative with the mechanism
+verified.** `world.decision_interval: 4` (an action persists 4 ticks, enforced by
+`World.step` itself; PPO trains one transition per decision) multiplied the signal
+exactly as designed — δ gap at 10–20 +0.013 → **+0.061 ± 0.033** (×4.7 ≈ k),
+noise ×2.7 ≈ √k, the critic's V-fall to 10–20 doubled to −2.24 — and PPO still learned no
+direction: trained vs zero-shot control **−1.5 ± 7.5** paired, toward-food bands
+identical to the untrained control's, steering headroom intact at **+93.6 ± 7.5**.
+What commitment did buy arrived zero-shot: **+50** (436.3 → 485.9) from ballistic
+diffusion alone, collapsing the forager gap to −11.6 ± 8.6 with no direction
+learned — and it does NOT generalise (m4h: +6.2, inside noise, nights indoors
+83% → 69%).
 
-**But navigation is now priced, and it is the gap.** Steering the policy's moves
-at the nearest berry-bearing bush — every decision left alone, the tick budget
-identical — is worth **+89.1 ± 11.4**, and with a night home-run **+113.2 ± 10.7**,
-beating the scripted builder. So `nav-move`'s conclusion needs its scope kept
-straight: the lifetime/travel *ratio* is not what makes navigation unlearnable, and
-the toward-food share does not track the reference gap across worlds, but the
-competence itself is worth more than every other lever in this file combined.
+**The equilibrium explanation is dead too.** `spread-nav` forks `nav-probe` (86%
+toward-food far-field) into the spread world, where camping verifiably cannot feed
+even one agent. The far bands decay **+6.3 → +2.1** over floor between 200 and 400
+updates — nearly the refork's trajectory (+7.1 → +1.4) in the world built to
+prevent it — while survival climbs (334.5 → 376.2, still below the m2 lineage's
+433.4; rule 3 cuts both ways). Making navigation worth +140.9 and camping fatal
+does not make PPO retain it.
 
-**Re-forking from a navigator does not help either.** `nav-probe` → M3 → M4 is a
-dead heat with its matched control (+5.9 ± 7.5 paired) and the far-field navigation it
-starts with decays as the M3 world trains foraging back in (+7.1 → +1.4 over floor at
-20+, while berries go 18.8 → 29.1). The world trades navigation away rather than
-failing to receive it. Next lever, from the arithmetic: camping is *sufficient* in
-`scarce.yaml` (a cluster earns 1 berry per 50 ticks, an agent needs 1 per 70), so
-spread the same bushes over more clusters.
-
-**Making camping insufficient does not help, and it is the cleanest negative in the
-file.** `nav-spread` (six clusters of one bush, same 48 berries) verifiably punishes
-camping — the zero-shot gap to the forager widens −32.7 → −73.2 — and 400 updates
-produced no navigation, no survival over the zero-shot control (+7.4 ± 8.5), and
-steering headroom *up* at +140.9 ± 8.2 on 40/40 islands. The critic is not the blocker
-either: V falls monotonically ~1.2 from "on food" to 10–20 units away. What is left is
-the per-step signal — ~0.06 of advantage per move against ±1.0 of reward noise.
-
-**And the uptake headroom that replaced it was a counting artefact.** Per legal
-tick, `steal` uptake is 46% and `build` 29%; per *distinct opportunity* they are
-**85%** and **73%**. Forcing the remainder pays nothing (+3.6 ± 7.7 for `build`,
-−8.3 ± 4.1 for `steal`) while suppressing it is catastrophic. Both behaviours are
-already saturated — see plan item 2.
+**The one suspect left standing: the on-policy sample distribution itself.** ~90%
+of transitions are near-field ticks whose gradients simultaneously price leaving
+the camp as a loss and overwrite far-field structure in the shared 128×128 trunk
+by sheer sample weight — rule 6's 87:1 weighting problem operating on the
+*gradient* rather than on a metric. It retro-dicts every null in this file and
+explains the one world where navigation survives (`nav_probe`, where the walk IS
+the dominant state). The state distribution is the curriculum. Untested — item 1.
 
 Do not re-run: `exclusive_bushes` (`nav-compete`, flat), `move_step` (`nav-move`,
 flat), entropy, γ, contest perception, brain sharing, 3.3× budget (all flat, see
-the seven-intervention table). Do not chase `build` or `steal` uptake.
+the seven-intervention table); re-forking navigators into scarce worlds — both
+destinations are done (`nav-refork` where camping pays, `spread-nav` where it
+cannot, decay either way); `decision_interval` at any k (k=4 verified the
+mechanism and moved nothing; the anti-gradient multiplies with k, and k=8 commits
+6.4 units past a 2.0 gather radius). Do not chase `build` or `steal` uptake.
 
-### 1. Navigation — worth +89 to +113 ticks, more than everything else (start here)
+### 1. Navigation — the +89 to +113 is real and unclaimed; the open question is retention (start here)
 
-`sim.steering` keeps every decision the policy makes and replaces only the direction
-of its moves. On m4h, 40 paired islands: **+89.1 ± 11.4** steering at food, **+113.2
-± 10.7** steering at food by day and the nearest finished shelter at night — which
-beats the scripted builder by about 40 ticks, with deaths falling 3.35 → 0.62.
+`sim.steering` still prices perfect navigation at **+89.1 ± 11.4** on m4h
+(**+113.2 ± 10.7** with the night home-run, **+140.9 ± 8.2** in the spread world,
+**+93.6 ± 7.5** under commitment). Nothing else measured comes close, and every
+mechanism-level explanation for why PPO will not claim it is now dead: not the
+world's incentives, not the signal's size, not the critic's gradient, not the
+starting policy. What remains is the interference hypothesis in item 0, and it
+makes cheap, testable predictions:
 
-```bash
-python -m sim.steering --checkpoint checkpoints/m4h/latest.pt
-```
-
-**This is the project's oldest open problem finally carrying a price tag.** It also
-explains every null in this file: the policy is *tick-starved*, so interventions
-that spend its ticks differently net zero (forcing builds +3.6 ± 7.7, forcing steals
-−8.3 ± 4.1, going home at dusk −0.3 ± 7.6) while the one that adds effective ticks
-is worth 89. Read the steering caveat before designing anything: it reads world
-state, so it is an upper bound on what perfect navigation buys, not proof of what
-the current observation supports.
-
-What would actually be worth trying, in rule 2's order:
-
-* ~~**Re-fork the chain from a navigating policy.**~~ **Done, and it is a negative
-  — see the `nav-refork` section.** `nav-probe` → M3 keeps +7.1 points over floor
-  beyond 20 units at 200 updates and loses it (+1.4) by 400, arriving at exactly
-  m3-masked's forager competence. The M4 leg is a dead heat (+5.9 ± 7.5 paired) with
-  undiminished steering headroom. The chain does not fail to *transfer* navigation;
-  the world *trades it away*, in flight.
-* ~~**Make camping insufficient.**~~ **Done, and it is the strongest negative yet —
-  see the `nav-spread` section.** Six clusters of one bush each (same 48 berries)
-  halves per-cluster income below one agent's need, and the world change is verified:
-  the camper's paired gap to the forager widens −32.7 → −73.2 while the forager gets
-  *better*. Four hundred updates produced no navigation (+1.7 over floor at 10–20),
-  no survival over the zero-shot control (+7.4 ± 8.5), and steering headroom that
-  *rose* to **+140.9 ± 8.2 on 40 of 40 islands**. Raising the return on the
-  competence by 58% did not make PPO acquire it.
-* ~~**Whether the value function can see the difference.**~~ **Measured, and it can.**
-  `sim.navigation --value` holds hunger and the tick window and shows V falling
-  monotonically by ~1.2 from "on food" to 10–20 units away. The gradient is there.
-* **What is left is temporal resolution, and it is arithmetic.** ~1.2 of value across
-  a 15-unit band, 0.8 units per move, is **~0.06 of advantage per step** against ±1.0
-  per-tick reward noise from a gather landing or not — a real slope roughly twenty
-  times smaller than the noise around it. The lever that follows is a policy that
-  commits to a direction for k ticks (a repeat/duration action, or frame-skip), which
-  multiplies the per-decision slope without touching the reward. **Unverified.**
+* **Capacity should slow the decay.** Train a wider probe from scratch
+  (`nav_probe` with `--set policy.hidden_sizes=[512,512]` — the probe world is
+  easy), fork it into the spread world exactly as `spread-nav` did, and read the
+  20+ band at 200 and 400 updates against spread-nav's +6.3 → +2.1. Holding the
+  band confirms interference and makes capacity the lever; identical decay says
+  the distribution story needs sharpening, not the network. ~25 minutes end to
+  end, controls included. **Untested.**
+* **Interleave the distributions, do not sequence them.** Every failure so far
+  trained on one world at a time; the direct distribution-level lever is a batch
+  that always contains far-field states — probe-world episodes mixed into scarce
+  training. Needs `VecWorld` to run two configs side by side, which is a real
+  change; size it only after the capacity probe says interference is real.
+* **No reward-side lever can work if the hypothesis is right.** Treat any new
+  payment, premium, or ratio proposal for navigation as pre-refuted unless it
+  changes what states end up in the batch.
 * **Not shaping.** Paying for approach would produce approach; rule 1.
 
 ### 2. Nights are NOT the gap — closed, do not reopen
@@ -285,6 +266,18 @@ In rough order of how much they would teach:
    worlds. But the stronger sentence it invited, that navigation is not the gap, is
    wrong: steering says it is. And the theft headroom that was promoted in its place
    was a counting artefact (open problem 3).
+   **The per-step-signal explanation now has its measurement and its lever, and the
+   lever is dead too.** `sim.advantage` shows the toward-food learning signal is
+   band-local: real inside 6 units, ~zero at 6–20, **negative beyond 20** — the
+   critic correctly prices leaving a regrowth camp as a loss under a policy that
+   wanders, so the on-policy gradient points home from everywhere far. Multiplying
+   the per-decision signal 4× with `world.decision_interval` (`nav-commit`)
+   verified the mechanism — SNR ×√k, the critic twice as steep — and produced no
+   navigation: trained vs zero-shot −1.5 ± 7.5, bands identical to the untrained
+   control, steering headroom intact at +93.6 ± 7.5. The interface change alone is
+   worth **+50 zero-shot** (ballistic wandering) and closes two thirds of the
+   forager gap with no direction learned. See "The advantage check and
+   `nav-commit`" in the M3 section.
 
    *Metric warning, learned the hard way.* An aggregate toward-food share is
    **confounded and must not be used** — an agent parked on its target scores
@@ -487,6 +480,30 @@ python -m sim.train --config config/nav_spread.yaml --run-name nav-spread2 --upd
     --policy-mode individual --init-from checkpoints/nav-spread/latest.pt
 python -m sim.navigation --checkpoint checkpoints/nav-spread2/latest.pt --baselines --value
 python -m sim.steering --checkpoint checkpoints/nav-spread2/latest.pt
+
+# the advantage check: the toward-vs-away learning signal PPO actually sees,
+# per distance band, against the noise its normalisation divides by
+python -m sim.advantage --checkpoint checkpoints/nav-spread2/latest.pt
+python -m sim.advantage --checkpoint checkpoints/m3-masked/latest.pt \
+    --report viewer/reports/advantage_m3.json
+
+# the k-tick commitment lever, a NEGATIVE with the mechanism verified. The world
+# itself enforces decision_interval, so the zero-shot control needs nothing special.
+python -m sim.train --config config/nav_commit.yaml --run-name nav-commit-zero \
+    --updates 0 --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
+python -m sim.train --config config/nav_commit.yaml --run-name nav-commit --updates 200 \
+    --policy-mode individual --init-from checkpoints/m2/latest.pt
+python -m sim.navigation --checkpoint checkpoints/nav-commit/latest.pt --baselines --value
+python -m sim.advantage --checkpoint checkpoints/nav-commit/latest.pt
+python -m sim.steering --checkpoint checkpoints/nav-commit/latest.pt
+
+# the equilibrium-stability test: fork the strong navigator into the world where
+# camping cannot pay, and watch whether the far-field bands survive training
+python -m sim.train --config config/nav_spread.yaml --run-name spread-nav --updates 200 \
+    --policy-mode individual --init-from checkpoints/nav-probe/latest.pt
+python -m sim.train --config config/nav_spread.yaml --run-name spread-nav2 --updates 200 \
+    --policy-mode individual --init-from checkpoints/spread-nav/latest.pt
+python -m sim.navigation --checkpoint checkpoints/spread-nav2/latest.pt --baselines
 ```
 
 ## Compute budget — runs are longer than they need to be
@@ -550,6 +567,12 @@ did not list:
   kept and only the direction of its moves is replaced, so the tick budget is
   identical and the difference is walking. The movement counterpart of
   `sim.opportunity --force`, and the source of the +89/+113 figures.
+- `sim/advantage.py` — the toward-vs-away learning signal, measured as PPO sees
+  it: one-step TD residual and GAE advantage per distance band, toward minus away,
+  against the std that advantage normalisation divides by. Decision-aligned: under
+  `decision_interval` it accumulates rewards per decision exactly as the trainer
+  does. This is the tool that turned "the signal is ~0.06" into "the signal is
+  positive near food, ~zero at 6–20 and negative beyond 20".
 - `sim/opportunity.py` — opportunity versus uptake per action, read off the action
   mask. It exists because "the policy rarely does X" has meant three unrelated
   things here: X almost never legal (`m4f`'s `chop`, a world problem), X legal and
@@ -559,6 +582,20 @@ did not list:
   `--force ACTION` runs the counterfactual: the action taken whenever legal and
   suppressed entirely, paired per island, which is what says whether a low uptake
   is headroom at all.
+
+**`world.decision_interval` commits every action for k ticks, enforced by
+`World.step` itself.** On non-decision ticks (tick % k ≠ 0) the world repeats the
+last decision whatever the caller passes, so every driver — trainer, evaluation,
+replay, scripted baselines, a test stepping the world by hand — produces the same
+dynamics and none can drift. `VecWorld.step` advances up to k ticks per call,
+sums the rewards into the one transition PPO stores, and stops early at an episode
+boundary so nothing leaks across it; γ then discounts per decision, as frame-skip
+is normally trained. Reset zeroes the clock, so an episode can never start
+mid-commitment. `sim.navigation` and `sim.advantage` hold their own action arrays
+across sticky ticks so the action they *score* is the one that executed —
+`sim.opportunity`'s per-tick uptake rates have NOT been made commitment-aware, so
+do not read them in a k > 1 world without thinking. Default 1 reproduces every
+earlier world bit-identically (tested, `tests/test_commitment.py`).
 
 **`sim.evaluate` prints paired per-island differences** whenever a learned policy
 runs alongside baselines. Same seed block for every policy, so island noise
@@ -1366,7 +1403,158 @@ per-tick reward noise of ±1.0 from a gather landing or not. The gradient is rea
 roughly twenty times smaller than the noise it has to be found in. That points at
 temporal resolution rather than at the world: a policy that commits to a direction for
 k ticks, or a longer-horizon advantage, would see the same slope at twenty times the
-step size. **Unverified** — the arithmetic is sound but nothing has been run.
+step size. **Verified the next session, and half wrong.** The noise figure was right
+(std of the GAE advantage is 0.851); the slope is not 0.06 everywhere — it is band-local,
+~5× shallower than the average-slope arithmetic beyond 10 units and **negative** beyond
+20 — and the k-tick lever was run (`nav-commit`) and is a clean negative with the
+mechanism confirmed. See the next section.
+
+### The advantage check and `nav-commit` — the signal measured, multiplied 4×, and still pointing home
+
+**The "0.06 against ±1.0" arithmetic was measured instead of trusted, and half of
+it was wrong.** `sim.advantage` computes, for every move an alive agent makes, the
+two quantities PPO actually trains on — the one-step TD residual
+δ = r + γV(s′) − V(s) and the GAE advantage with the checkpoint's own γ and λ —
+and takes E[· | toward food] − E[· | away] by current distance (20 episodes, tick
+window 150–450 held as in `--value`):
+
+| nav-spread2, toward − away | 3–6 | 6–10 | 10–20 | 20+ |
+|---|---|---|---|---|
+| δ gap | −0.003 ± 0.016 | +0.006 ± 0.007 | **+0.013 ± 0.006** | **−0.028 ± 0.007** |
+| GAE-advantage gap | **+0.083 ± 0.045** | −0.024 ± 0.026 | +0.010 ± 0.021 | −0.010 ± 0.022 |
+
+The noise was right: the std of the GAE advantage over all transitions — what
+per-minibatch normalisation divides by — is **0.851**. The signal was not "0.06
+everywhere": it is **band-local**. Positive near food (the GAE gap at 3–6 held
++0.083…+0.096 across three runs of the tool, and that is the one band where
+nav-spread2 clears its floor, +7.3). Near zero at 6–20: the 1.2-over-15-units
+arithmetic used the *average* slope of a convex V curve, and the local slope
+beyond 10 units is ~5× shallower. And **negative beyond 20**. m3-masked has the
+same shape, more sharply (δ gaps +0.033 / +0.028 / −0.008 / −0.026 going outward
+from 3–6, with the GAE gap +0.179 ± 0.039 at 3–6 and zero-or-negative past 6).
+*Read the structure, not single cells*: the policy samples, and before the tool
+seeded torch, three runs moved individual band gaps by up to ±0.05 — what is
+stable across every run is near-field positive, mid-band ~zero, and the 20+ δ gap
+at −0.024…−0.028.
+
+**The anti-signal at 20+ is the camping equilibrium pricing itself, not a critic
+bug.** Split the 20+ movers by whether they stand within 3 units of *any* bush,
+loaded or not: **82% are parked at an empty bush**, and for them a step toward
+distant food scores δ **−0.045 ± 0.008** — walking off means abandoning a regrowth
+queue, and under the current continuation policy, which wanders, that is a genuine
+loss, priced correctly. In the open the gap is −0.019 ± 0.012, i.e. flat. So
+beyond ~6 units the on-policy gradient points *into* the camp from everywhere:
+A^π is computed under a π that cannot navigate, leaving really is bad *for that
+π*, and the local optimum defends itself.
+
+**The k-tick lever multiplied the signal exactly as promised and bought no
+learning.** `world.decision_interval: 4` makes every action persist four ticks —
+enforced by `World.step` itself, so the trainer, every eval loop, replays and the
+scripted baselines all live under the same commitment — and PPO stores one
+transition per decision with the four ticks' rewards summed (`config/nav_commit.yaml`
+= nav_spread + that one key; 200 updates from m2, the nav-spread lineage).
+Mechanically it delivered everything the arithmetic asked for:
+
+| per decision, at 10–20 | k=1 (nav-spread2) | **k=4 (nav-commit)** |
+|---|---|---|
+| δ gap | +0.013 ± 0.006 | **+0.061 ± 0.033 (×4.7 ≈ k)** |
+| δ noise (std, all transitions) | 0.310 | 0.841 (×2.7 ≈ √k, a little over — rewards within a commitment correlate) |
+| → signal-to-noise | 0.042 | **0.073 (×1.7)** |
+| V fall, on-food → 10–20 | −1.23 | **−2.24** |
+| GAE-advantage gap | +0.010 ± 0.021 | +0.240 ± 0.090 (unstable between runs: an unseeded run read +0.014 ± 0.105) |
+| **δ gap at 20+** | **−0.028 ± 0.007** | **−0.161 ± 0.025 (×5.7 — the repulsion multiplied faster)** |
+
+And the outcome, measured against this world's own floor and references:
+
+| in the commit world | lifespan | bands over floor 3–6 / 6–10 / 10–20 / 20+ |
+|---|---|---|
+| m3-masked weights, zero-shot, no training | **485.9** | +12.3 / +7.6 / +3.5 / +6.4 |
+| **nav-commit, 200 updates from m2** | **492.9** | +12.2 / +6.4 / +4.8 / +6.3 |
+| scripted forager | 504.5 | 92.9% absolute at 20+ |
+
+Paired, trained − zero-shot control: **−1.5 ± 7.5 (better on 21/40)**, with berries
+identical (28.8 both) — training reallocated ~80 steals an episode (17 → 96) and
+bought nothing, consistent with the steal margin being worth ~0. The toward-food
+bands of the trained policy are the untrained control's bands. Steering headroom is
+intact at **+93.6 ± 7.5 (39/40)**. Four hundred more updates were not run: the curve
+was flat from update ~40 and rule 4 stands.
+
+**What commitment did buy arrived zero-shot, and it is nav-move's shape again.**
+The unchanged m3-masked weights under k=4 score 485.9 against 436.3 at k=1 —
+**~+50 ticks with no training**, because commitment turns a near-uniform move
+distribution into 4-tick ballistic segments that cover ground roughly twice as
+fast. That alone collapsed the paired gap to the forager from −73.2 to
+**−11.6 ± 8.6 (19/40)**. Faster effective travel helps a wanderer; direction stays
+unlearned. (The forager pays a small commitment tax itself: 509.5 → 499.7 on the
+same 20 islands.)
+
+**And the +50 does not generalise to m4h.** The same interface dropped onto the
+flagship world with zero training (`m4h-commit-zero`, via
+`--set world.decision_interval=4`) is worth **+6.2 — 496.6 ± 67.6 against the
+canonical 490.4 on the same 20 islands, inside noise** — with nights indoors
+falling 83% → 69% and steals 115 → 19 while berries rise. Ballistic diffusion
+pays where the map forces long crossings (six spread single-bush clusters) and
+pays nothing where everything the policy needs already sits at its cluster
+(`materials_at_clusters`). Do not adopt k=4 as a general upgrade.
+
+**What this retires, and the diagnosis that replaces "signal too small".** At k=4
+the mid-band per-decision signal is real and measurable (δ +0.061 ± 0.033, ~7% of
+the noise) — and nothing moved, so temporal resolution was not the binding
+constraint. What survives every run is the **sign structure**: negative beyond 20
+units, because the critic accurately prices leaving a camp as a loss under a
+policy that cannot walk straight — and commitment multiplied that wrong-way
+signal *faster* than the right one (δ at 20+: −0.028 → −0.161, ×5.7). Bigger k is
+not the follow-up — the config header pre-registered that, and k=8 would commit
+6.4 units past a 2.0 gather radius. PPO's one-step improvement cannot cross a
+desert its own valuation says not to enter: π cannot navigate, so A^π says stay,
+so π never learns to navigate.
+
+### `spread-nav` — the equilibrium explanation dies too: a navigator decays even where camping cannot pay
+
+The self-defending-optimum diagnosis above has an obvious escape hatch: hand the
+world a policy that already navigates, so A^π prices travel *positively* from the
+start. `nav-refork` tried that and the competence decayed — but its destination
+was the M3 world, where camping is sufficient (income 1.4× need) and unlearning
+navigation is arguably correct play. The spread world is the missing cell: camping
+verifiably cannot feed even one agent (0.7× need) and steering prices navigation
+at +140.9 there. Pre-registered before the run: if the far-field bands survive 400
+updates here, the camping equilibrium is what erases navigation; if they decay
+like nav-refork's, the equilibrium explanation is dead and what is left is
+**retention itself**.
+
+`spread-nav` forks `nav-probe` (86% toward-food at 20+) into `nav_spread.yaml`,
+200 then 400 updates. Bands are points over the random floor measured in the same
+world:
+
+| | updates | lifespan | berries | 3–6 | 6–10 | 10–20 | **20+** |
+|---|---|---|---|---|---|---|---|
+| `spread-nav` | 200 | 334.5 ± 65.9 | 12.6 | +1.1 | +4.5 | +3.2 | **+6.3** |
+| `spread-nav2` | 400 | 376.2 ± 64.6 | 17.4 | +1.0 | +3.9 | +1.8 | **+2.1** |
+| `m3-nav` → `m3-nav2` (the refork, for comparison) | 200→400 | — | — | | | | **+7.1 → +1.4** |
+| `nav-spread2` (from m2, same world) | 400 | 433.4 | 23.5 | +7.3 | +3.2 | +1.7 | +1.7 |
+
+**Nearly the same decay trajectory as the refork, in the world built to prevent
+it.** Survival climbs (334 → 376, steals 70 → 85) while the far-field competence
+the policy arrived with drains away — the world trades navigation for local
+scarcity skills even where standing still is verifiably fatal. Note also the
+lineage cost: the probe lineage lands *below* the m2 lineage (376 vs 433), because
+it never had the M1/M2 scarcity competence — rule 3 cuts both ways.
+
+**What is actually left, with every mechanism-level explanation now dead.** Not
+competition, not the lifetime/travel ratio, not perception below 20 units, not
+entropy/γ/budget/sharing, not the starting policy, not the camping *equilibrium*,
+not the critic's gradient existing, not the per-decision signal size. The one
+suspect still standing is the **on-policy sample distribution itself**: ~90% of
+transitions are near-field ticks (51k-transition batches with a few hundred
+far-field rows), whose gradients simultaneously (a) price leaving the camp as a
+loss under a wandering continuation policy and (b) overwrite whatever far-field
+structure the shared 128×128 trunk carried, by sheer sample weight. It is rule 6's
+87:1 weighting problem operating on the *gradient* instead of on a metric — and it
+explains the one world where navigation survives: in `nav_probe` the walk IS the
+dominant state, so the distribution protects the competence instead of eroding it.
+The state distribution is the curriculum. Untested corollaries: more capacity
+should slow the decay (train a wider nav-probe, fork it, watch the 20+ band), and
+no reward-side lever should be able to fix it.
 
 ### Declined theft was a counting artefact — and the steals it declines are worth nothing
 

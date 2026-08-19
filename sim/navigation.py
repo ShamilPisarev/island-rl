@@ -95,8 +95,14 @@ def measure(cfg: Config, act_fn: ActFn, episodes: int = 10, seed: int = 10000
     for e in range(episodes):
         w = World(cfg, seed=seed + e)
         obs = w.observations()
+        actions = None
         for _ in range(cfg.world.max_ticks):
-            actions = act_fn(obs, w.action_mask())
+            # Under decision_interval > 1 the world repeats the last decision on
+            # sticky ticks whatever is passed, so hold the action here too -- the
+            # scored action must be the executed one, or every sticky tick would
+            # be scored against a move that never happened.
+            if actions is None or w.tick % cfg.world.decision_interval == 0:
+                actions = act_fn(obs, w.action_mask())
             _, is_night = night_phase(w.tick, cfg) if cfg.construction.enabled else (0.0, False)
             done = ((w.site_wood_needed + w.site_stone_needed) == 0
                     if cfg.construction.enabled else np.zeros(0, dtype=bool))

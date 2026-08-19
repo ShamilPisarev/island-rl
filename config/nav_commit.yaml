@@ -1,0 +1,62 @@
+# The TEMPORAL-RESOLUTION lever: commit to each action for 4 ticks.
+#
+# One variable off nav_spread. The world's food geography already punishes
+# camping (a cluster earns 1 berry per 100 ticks against a need of 1 per 70) and
+# steering says navigation is worth +140.9 +- 8.2 here, on 40 of 40 islands --
+# the largest unclaimed return anywhere in the project.
+#
+# THE ARITHMETIC THAT MOTIVATES IT, now measured rather than derived
+# (sim.advantage on nav-spread2, 20 episodes, tick window 150-450):
+#
+#   noise: std of the GAE advantage over all transitions       0.825
+#   signal: E[adv | toward food] - E[adv | away], per band
+#     3-6 units    delta +0.050 +- 0.020   GAE +0.096 +- 0.043   <- real, learned
+#     6-10         delta +0.018 +- 0.008   GAE +0.042 +- 0.028   <- marginal
+#     10-20        delta +0.011 +- 0.006   GAE -0.012 +- 0.023   <- nothing
+#     20+          delta -0.025 +- 0.007   GAE -0.015 +- 0.021   <- WRONG WAY
+#
+# (m3-masked has the same shape: strong inside 6 units, zero at 6-20, negative
+# beyond 20. NOTE: these figures are from the tool before it seeded torch; the
+# policy samples, so a re-run moves individual cells by up to ~0.05 while the
+# structure -- near-field positive, mid-band ~zero, 20+ negative -- is stable.
+# CLAUDE.md carries the canonical seeded numbers.)
+# So the per-decision signal for direction is not merely 20x smaller
+# than the noise as the old arithmetic said -- in the mid band it is ~100x
+# smaller, and beyond 20 units the critic's V uptick actively pays the policy to
+# walk AWAY from food. The bands where navigation is flat are exactly the bands
+# where a single-tick direction choice carries no findable signal.
+#
+# THE LEVER. decision_interval: 4 makes every action persist 4 ticks and PPO
+# train on decisions, not ticks: rewards are summed over the commitment and gamma
+# discounts per decision. A direction choice now covers 3.2 units, so the
+# per-decision value slope is ~4x, while the noise (dominated by whether future
+# gathers land) should grow much less than 4x. k=4 rather than 8 because a
+# commitment overshoots by up to (k-1)*move_step = 2.4 units past its target,
+# which already exceeds gather_radius 2.0; 8 would make near-field control
+# impossible rather than merely lossy.
+#
+# PREDICTIONS, written before the run.
+#
+#   * If temporal resolution is the constraint: the 6-10 and 10-20 bands clear
+#     the random floor MEASURED IN THIS WORLD (the floor is a committed random
+#     walk, which diffuses faster -- never compare against nav-spread's floor)
+#     by clearly more than nav-spread2's +3.2 / +1.7, and lifespan beats the
+#     zero-shot control (m3-masked weights under the same interface, updates 0).
+#   * If the bands stay flat, single-decision resolution was not the constraint
+#     at k=4, and what is left is the SHAPE of the critic's curve -- locally flat
+#     at 10-20 and inverted beyond 20 -- which commitment multiplies along with
+#     everything else. The follow-up would be the 20+ V inversion, not bigger k.
+#   * Known costs, expected and acceptable: switching latency (a behaviour change
+#     waits up to 3 ticks) and gather timing. The zero-shot control prices both:
+#     if it sits far below nav-spread's 436.3 zero-shot, the interface tax is
+#     real and trained numbers must be read against it.
+#
+#   python -m sim.train --config config/nav_commit.yaml --run-name nav-commit-zero \
+#       --updates 0 --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
+#   python -m sim.train --config config/nav_commit.yaml --run-name nav-commit \
+#       --updates 200 --policy-mode individual --init-from checkpoints/m2/latest.pt
+#   python -m sim.navigation --checkpoint checkpoints/nav-commit/latest.pt --baselines --value
+extends: nav_spread.yaml
+
+world:
+  decision_interval: 4

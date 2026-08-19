@@ -289,6 +289,11 @@ class World:
         n = pool.n
         acted = pool.alive.copy()
         actions = np.asarray(actions, dtype=np.int64).reshape(n)
+        if cfg.world.decision_interval > 1 and self.tick % cfg.world.decision_interval:
+            # Not a decision tick: the action chosen at the last decision persists,
+            # whatever the caller passed. Tick 0 is always a decision tick and reset
+            # zeroes the clock, so an episode can never start mid-commitment.
+            actions = pool.last_action
         actions = np.where(acted, actions, IDLE)
         pool.last_action = actions
 
@@ -686,19 +691,30 @@ class VecWorld:
         episode_done = np.zeros(n_env, dtype=bool)
         gathered = np.zeros((n_env, n_agent), dtype=np.int64)
 
+        # One call = one DECISION. With decision_interval k > 1 each world advances
+        # up to k ticks under the same action, and the rewards those ticks earn are
+        # summed into the single transition PPO stores -- gamma then discounts per
+        # decision, exactly as frame-skip is normally trained. A world whose episode
+        # ends mid-commitment stops there (its fresh episode starts at the next
+        # decision, at tick 0), so no reward, termination or stats can leak across
+        # the boundary.
+        k = max(self.cfg.world.decision_interval, 1)
         for e, world in enumerate(self.worlds):
-            res = world.step(actions[e])
-            rewards[e] = res.rewards
-            terminated[e] = res.terminated
-            acted[e] = res.acted
-            gathered[e] = res.gathered
-            episode_done[e] = res.episode_done
-            if res.episode_done:
-                # Survivors at max_ticks are truncated, not terminated.
-                truncated[e] = res.truncated & world.pool.alive
-                final_obs[e] = res.obs
-                self.finished_episodes.append(world.stats())
-                obs[e] = world.reset()
+            for sub in range(k):
+                res = world.step(actions[e])
+                rewards[e] += res.rewards
+                terminated[e] |= res.terminated
+                gathered[e] += res.gathered
+                if sub == 0:
+                    acted[e] = res.acted
+                if res.episode_done:
+                    episode_done[e] = True
+                    # Survivors at max_ticks are truncated, not terminated.
+                    truncated[e] = res.truncated & world.pool.alive
+                    final_obs[e] = res.obs
+                    self.finished_episodes.append(world.stats())
+                    obs[e] = world.reset()
+                    break
             else:
                 obs[e] = res.obs
             masks[e] = world.action_mask()
