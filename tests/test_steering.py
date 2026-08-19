@@ -101,3 +101,28 @@ def test_run_steered_is_deterministic_for_a_fixed_policy(world_cfg):
     a = [s.mean_lifespan for s in run_steered(world_cfg, act, 2, 10000)]
     b = [s.mean_lifespan for s in run_steered(world_cfg, act, 2, 10000)]
     assert a == b
+
+
+def test_subset_steering_leaves_other_agents_alone(world_cfg):
+    """agents={0} may rewrite only agent 0's moves; everyone else's actions pass
+    through untouched, or the subset experiment is not measuring an individual."""
+    from sim.steering import steered_act
+    from sim.evaluate import load_checkpoint  # noqa: F401  (import parity with module)
+
+    w = World(world_cfg, seed=3)
+
+    def base(obs, mask):
+        return np.zeros(world_cfg.world.num_agents, dtype=np.int64)  # everyone: north
+
+    act = steered_act(world_cfg, base, "food", agents={0})
+    actions = act(w, w.observations(), w.action_mask())
+    assert (actions[1:] == 0).all()
+    # agent 0's move was redirected at the nearest berry-bearing bush
+    loaded = w.bush_berries > 0
+    dx = w.bush_x[loaded] - w.pool.x[0]
+    dz = w.bush_z[loaded] - w.pool.z[0]
+    d = np.hypot(dx, dz)
+    j = int(np.argmin(d))
+    v = np.array([dx[j], dz[j]]) / max(float(d[j]), 1e-9)
+    from sim.agents import MOVE_VECTORS
+    assert actions[0] == int(np.argmax(MOVE_VECTORS[:N_MOVE_ACTIONS] @ v))

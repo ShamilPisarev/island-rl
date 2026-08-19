@@ -32,9 +32,10 @@ switch.
 
 Written 2026-08-19, at the end of the session that measured the advantage signal
 (`sim.advantage`), ran the k-tick commitment lever (`nav-commit`), killed the
-equilibrium explanation (`spread-nav`), and refuted the capacity corollary
-(`spread-nav512`). Ordered by what it would teach; each item says what has
-already been ruled out so nothing gets re-run.
+equilibrium explanation (`spread-nav`), refuted the capacity corollary
+(`spread-nav512`), and priced the individual navigation prize
+(`sim.steering --subset`). Ordered by what it would teach; each item says what
+has already been ruled out so nothing gets re-run.
 
 ### 0. What last session settled, so it is not reopened
 
@@ -81,10 +82,17 @@ on-policy advantage actively trains far-field navigation away at any capacity,
 exactly as the measured negative 20+ δ gap says it should. See "The capacity
 probe" in the M3 section.
 
-**What is left standing is one question: is that negative pricing *correct*?**
-`sim.steering`'s +140.9 steers all six agents at once — a group counterfactual.
-PPO's gradient sees the individual one. Nothing yet measures whether ONE agent
-that navigates, among five that do not, gains anything. Item 1.
+**And the individual-vs-collective question is answered: the prize is
+individual, first-mover-largest, with positive spillover.** `sim.steering
+--subset` steers only the first n agents and pairs each agent against itself
+unsteered: a LONE navigator gains **+173.0 ± 19.0** in the spread world (more
+than the +140.9 each gets when all six navigate) and **+138.3 ± 23.0** on m4h,
+while the unsteered five *gain* +19.5 ± 6.4 rather than lose. Reconciled with
+the advantage check, this names the barrier exactly: a one-step toward-move is
+correctly priced ≤ 0 under a wandering π, a sustained walk pays +173, and
+**one-step policy improvement cannot see a ~20-step prize**. Not the world, not
+the signal, not the critic, not capacity, not coordination — the improvement
+operator itself.
 
 Do not re-run: `exclusive_bushes` (`nav-compete`, flat), `move_step` (`nav-move`,
 flat), entropy, γ, contest perception, brain sharing, 3.3× budget (all flat, see
@@ -95,36 +103,44 @@ cannot, decay either way), and at both widths (`spread-nav512`, faster decay);
 anti-gradient multiplies with k, and k=8 commits 6.4 units past a 2.0 gather
 radius). Do not chase `build` or `steal` uptake.
 
-### 1. Navigation — the +89 to +113 is real and unclaimed; the open question is WHOSE counterfactual it is (start here)
+### 1. Navigation — a +173 individual prize behind a ~20-step wall one-step improvement cannot see (start here)
 
-`sim.steering` still prices perfect navigation at **+89.1 ± 11.4** on m4h
-(**+113.2 ± 10.7** with the night home-run, **+140.9 ± 8.2** in the spread world,
-**+93.6 ± 7.5** under commitment). Nothing else measured comes close, and every
-mechanism-level explanation for why PPO will not claim it is now dead: not the
-world's incentives, not the signal's size, not the critic's gradient, not the
-starting policy, not capacity. What remains:
+`sim.steering --subset` settled whose counterfactual the headroom is: a lone
+navigator gains **+173.0 ± 19.0** (spread) / **+138.3 ± 23.0** (m4h), campers
+gain from its departure, and the per-navigator return *falls* as more agents
+navigate (173 → 141 across n=1…6). The barrier is now precisely named: every
+sub-~20-tick deviation toward far food is correctly priced ≤ 0 under the current
+policy, so nothing PPO's one-step improvement can propose ever touches the
+prize. What follows has to put **sustained excursions into the training data**,
+and the options are ordered by how little scripted competence they inject:
 
-* **Steer ONE agent, not six.** Add an `--agents` option to `sim.steering` that
-  steers only agent 0's moves and leaves the rest to the policy, paired per
-  island. If the steered individual gains, individual navigation pays, the
-  critic's negative far-field pricing is *wrong*, and the failure is
-  optimisation — worth attacking. If it does not gain, navigation in these
-  worlds only pays **collectively** (six navigators share six spread clusters;
-  one navigator arrives at bushes the campers already hold), no
-  individual-gradient method can find it, and the +89 to +141 headroom is a
-  coordination prize, not a skill gap. Either answer reframes the file's oldest
-  open problem. ~15 minutes including the flag. **Unmeasured.**
-* **Interleave the distributions, do not sequence them.** A batch that always
-  contains probe-world episodes keeps states where toward-moves pay *positively*
-  in every update — the rationale is no longer weight protection (capacity
-  refuted that) but keeping a positive navigation gradient present to balance the
-  scarce world's negative one. Needs `VecWorld` to run two configs side by side;
-  size it only if the one-agent steering test says individual navigation pays.
-* **No reward-side lever can work.** The gradient is negative because of what the
-  world does to a lone traveller, not because of what it pays; treat any new
-  payment, premium, or ratio proposal as pre-refuted unless it changes what
-  states end up in the batch or how many agents travel at once.
-* **Not shaping.** Paying for approach would produce approach; rule 1.
+* **Interleave the probe distribution, do not sequence it.** Mix probe-world
+  episodes into scarce training so every batch contains states where crossings
+  *complete* and toward-moves are priced positive. This attacks the wall
+  indirectly (the policy carries crossing behaviour the scarce world can then
+  price on its own states) and injects no script. Needs `VecWorld` to run two
+  configs side by side — a real change. The open risk, from `spread-nav`: the
+  scarce world's gradient may simply out-vote the probe's in the same trunk.
+* **Temporally-extended exploration.** The desert is only invisible because no
+  trajectory ever crosses it; ~20-tick correlated exploration (an agent
+  occasionally holds a sampled direction, decaying over training) would put
+  completed crossings into the data without steering at anything. The PPO
+  wrinkle: held actions are off-policy for the ratio, so they must either come
+  from the policy's own sampled move (repeated, like `decision_interval` but
+  stochastic and per-agent) or be masked out of the loss and used only to feed
+  the critic. Design before running.
+* **A travel option** — an appended action "walk toward the nearest visible
+  loaded bush for up to k ticks" — would cross the wall in one decision and is
+  exactly the shape of fix that worked before (the mask says what is reachable;
+  an option says how long to persist). The honest cost: it hands the policy a
+  scripted micro-controller, so what emerges is *when to travel*, not travel
+  itself. Decide whether that is still the project's question before building it.
+* **No reward-side lever can work.** The one-step pricing is *correct*; paying
+  more does not lengthen the deviation PPO can evaluate. And **not shaping**:
+  paying for approach would produce approach; rule 1.
+* **Not bigger frame-skip.** k=4 shortened the desert to 5–6 decisions and moved
+  nothing; each decision is still priced by the same one-step rule, and k=16
+  destroys near-field control (12.8 units per commitment, gather radius 2.0).
 
 ### 2. Nights are NOT the gap — closed, do not reopen
 
@@ -531,6 +547,11 @@ python -m sim.train --config config/nav_spread.yaml --run-name spread-nav512-2 -
     --policy-mode individual --init-from checkpoints/spread-nav512/latest.pt \
     --set "policy.hidden_sizes=[512,512]"
 python -m sim.navigation --checkpoint checkpoints/spread-nav512-2/latest.pt --baselines
+
+# the subset experiment: is the navigation prize individual or collective?
+# Steers only the first n agents and pairs each agent against itself unsteered.
+python -m sim.steering --checkpoint checkpoints/nav-spread2/latest.pt --subset 1,2,3,6
+python -m sim.steering --checkpoint checkpoints/m4h/latest.pt --subset 1,2,3,6
 ```
 
 ## Compute budget — runs are longer than they need to be
@@ -593,7 +614,10 @@ did not list:
 - `sim/steering.py` — what NAVIGATION is worth: every decision the policy makes is
   kept and only the direction of its moves is replaced, so the tick budget is
   identical and the difference is walking. The movement counterpart of
-  `sim.opportunity --force`, and the source of the +89/+113 figures.
+  `sim.opportunity --force`, and the source of the +89/+113 figures. `--subset
+  N1,N2,...` steers only the first n agents and pairs each agent against itself
+  unsteered — the individual-vs-collective split, and the source of the +173
+  lone-navigator figure.
 - `sim/advantage.py` — the toward-vs-away learning signal, measured as PPO sees
   it: one-step TD residual and GAE advantage per distance band, toward minus away,
   against the std that advantage normalisation divides by. Decision-aligned: under
@@ -1627,11 +1651,47 @@ away**, at any capacity, because A^π under the training distribution prices
 toward-moves negative beyond 20 units. The open question that now matters is
 whether that pricing is *correct*: `sim.steering` steers all six agents at once
 (+140.9 here), which is a group counterfactual, while PPO's gradient sees the
-individual one. Steering a SINGLE agent's moves and leaving the other five to the
-policy would say whether individual navigation pays at all in this world — if it
-does, the critic is wrong and this is an optimisation failure; if it does not,
-navigation only pays collectively and no individual-gradient method can find it.
-Unmeasured; it needs a small `--agents` option on `sim.steering`.
+individual one. **Measured next — see the subset experiment below.**
+
+### One steered agent — the prize is individual, first-mover-largest, and invisible to one-step improvement
+
+`sim.steering --subset` steers only the first n agents' moves at food and pairs
+every agent against *itself* unsteered on the same islands (`run_per_agent`).
+The question it decides: is the +89…+141 headroom an individual prize PPO's
+gradient fails to climb, or a collective one no individual gradient can see?
+
+| steer the first n of 6 | steered agents, paired | unsteered agents | population |
+|---|---|---|---|
+| **spread world, n=1** | **+173.0 ± 19.0 (30/40)** | **+19.5 ± 6.4** | +45.1 ± 6.1 |
+| spread, n=2 | +172.8 ± 15.5 (34/40) | +41.8 ± 8.6 | +85.5 ± 6.2 |
+| spread, n=3 | +156.1 ± 11.6 (38/40) | +64.9 ± 10.3 | +110.5 ± 7.1 |
+| spread, n=6 | +140.9 ± 8.2 (40/40) | — | +140.9 ± 8.2 |
+| **m4h, n=1** | **+138.3 ± 23.0 (22/40)** | **+12.5 ± 6.6** | +33.5 ± 7.3 |
+| m4h, n=3 | +107.7 ± 17.4 (35/40) | +61.4 ± 8.5 | +84.5 ± 9.1 |
+| m4h, n=6 | +89.1 ± 11.4 (37/40) | — | +89.1 ± 11.4 |
+
+**The coordination reading is dead, emphatically.** A lone navigator among five
+campers gains **more** than each agent does when all six navigate — +173 against
++141 in the spread world — and the five campers *also gain* (+19.5 ± 6.4; the
+navigator quits the local regrowth queue and leaves it to them). Navigation is
+the best individual strategy in every world measured, largest for the first
+mover, with positive spillover — so there is no tragedy-of-the-commons blocking
+it, and training the whole population toward it is not self-defeating. The usual
+caveat rides along: steering reads world state, so +173 is the perfect-navigation
+upper bound for an individual, not what the observation supports.
+
+**And it does not contradict the advantage check — together they name the
+barrier exactly.** The one-step δ gap at 20+ is genuinely negative under π: one
+toward-step followed by the wandering policy really does not pay, and the critic
+prices that correctly. A *sustained* deviation pays +173. Both measurements are
+right; they differ only in the length of the deviation. So the failure is
+neither the world, nor the signal, nor the critic, nor capacity: **one-step
+policy improvement cannot see a ~20-step prize.** The desert is ~19–25 ticks
+wide, every individual step into it is priced ≤ 0 by an accurate critic of the
+current policy, and PPO climbs one step at a time. `nav-commit`'s k=4 does not
+escape this — it shortens the desert to 5–6 decisions, each still priced by the
+same one-step rule — which is why uniform frame-skip failed while a full-episode
+override pays.
 
 ### Declined theft was a counting artefact — and the steals it declines are worth nothing
 
