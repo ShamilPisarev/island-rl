@@ -720,3 +720,33 @@ def test_masking_removes_doomed_attempts_that_go_unmasked(m3):
 
     assert doomed_share(True) == pytest.approx(0.0, abs=1e-9)
     assert doomed_share(False) > 0.3
+
+
+def test_equal_width_layout_change_fails_loudly_instead_of_misaligning(cfg):
+    """The silent case a width check misses, and what should happen instead.
+
+    Two configs can carry the same NUMBER of observation columns holding different
+    features: 3 bushes with a `blocked` channel is 26 dims, and so is 4 bushes
+    without it. A grow path that triggers on width would pass a checkpoint straight
+    through and read every trained weight off the wrong feature, printing nothing.
+
+    Note what the right answer is here, because it is not "remap it": with the layout
+    built in a fixed order (own, bushes, neighbours, construction, night, edge), equal
+    width plus a different layout means a feature was *swapped*, so some trained
+    input has no home in the target. `column_map` refuses, and refusing is correct --
+    the point of keying the check off the layout rather than the width is to turn a
+    silent misalignment into an error.
+    """
+    from sim.agents import observation_dim, observation_layout
+    from sim.policy import column_map
+
+    a = cfg.replace(**{"competition.observe_bush_contested": True,
+                       "observation.k_bushes": 3})
+    b = cfg.replace(**{"observation.k_bushes": 4})
+    assert observation_dim(a) == observation_dim(b) == 26, (
+        "fixture no longer exercises the equal-width case; pick other channels")
+    assert observation_layout(a) != observation_layout(b)
+
+    for src, dst in ((a, b), (b, a)):
+        with pytest.raises(ValueError, match="missing source features"):
+            column_map(observation_layout(src), observation_layout(dst))

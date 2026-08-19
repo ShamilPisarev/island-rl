@@ -80,6 +80,20 @@ carry information, cut the ones that only fill space.
 - **Never put chat formatting** (arrows, bold, bullets) into source code, commit
   messages, or files.
 
+## Always end with these two
+
+Every reply closes with them, in this order, however short the reply:
+
+- **Summary** — two or three bullets: what was done, the number that decides it, and
+  any correction. Not a restatement of the whole reply; the parts that survive if
+  they read nothing else.
+- **Next steps** — the concrete options, each one line, cheapest first, with what it
+  would cost or teach. Say plainly when there is nothing worth doing next, rather
+  than inventing an option.
+
+Headings are literally `**Summary**` and `**Next steps**`, so they can be found by
+scrolling. They come after the content, never instead of it.
+
 ---
 Structure and the "attention is the scarce resource" framing adapted from
 alexgreensh/attention-span (AGPL-3.0). Rewritten rather than copied, so nothing

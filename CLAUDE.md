@@ -23,6 +23,11 @@ What brevity does **not** licence, because this project runs on it:
 Measure before choosing a lever (rule 2), and if a claim is unverified, say so
 rather than smoothing it over.
 
+**End every reply with `**Summary**` (two or three bullets) and `**Next steps**`
+(one line per option, cheapest first).** Requested 2026-08-19; the response style in
+`.claude/output-styles/skimmable.md` carries the same rule so it survives a machine
+switch.
+
 ## Plan for the next session
 
 Written 2026-08-19, at the end of the session that ran `nav-move`, closed the
@@ -55,6 +60,14 @@ straight: the lifetime/travel *ratio* is not what makes navigation unlearnable, 
 the toward-food share does not track the reference gap across worlds, but the
 competence itself is worth more than every other lever in this file combined.
 
+**Re-forking from a navigator does not help either.** `nav-probe` → M3 → M4 is a
+dead heat with its matched control (+5.9 ± 7.5 paired) and the far-field navigation it
+starts with decays as the M3 world trains foraging back in (+7.1 → +1.4 over floor at
+20+, while berries go 18.8 → 29.1). The world trades navigation away rather than
+failing to receive it. Next lever, from the arithmetic: camping is *sufficient* in
+`scarce.yaml` (a cluster earns 1 berry per 50 ticks, an agent needs 1 per 70), so
+spread the same bushes over more clusters.
+
 **And the uptake headroom that replaced it was a counting artefact.** Per legal
 tick, `steal` uptake is 46% and `build` 29%; per *distinct opportunity* they are
 **85%** and **73%**. Forcing the remainder pays nothing (+3.6 ± 7.7 for `build`,
@@ -86,12 +99,22 @@ the current observation supports.
 
 What would actually be worth trying, in rule 2's order:
 
-* **Re-fork the chain from a navigating policy.** `nav-probe` learns 86%
-  toward-food and M1 had navigation; the chain lost it at M3 and never recovered.
-  Growing `nav-probe` up through M3 → M4 instead of `m1` is the one experiment that
-  tests whether the competence survives the milestones when it starts stronger. It
-  needs `grow_policy` to handle a wider observation, which is the documented
-  `k_bushes` trap — remap by `observation_names` rather than by position.
+* ~~**Re-fork the chain from a navigating policy.**~~ **Done, and it is a negative
+  — see the `nav-refork` section.** `nav-probe` → M3 keeps +7.1 points over floor
+  beyond 20 units at 200 updates and loses it (+1.4) by 400, arriving at exactly
+  m3-masked's forager competence. The M4 leg is a dead heat (+5.9 ± 7.5 paired) with
+  undiminished steering headroom. The chain does not fail to *transfer* navigation;
+  the world *trades it away*, in flight.
+* **Make camping insufficient — the one lever the arithmetic points at.** In
+  `scarce.yaml` a cluster regrows 2 bushes ÷ 100 ticks = 1 berry per 50 ticks, and an
+  agent eats 1 per 70 (`eat_restore` 35 ÷ `drain` 0.5), so **a lone camper earns 1.4×
+  its needs and travelling is unnecessary**. Spread the same six bushes over six
+  clusters (`bushes.num_clusters: 6`, `bushes_per_cluster: 1`) and per-cluster income
+  halves to 1 per 100 ticks, below one agent's need, so every agent must work at least
+  two clusters. Supply is unchanged at 48 berries, and the change is one line.
+  Pre-register the read: bands over the floor in the *new* world, not against
+  m3-masked's, and expect lifespan to fall for everything including the scripted
+  references — that is the world getting harder, not the policy getting worse.
 * **Why it decays is still unexplained**, and four candidates are dead (competition,
   the lifetime/travel ratio, perception below 20 units, and the whole
   seven-intervention table). A fifth worth measuring before it is worth training:
@@ -142,10 +165,12 @@ cheap one is safe:
   checkpoint forks straight into it. It also halves near-field resolution, which
   is the reason it was set to 20 in the first place — read the *near* bands as
   carefully as the far ones.
-* **`observation.k_bushes` 4 → 6** is a trap. It inserts columns in the *middle*
-  of the observation vector, so `grow_policy` cannot fork an M2/M3 checkpoint into
-  it without misaligning every later channel. Do not use `--init-from` across that
-  change without fixing the alignment first.
+* **`observation.k_bushes` 4 → 6** is safe, and an earlier version of this plan
+  said otherwise. `--init-from` maps columns by **name**: `train.py` builds
+  `column_map(observation_layout(source), observation_layout(target))` and hands it
+  to `grow_policy`, so inserted channels are handled and new columns are zeroed.
+  The trigger now keys off the layout rather than the width, so a same-width feature
+  swap raises instead of misaligning silently.
 
 Expect little from either: the 3–20 bands, where the collapse lives, have neither
 problem.
@@ -164,7 +189,7 @@ shortened, not its deliveries made fungible.
 ### Housekeeping
 
 * **Back up `checkpoints/` before switching machines.** `./backup_checkpoints.sh <dest>`
-  copies the 37 `latest.pt` files (~58MB) plus `runs/`. Both directories are
+  copies the 41 `latest.pt` files (~64MB) plus `runs/`. Both directories are
   gitignored and the chain is unlearnable from scratch, so this is the one piece
   of state git will not save for you.
 * A GPU will not help: measured, the network is **7.3%** of per-tick cost and the
@@ -331,7 +356,7 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   original verdict was reached where nothing was worth trading: giving stops being
   selected against and the flow turns directional, but it still buys no survival.
   Best checkpoint: `checkpoints/m5b` (497.5 lifespan).
-- `pytest` passes (253 tests).
+- `pytest` passes (254 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -423,6 +448,18 @@ python -m sim.navigation --checkpoint checkpoints/m4h/latest.pt --nights
 
 # what the gap actually is: navigation, priced by steering only the move directions
 python -m sim.steering --checkpoint checkpoints/m4h/latest.pt
+
+# re-forking the chain from a navigator instead of m1. A NEGATIVE: the far-field
+# navigation nav-probe brings decays as the M3 world trains foraging back in, and
+# the M4 leg is a dead heat with its matched control.
+python -m sim.train --config config/m3_masked.yaml --run-name m3-nav --updates 200 \
+    --policy-mode individual --init-from checkpoints/nav-probe/latest.pt
+python -m sim.train --config config/m3_masked.yaml --run-name m3-nav2 --updates 200 \
+    --policy-mode individual --init-from checkpoints/m3-nav/latest.pt
+python -m sim.train --config config/m4h.yaml --run-name m4h-nav --updates 200 \
+    --policy-mode individual --init-from checkpoints/m3-nav2/latest.pt
+python -m sim.train --config config/m4h.yaml --run-name m4h-direct --updates 200 \
+    --policy-mode individual --init-from checkpoints/m3-masked/latest.pt   # the control
 ```
 
 ## Compute budget — runs are longer than they need to be
@@ -497,6 +534,16 @@ did not list:
 runs alongside baselines. Same seed block for every policy, so island noise
 cancels; it costs no extra rollouts. Read those lines rather than the ± column —
 see rule 7.
+
+**`--init-from` remaps observation columns by name, and the trigger is the layout,
+not the width.** `train.py` builds `column_map(observation_layout(source),
+observation_layout(target))` from the two configs and passes it to `grow_policy`, so
+optional channels inserted mid-vector are handled and new columns are zeroed. Keying
+the check off the width instead would let two same-width, different-feature layouts
+through untouched — 3 bushes with a `blocked` channel is 26 dims and so is 4 bushes
+without it — and every trained weight would read off the wrong feature silently. That
+case now raises from `column_map`, which is correct: a swapped-out feature has no home
+in the target. Pinned by a test.
 
 **Checkpoints are scoped by run** (`checkpoints/<run_name>/latest.pt`). They were
 flat until M2, at which point a run that forks from `checkpoints/latest.pt`
@@ -1151,6 +1198,68 @@ the only way up through foraging is more legal ticks. Theft is the opposite: 60%
 of legal steals are declined, and the scripted thief — which takes them — is
 **+50.8 ± 12.2** ahead on the same islands, three times the forager's edge. The
 largest measured headroom in the M3 world is theft uptake, not navigation.
+
+### `nav-refork` — starting from a navigator changes nothing, and the world unlearns it in flight
+
+The standing proposal was to re-fork the chain from `nav-probe` (which reaches 86%
+toward-food) instead of `m1`, on the theory that the milestones lose a competence
+they were never given strongly enough. **First, the blocker was imaginary:**
+`--init-from` has always remapped observation columns by *name* —
+`train.py` builds `column_map(observation_layout(source), observation_layout(target))`
+and hands it to `grow_policy` — so nav_probe's 26 dims grow into m3's 29 (9 columns
+moved) or m4h's 55 (24 moved) with new weights zeroed. The "k_bushes trap" this file
+warned about did not exist. (The one real hole is closed: the remap now triggers on a
+layout change rather than a width change, so a same-width feature swap raises instead
+of silently misaligning.)
+
+**Second, the experiment.** `nav-probe` → M3 (individual, masked), then M4:
+
+| in the M3 world | updates | lifespan | berries | 3–6 | 6–10 | 10–20 | **20+** |
+|---|---|---|---|---|---|---|---|
+| `m3-nav` (from nav-probe) | 200 | 393.8 ± 84.5 | 18.8 | −1.0 | +5.9 | +7.6 | **+7.1** |
+| `m3-nav2` (200 more) | 400 | **470.0 ± 57.9** | 29.1 | +0.5 | +8.3 | +6.4 | **+1.4** |
+| `m3-masked` (from m2) | 300 | 471.6 | 29.1 | −1 | +9 | +6 | **+0** |
+
+Bands are points over the random floor measured in that same world. Read the two
+`nav` rows as a *trajectory*, because that is the finding: at 200 updates the
+re-forked policy still clears the floor by 7 points beyond 20 units and is a poor
+forager (18.8 berries); 200 updates later it forages exactly as well as m3-masked
+(29.1 berries, 470.0 vs 471.6 lifespan) and its far-field navigation has decayed to
++1.4. **The scarce world does not fail to transfer navigation — it trades it away,
+and the trade is visible in flight.**
+
+**And the M4 leg is a dead heat.** Both lineages grown into the m4h world by the
+same single 200-update jump, so the curriculum length matches:
+
+| | lifespan (20 eps) | shelters | nights in | berries | steering headroom |
+|---|---|---|---|---|---|
+| `m4h-nav` (from m3-nav2) | 482.5 | 3.0 | 80% | 35.5 | +92.0 ± 11.8 |
+| `m4h-direct` (from m3-masked) | 474.0 | 2.5 | 79% | 32.4 | +108.9 ± 12.0 |
+| `m4h` (the long curriculum) | 490.4 | 3.0 | 83% | — | +89.1 ± 11.4 |
+
+Paired on 40 islands, `m4h-nav` − `m4h-direct` = **+5.9 ± 7.5 ticks, better on 20 of
+40** — nothing. Their navigation bands are equally flat (+4.4 / +7.2 / +3.1 / +2.6
+against +0.5 / +6.0 / +3.3 / +4.6), and the steering headroom — the direct measure of
+how much navigation is *missing* — is undiminished in both. Starting stronger bought
+no navigation, no survival, and no reduction in the gap.
+
+**What this rules out and what it sharpens.** It kills "the chain never had enough
+navigation to carry": the chain had it and the world removed it. So the question is
+no longer transfer, it is the *equilibrium* — and the arithmetic of camping is the
+obvious suspect, because in `scarce.yaml` camping is sufficient:
+
+| | berries |
+|---|---|
+| one cluster's regrowth income (2 bushes ÷ 100 ticks) | 1 per **50** ticks |
+| one agent's demand (`eat_restore` 35 ÷ `drain` 0.5) | 1 per **70** ticks |
+
+**A lone camper at a cluster earns 1.4× what it needs, so travelling is not just
+risky — it is unnecessary.** (Six agents on three clusters is 2 per cluster, i.e. 1
+per 100 ticks each against a need of 1 per 70, which is precisely the documented
+inequality: a dominant pair eats and the excluded starve.) The single-variable test
+is in the plan: spread the same six bushes over six clusters, so per-cluster income
+halves to 1 per 100 ticks — below one agent's need — and camping cannot feed even one
+agent. Supply stays exactly 48 berries.
 
 ### Declined theft was a counting artefact — and the steals it declines are worth nothing
 

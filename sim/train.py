@@ -65,14 +65,33 @@ def fork_from_checkpoint(policy: Brain, cfg: Config, obs_dim: int) -> Brain:
     # The maps are built from the two configs' feature layouts, NOT positionally:
     # optional channels are inserted mid-vector, so a positional copy would hand
     # trained weights the wrong inputs and say nothing about it.
-    if source_cfg["obs_dim"] != obs_dim or source_cfg["n_actions"] != target_actions:
-        obs_map = column_map(observation_layout(source_world_cfg), observation_layout(cfg))
-        act_map = column_map(action_names(source_world_cfg), action_names(cfg))
-        source = grow_policy(source, obs_dim, target_actions, obs_map, act_map)
+    #
+    # The trigger is the LAYOUT, not the width. Two configs can carry the same
+    # number of columns holding different features -- 3 bushes with a `blocked`
+    # channel is 26 dims and so is 4 bushes without it -- and a width check passes
+    # such a checkpoint through untouched, reading every trained weight off the
+    # wrong feature with nothing printed. Keyed off the layout instead, that case
+    # raises from `column_map` ("target layout is missing source features"), which
+    # is the correct outcome: equal width plus a different layout means a trained
+    # input has no home in the target, so there is nothing to remap it to.
+    source_layout = observation_layout(source_world_cfg)
+    target_layout = observation_layout(cfg)
+    source_acts, target_acts = action_names(source_world_cfg), action_names(cfg)
+    if source_layout != target_layout or source_acts != target_acts:
+        obs_map = column_map(source_layout, target_layout)
+        act_map = column_map(source_acts, target_acts)
         moved = sum(1 for i, j in enumerate(obs_map) if i != j)
-        print(f"grew {where} from obs_dim {source_cfg['obs_dim']}->{obs_dim}, "
-              f"actions {source_cfg['n_actions']}->{target_actions} "
-              f"({moved} feature columns remapped, new weights zeroed)")
+        if (obs_dim, target_actions) == (source_cfg["obs_dim"], source_cfg["n_actions"]):
+            # Same width, different order: grow_policy still does the right thing
+            # (it copies by map and zeroes nothing that matters), but say so, because
+            # "grew" would read as a milestone step when it is a reshuffle.
+            print(f"remapped {where} in place: {moved} feature columns moved, "
+                  f"same obs_dim {obs_dim} and {target_actions} actions")
+        else:
+            print(f"grew {where} from obs_dim {source_cfg['obs_dim']}->{obs_dim}, "
+                  f"actions {source_cfg['n_actions']}->{target_actions} "
+                  f"({moved} feature columns remapped, new weights zeroed)")
+        source = grow_policy(source, obs_dim, target_actions, obs_map, act_map)
         where = f"the grown {source_cfg['mode']} policy"
 
     source_mode = source.config_dict()["mode"]
