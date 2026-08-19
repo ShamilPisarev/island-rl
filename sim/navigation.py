@@ -189,23 +189,36 @@ def night_exposure(cfg: Config, act_fn: ActFn, episodes: int = 10, seed: int = 1
     dists: list[float] = []
     lifespans: list[float] = []
     shelters: list[float] = []
+    # Distance to the nearest finished shelter by cycle phase, keyed by how many
+    # shelters exist. The conditioning is load-bearing: shelters accumulate over an
+    # episode, so pooling phases across the run puts early cycles (nothing built)
+    # into the early-phase buckets and manufactures an inward "drift" that is
+    # construction progress rather than a response to dusk.
+    by_phase: dict[tuple[int, int], list[float]] = {}
 
     for e in range(episodes):
         w = World(cfg, seed=seed + e)
         obs = w.observations()
         for _ in range(cfg.world.max_ticks):
-            _, is_night = night_phase(w.tick, cfg)
+            phase, is_night = night_phase(w.tick, cfg)
             mask = w.action_mask()
             if night_random and is_night:
                 actions = np.array([rng.choice(np.flatnonzero(mask[i])) if mask[i].any() else 0
                                     for i in range(cfg.world.num_agents)], dtype=np.int64)
             else:
                 actions = act_fn(obs, mask)
+            done = (w.site_wood_needed + w.site_stone_needed) == 0
+            n_done = int(done.sum())
+            if n_done:
+                bucket = min(int(phase * 10), 9)
+                for i in np.flatnonzero(w.pool.alive):
+                    by_phase.setdefault((n_done, bucket), []).append(
+                        float(np.hypot(w.site_x[done] - w.pool.x[i],
+                                       w.site_z[done] - w.pool.z[i]).min()))
             if is_night:
-                done = (w.site_wood_needed + w.site_stone_needed) == 0
                 for i in np.flatnonzero(w.pool.alive):
                     night += 1
-                    if not done.any():
+                    if not n_done:
                         exposed += 1
                         none_done += 1
                         continue
@@ -227,7 +240,10 @@ def night_exposure(cfg: Config, act_fn: ActFn, episodes: int = 10, seed: int = 1
             "none_finished": none_done / exposed if exposed else float("nan"),
             "mean_distance": float(np.mean(dists)) if dists else float("nan"),
             "median_distance": float(np.median(dists)) if dists else float("nan"),
-            "lifespan": float(np.mean(lifespans)), "shelters": float(np.mean(shelters))}
+            "lifespan": float(np.mean(lifespans)), "shelters": float(np.mean(shelters)),
+            "distance_by_phase": {f"{n}|{b}": float(np.mean(v))
+                                  for (n, b), v in sorted(by_phase.items())
+                                  if len(v) >= 30}}
 
 
 def _row(label: str, bands: list[dict[str, float]]) -> str:
@@ -323,6 +339,23 @@ def main() -> None:
         print("  the floor keeps the learned policy BY DAY and randomises only the"
               "\n  night, because the usual baselines never finish a shelter and so"
               "\n  produce no night rows at all.")
+
+        # Does the policy close in as dusk approaches? Compared against the
+        # scripted builder, which does, and at a FIXED number of finished shelters
+        # so construction progress cannot masquerade as a dusk response.
+        night_from = 1.0 - cfg.construction.night_fraction
+        print(f"\n  distance to the nearest FINISHED shelter by cycle phase "
+              f"(night from {night_from:g}, shelter_radius "
+              f"{cfg.construction.shelter_radius:g}):")
+        builder = night_exposure(cfg, make_act_fn("builder", cfg, None, args.seed),
+                                 args.episodes, args.seed)
+        for name, res in (("learned", rows[0][1]), ("builder", builder)):
+            counts = sorted({int(k.split("|")[0]) for k in res["distance_by_phase"]})
+            for n in counts[-2:]:
+                cells = " ".join(
+                    f"{b/10:.1f}={res['distance_by_phase'][f'{n}|{b}']:4.1f}"
+                    for b in range(10) if f"{n}|{b}" in res["distance_by_phase"])
+                print(f"  {name:8} {n} shelters up:  {cells}")
 
     out = Path(args.report)
     out.parent.mkdir(parents=True, exist_ok=True)

@@ -47,6 +47,14 @@ travel helps a wanderer more than it helps something that already walks straight
 Whatever the residual is, the toward-food share does not measure it. Full write-up
 in the M3 section under "`nav-move` — the ratio moved, navigation did not".
 
+**But navigation is now priced, and it is the gap.** Steering the policy's moves
+at the nearest berry-bearing bush — every decision left alone, the tick budget
+identical — is worth **+89.1 ± 11.4**, and with a night home-run **+113.2 ± 10.7**,
+beating the scripted builder. So `nav-move`'s conclusion needs its scope kept
+straight: the lifetime/travel *ratio* is not what makes navigation unlearnable, and
+the toward-food share does not track the reference gap across worlds, but the
+competence itself is worth more than every other lever in this file combined.
+
 **And the uptake headroom that replaced it was a counting artefact.** Per legal
 tick, `steal` uptake is 46% and `build` 29%; per *distinct opportunity* they are
 **85%** and **73%**. Forcing the remainder pays nothing (+3.6 ± 7.7 for `build`,
@@ -57,36 +65,52 @@ Do not re-run: `exclusive_bushes` (`nav-compete`, flat), `move_step` (`nav-move`
 flat), entropy, γ, contest perception, brain sharing, 3.3× budget (all flat, see
 the seven-intervention table). Do not chase `build` or `steal` uptake.
 
-### 1. Go home at dusk — the largest measured gap (start here)
+### 1. Navigation — worth +89 to +113 ticks, more than everything else (start here)
 
-**m4h is exposed on 18–19% of night agent-ticks, and on 100% of them a finished
-shelter already existed**, a mean 13.6 units away (median 8.0, ~17 ticks of
-walking). The scripted builder is exposed 0% of the time and is +72.6 ± 10.5 ahead
-on 40 paired islands. Its build volume is barely higher (14.8 against a forced
-11.9) and its shelters barely more (3.52 against 2.90), so **the edge is being
-indoors, not building more**.
+`sim.steering` keeps every decision the policy makes and replaces only the direction
+of its moves. On m4h, 40 paired islands: **+89.1 ± 11.4** steering at food, **+113.2
+± 10.7** steering at food by day and the nearest finished shelter at night — which
+beats the scripted builder by about 40 ticks, with deaths falling 3.35 → 0.62.
 
 ```bash
-python -m sim.navigation --checkpoint checkpoints/m4h/latest.pt --nights
+python -m sim.steering --checkpoint checkpoints/m4h/latest.pt
 ```
 
-Night behaviour is better than chance (19% exposed against a 30% floor), so this is
-a partial competence to finish, not one to install. Two things to know before
-choosing a lever:
+**This is the project's oldest open problem finally carrying a price tag.** It also
+explains every null in this file: the policy is *tick-starved*, so interventions
+that spend its ticks differently net zero (forcing builds +3.6 ± 7.7, forcing steals
+−8.3 ± 4.1, going home at dusk −0.3 ± 7.6) while the one that adds effective ticks
+is worth 89. Read the steering caveat before designing anything: it reads world
+state, so it is an upper bound on what perfect navigation buys, not proof of what
+the current observation supports.
 
-* The floor needs the hybrid control that `--nights` builds — the learned policy by
-  day, uniform legal actions at night. Ordinary baselines never finish a shelter, so
-  they produce no night rows at all.
-* This is the shelter-side twin of the navigation collapse: `sim.navigation`'s
-  toward-SHELTER rows sit at 41.7% / 51.8% / 55.3% at 0–3 / 3–6 / 6–10 units, and
-  **no random floor is measurable for them** (see above), so read them as
-  suggestive, not settled.
+What would actually be worth trying, in rule 2's order:
 
-Candidate levers, in the order rule 2 would try them: a night channel in the
-observation (does the policy even know it is dusk?), then `shelter_radius`, then
-site count. Measure which before spending a run.
+* **Re-fork the chain from a navigating policy.** `nav-probe` learns 86%
+  toward-food and M1 had navigation; the chain lost it at M3 and never recovered.
+  Growing `nav-probe` up through M3 → M4 instead of `m1` is the one experiment that
+  tests whether the competence survives the milestones when it starts stronger. It
+  needs `grow_policy` to handle a wider observation, which is the documented
+  `k_bushes` trap — remap by `observation_names` rather than by position.
+* **Why it decays is still unexplained**, and four candidates are dead (competition,
+  the lifetime/travel ratio, perception below 20 units, and the whole
+  seven-intervention table). A fifth worth measuring before it is worth training:
+  whether the *value function* can even see the difference — if V is flat across
+  "10 units from food" versus "on food", PPO has no gradient to walk up.
+* **Not shaping.** Paying for approach would produce approach; rule 1.
 
-### 2. Uptake is closed — do not reopen it
+### 2. Nights are NOT the gap — closed, do not reopen
+
+The night channel already exists (`night.phase`, `night.is_night`, plus a
+`site{j}.complete` flag per site), the nearest finished shelter is in the
+observation on 99.3% of night ticks, and the policy ignores all of it — it holds
+~3.2 units from shelter all day and drifts outward at night, where the builder
+closes to 2.8 by phase 0.5 and holds. Forcing the home run lifts nights indoors
+71% → 94% and buys **−0.3 ± 7.6 ticks**, because berries fall 34.7 → 29.2 and
+shelters 2.77 → 2.15. It is worth ~+24 only *on top of* navigation. Full write-up
+in the M4 section under "The night channel already existed".
+
+### 3. Uptake is closed — do not reopen it
 
 Both "the mask says yes and the policy shrugs" items from the last plan are
 answered, and they were the same error twice.
@@ -107,7 +131,7 @@ forcing every legal steal yields 423 an episode against the thief's 1111, becaus
 the thief positions itself beside loaded neighbours. Same shape as item 1 — going
 somewhere, not choosing differently.
 
-### 3. Perception beyond 20 units, if you want the navigation thread anyway
+### 4. Perception beyond 20 units, if you want the navigation thread anyway
 
 The one place perception *is* deficient: at 20+ units the target is absent from
 the observation 31% of the time and its direction is clipped on 90% of ticks
@@ -126,7 +150,7 @@ cheap one is safe:
 Expect little from either: the 3–20 bands, where the collapse lives, have neither
 problem.
 
-### 4. Exchange, if you want to push M5 further
+### 5. Exchange, if you want to push M5 further
 
 `m5b` retested exchange on the working economy: giving stopped being selected
 against and the flow turned directional (reciprocity 0.85 → 0.65), but it still
@@ -207,12 +231,20 @@ In rough order of how much they would teach:
    time there and the ±1 offset clip cannot bite under 20 units by arithmetic, yet
    the bands are flat with the target plainly visible. *Not* entropy, γ, contest
    perception, brain sharing or budget (the seven-intervention table).
-   **The premise was also wrong.** The paired gap to the forager halved
-   (−32.7 ± 10.8 → −15.4 ± 10.0 ticks) between the slow and fast worlds with
-   navigation unchanged, so the toward-food share is not measuring the gap. What
-   the numbers point at instead is **declined theft**: `steal` legal on 11.6% of
-   ticks and taken on 46.4%, against a scripted thief that takes them and is
-   +50.8 ± 12.2 ahead. See plan item 1.
+   **What it is worth, measured: +89 to +113 ticks.** `sim.steering` keeps every
+   decision the policy makes and replaces only the direction of its moves. On m4h,
+   40 paired islands, that is **+89.1 ± 11.4** steering at food and **+113.2 ± 10.7**
+   with a night home-run — beating the scripted builder by ~40, with deaths 3.35 →
+   0.62. Nothing else in this file is that large. It reads world state, so treat it
+   as an upper bound on perfect navigation rather than as what the current
+   observation supports.
+   **Two scope corrections that go with it.** `nav-move`'s finding stands as
+   written — the lifetime/travel ratio does not make navigation learnable, and the
+   paired gap to the forager halved (−32.7 ± 10.8 → −15.4 ± 10.0) while the
+   toward-food share stayed flat, so that *share* does not track the gap across
+   worlds. But the stronger sentence it invited, that navigation is not the gap, is
+   wrong: steering says it is. And the theft headroom that was promoted in its place
+   was a counting artefact (open problem 3).
 
    *Metric warning, learned the hard way.* An aggregate toward-food share is
    **confounded and must not be used** — an agent parked on its target scores
@@ -299,7 +331,7 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   original verdict was reached where nothing was worth trading: giving stops being
   selected against and the flow turns directional, but it still buys no survival.
   Best checkpoint: `checkpoints/m5b` (497.5 lifespan).
-- `pytest` passes (250 tests).
+- `pytest` passes (253 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -385,8 +417,12 @@ python -m sim.evaluate --checkpoint checkpoints/nav-move/latest.pt --baselines -
 python -m sim.opportunity --checkpoint checkpoints/m3-masked/latest.pt --force steal
 python -m sim.opportunity --checkpoint checkpoints/m4h/latest.pt --force build
 
-# what M4's remaining gap actually is: nights spent outside a shelter that exists
+# the night thread: exposure, its floor, and the dusk-approach table. A NEGATIVE --
+# the clock and the shelter are both already observed and the policy ignores them.
 python -m sim.navigation --checkpoint checkpoints/m4h/latest.pt --nights
+
+# what the gap actually is: navigation, priced by steering only the move directions
+python -m sim.steering --checkpoint checkpoints/m4h/latest.pt
 ```
 
 ## Compute budget — runs are longer than they need to be
@@ -443,6 +479,10 @@ did not list:
   `--nights`: why a night tick is spent outside, with a night-behaviour floor that
   keeps the policy by day and randomises only the night. That floor exists because
   the ordinary baselines never finish a shelter and so produce no night rows.
+- `sim/steering.py` — what NAVIGATION is worth: every decision the policy makes is
+  kept and only the direction of its moves is replaced, so the tick budget is
+  identical and the difference is walking. The movement counterpart of
+  `sim.opportunity --force`, and the source of the +89/+113 figures.
 - `sim/opportunity.py` — opportunity versus uptake per action, read off the action
   mask. It exists because "the policy rarely does X" has meant three unrelated
   things here: X almost never legal (`m4f`'s `chop`, a world problem), X legal and
@@ -1054,8 +1094,14 @@ It is not: in the slow world the gap to the forager is −32.7 ± 10.8 paired, i
 fast world it is −15.4 ± 10.0, and **navigation is flat across that halving.**
 Faster travel helps a policy that wanders more than it helps one that already
 walks straight to food, so half the gap closed without a point of navigation being
-recovered. Whatever the residual gap is, it is not measured by the toward-food
-share.
+recovered. The toward-food *share* therefore does not track the reference gap across
+worlds.
+
+**Do not read that as "navigation is not the gap", which is what this section said
+first.** `sim.steering` later priced the competence directly — replace only the
+direction of m4h's moves and it gains **+89.1 ± 11.4**, or **+113.2 ± 10.7** with a
+night home-run, beating the scripted builder. What `nav-move` retires is the *ratio*
+explanation and the *metric*, not the constraint.
 
 **Perception is acquitted below 20 units, and there is a correction.**
 `sim.navigation` now also reports whether the bush it scores against was
@@ -1710,6 +1756,84 @@ measurement.
 
 Beyond that, 11.25 units an episode still die in inventories and the delivery rate
 is 52% against the builder's 81%.
+
+### The night channel already existed — and the night is not the gap. Navigation is.
+
+The plan's first lever was "a night channel in the observation (does the policy even
+know it is dusk?)". **It has known all along.** The M4 observation carries
+`night.phase` and `night.is_night`, and every site carries an explicit
+`site{j}.complete` flag. Nor is the shelter hidden the way the nearest berry-bearing
+bush is: `k_sites` is 2 of 4, but the nearest *finished* shelter is in the
+observation on **99.3%** of night ticks (96.3% of the exposed ones, mean rank 0.11 of
+4), because sites get finished where agents already live. No run was needed to
+retire this; reading `sim/agents.py` and one measurement did it.
+
+**What the policy does with the clock: nothing.** Distance to the nearest finished
+shelter by cycle phase, night from 0.75, at a FIXED number of finished shelters —
+the conditioning matters, because shelters accumulate over an episode and pooling
+phases across a run turns construction progress into a fake inward "drift":
+
+| 3 shelters up | 0.0 | 0.2 | 0.4 | 0.6 | **0.7** | **0.8** | **0.9** |
+|---|---|---|---|---|---|---|---|
+| learned (m4h) | 3.6 | 3.3 | 3.2 | 3.1 | 3.3 | **3.8** | **4.0** |
+| scripted builder | 4.1 | 5.7 | 5.2 | 2.9 | **2.8** | **2.8** | **2.8** |
+
+The builder starts closing at phase 0.5 and holds at 2.8, well inside
+`shelter_radius` 6.0. The learned policy holds ~3.2 all day and **drifts outward
+once night falls**. So it sees dusk and ignores it.
+
+**And making it go home buys nothing.** Same weights, one override: from phase `h`
+onward, any agent outside `shelter_radius` walks at the nearest finished shelter.
+40 paired islands:
+
+| m4h | lifespan | nights indoors | berries | shelters | vs the unmodified policy |
+|---|---|---|---|---|---|
+| learned (control) | 467.1 | 71.4% | 34.7 | 2.77 | — |
+| go home from 0.75 (dusk) | 472.7 | **89.4%** | 30.4 | 2.27 | **+5.6 ± 6.8** |
+| go home from 0.6 | 467.5 | **92.0%** | 29.2 | 2.30 | **−0.3 ± 7.6** |
+| go home from 0.5 | 465.7 | **93.9%** | 28.2 | 2.15 | **+1.4 ± 6.6** |
+| scripted builder | 539.8 | 99.7% | **41.8** | **3.52** | +72.6 ± 10.5 |
+
+Nights indoors goes from 71% to 94% — nearly the builder's number — and survival
+does not move, because the ticks come straight out of foraging and building
+(berries 34.7 → 28.2, shelters 2.77 → 2.15). **The night hours are productive
+hours.** Note the builder's row: it is indoors 99.7% *and* gathers more *and*
+builds more, which is not a trade-off it has to make.
+
+**Which is the whole story: this policy is tick-starved.** Every intervention that
+spends ticks differently has now come back at zero — forcing builds (+3.6 ± 7.7),
+forcing steals (−8.3 ± 4.1), going home (−0.3 ± 7.6). So measure the thing that
+*adds* ticks. `sim.steering` keeps every decision the policy makes and replaces only
+the direction of its moves, steering them at the nearest berry-bearing bush (and at
+night, optionally, the nearest finished shelter). The tick budget is identical:
+
+| m4h, 40 paired islands | lifespan | berries | shelters | nights in | deaths | vs the policy |
+|---|---|---|---|---|---|---|
+| learned (control) | 467.1 | 34.7 | 2.77 | 71.4% | 3.35 | — |
+| **steered: food** | **556.3** | **49.9** | 3.25 | 53.6% | 1.57 | **+89.1 ± 11.4 (38/40)** |
+| **steered: food + home** | **580.3** | 45.0 | 3.17 | 86.9% | **0.62** | **+113.2 ± 10.7 (39/40)** |
+| scripted builder | 539.8 | 41.8 | 3.52 | 99.7% | 1.52 | +72.6 ± 10.5 |
+| scripted forager | 465.8 | 50.1 | 0 | 0% | 3.12 | +1.4 ± 11.1 |
+
+**Navigation alone is worth +89 ticks, and with the night rule +113 — which beats
+the scripted builder by about 40.** Nothing else measured in this project comes
+close: the largest previous effect was construction existing at all (−104.5 when
+suppressed), and the largest *lever* was `m4h`'s fungible deliveries at +30.
+Deaths fall from 3.35 to 0.62.
+
+Read the last two rows together, because they say why the night thread looked
+promising and was not: food-only steering *lowers* nights indoors to 53.6% and still
+gains 89 ticks, while adding the home rule on top is worth a further ~24. **Going
+home pays only once navigation has freed the ticks to pay with.**
+
+**The caveat that rides with the number.** The steering rule reads world state — the
+nearest berry-bearing bush among all of them, where the observation carries the
+`k_bushes` nearest bushes loaded or not, and on m4h the target is missing from the
+observation on 54% of ticks beyond 20 units. So +89/+113 is an upper bound on what
+perfect navigation is worth, not a demonstration that it is learnable from the
+current 61-dim observation. What keeps it from being a fantasy: `nav_probe` shows
+PPO reaching 86% toward-food from long range, and the scripted forager scores 100%
+off the observation alone.
 
 ## Milestone 5 — exchange
 
