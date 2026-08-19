@@ -68,6 +68,14 @@ failing to receive it. Next lever, from the arithmetic: camping is *sufficient* 
 `scarce.yaml` (a cluster earns 1 berry per 50 ticks, an agent needs 1 per 70), so
 spread the same bushes over more clusters.
 
+**Making camping insufficient does not help, and it is the cleanest negative in the
+file.** `nav-spread` (six clusters of one bush, same 48 berries) verifiably punishes
+camping — the zero-shot gap to the forager widens −32.7 → −73.2 — and 400 updates
+produced no navigation, no survival over the zero-shot control (+7.4 ± 8.5), and
+steering headroom *up* at +140.9 ± 8.2 on 40/40 islands. The critic is not the blocker
+either: V falls monotonically ~1.2 from "on food" to 10–20 units away. What is left is
+the per-step signal — ~0.06 of advantage per move against ±1.0 of reward noise.
+
 **And the uptake headroom that replaced it was a counting artefact.** Per legal
 tick, `steal` uptake is 46% and `build` 29%; per *distinct opportunity* they are
 **85%** and **73%**. Forcing the remainder pays nothing (+3.6 ± 7.7 for `build`,
@@ -105,21 +113,23 @@ What would actually be worth trying, in rule 2's order:
   m3-masked's forager competence. The M4 leg is a dead heat (+5.9 ± 7.5 paired) with
   undiminished steering headroom. The chain does not fail to *transfer* navigation;
   the world *trades it away*, in flight.
-* **Make camping insufficient — the one lever the arithmetic points at.** In
-  `scarce.yaml` a cluster regrows 2 bushes ÷ 100 ticks = 1 berry per 50 ticks, and an
-  agent eats 1 per 70 (`eat_restore` 35 ÷ `drain` 0.5), so **a lone camper earns 1.4×
-  its needs and travelling is unnecessary**. Spread the same six bushes over six
-  clusters (`bushes.num_clusters: 6`, `bushes_per_cluster: 1`) and per-cluster income
-  halves to 1 per 100 ticks, below one agent's need, so every agent must work at least
-  two clusters. Supply is unchanged at 48 berries, and the change is one line.
-  Pre-register the read: bands over the floor in the *new* world, not against
-  m3-masked's, and expect lifespan to fall for everything including the scripted
-  references — that is the world getting harder, not the policy getting worse.
-* **Why it decays is still unexplained**, and four candidates are dead (competition,
-  the lifetime/travel ratio, perception below 20 units, and the whole
-  seven-intervention table). A fifth worth measuring before it is worth training:
-  whether the *value function* can even see the difference — if V is flat across
-  "10 units from food" versus "on food", PPO has no gradient to walk up.
+* ~~**Make camping insufficient.**~~ **Done, and it is the strongest negative yet —
+  see the `nav-spread` section.** Six clusters of one bush each (same 48 berries)
+  halves per-cluster income below one agent's need, and the world change is verified:
+  the camper's paired gap to the forager widens −32.7 → −73.2 while the forager gets
+  *better*. Four hundred updates produced no navigation (+1.7 over floor at 10–20),
+  no survival over the zero-shot control (+7.4 ± 8.5), and steering headroom that
+  *rose* to **+140.9 ± 8.2 on 40 of 40 islands**. Raising the return on the
+  competence by 58% did not make PPO acquire it.
+* ~~**Whether the value function can see the difference.**~~ **Measured, and it can.**
+  `sim.navigation --value` holds hunger and the tick window and shows V falling
+  monotonically by ~1.2 from "on food" to 10–20 units away. The gradient is there.
+* **What is left is temporal resolution, and it is arithmetic.** ~1.2 of value across
+  a 15-unit band, 0.8 units per move, is **~0.06 of advantage per step** against ±1.0
+  per-tick reward noise from a gather landing or not — a real slope roughly twenty
+  times smaller than the noise around it. The lever that follows is a policy that
+  commits to a direction for k ticks (a repeat/duration action, or frame-skip), which
+  multiplies the per-decision slope without touching the reward. **Unverified.**
 * **Not shaping.** Paying for approach would produce approach; rule 1.
 
 ### 2. Nights are NOT the gap — closed, do not reopen
@@ -189,7 +199,7 @@ shortened, not its deliveries made fungible.
 ### Housekeeping
 
 * **Back up `checkpoints/` before switching machines.** `./backup_checkpoints.sh <dest>`
-  copies the 41 `latest.pt` files (~64MB) plus `runs/`. Both directories are
+  copies the 44 `latest.pt` files (~69MB) plus `runs/`. Both directories are
   gitignored and the chain is unlearnable from scratch, so this is the one piece
   of state git will not save for you.
 * A GPU will not help: measured, the network is **7.3%** of per-tick cost and the
@@ -245,7 +255,7 @@ In rough order of how much they would teach:
    fourth site, fungible deliveries — works by bringing things TO an agent whose
    navigation has decayed to chance. The seven M3 interventions all failed
    because none of them touched navigation.
-   **Why: four explanations tried, four dead.** *Not* competition —
+   **Why: six explanations tried, six dead.** *Not* competition —
    `nav-compete` turns `exclusive_bushes` off and changes nothing (53.0% / 54.4% /
    57.0% against m3-masked's 50.8% / 55.8% / 53.6%). *Not* the target expiring
    during the walk, which was the leading candidate and was quantitative: a berry
@@ -255,7 +265,12 @@ In rough order of how much they would teach:
    perception below 20 units — the target is in the observation 94–100% of the
    time there and the ±1 offset clip cannot bite under 20 units by arithmetic, yet
    the bands are flat with the target plainly visible. *Not* entropy, γ, contest
-   perception, brain sharing or budget (the seven-intervention table).
+   perception, brain sharing or budget (the seven-intervention table). *Not* a weak
+   starting policy — `nav-refork` grows the chain from a navigator and the world
+   trades the competence away in flight. *Not* the equilibrium: `nav-spread` makes
+   camping insufficient, verified, and navigation stays flat while steering headroom
+   rises to +140.9 ± 8.2. *Not* the critic: V falls ~1.2 from "on food" to 10–20 units
+   away, so the gradient exists.
    **What it is worth, measured: +89 to +113 ticks.** `sim.steering` keeps every
    decision the policy makes and replaces only the direction of its moves. On m4h,
    40 paired islands, that is **+89.1 ± 11.4** steering at food and **+113.2 ± 10.7**
@@ -356,7 +371,7 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   original verdict was reached where nothing was worth trading: giving stops being
   selected against and the flow turns directional, but it still buys no survival.
   Best checkpoint: `checkpoints/m5b` (497.5 lifespan).
-- `pytest` passes (254 tests).
+- `pytest` passes (256 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -460,6 +475,18 @@ python -m sim.train --config config/m4h.yaml --run-name m4h-nav --updates 200 \
     --policy-mode individual --init-from checkpoints/m3-nav2/latest.pt
 python -m sim.train --config config/m4h.yaml --run-name m4h-direct --updates 200 \
     --policy-mode individual --init-from checkpoints/m3-masked/latest.pt   # the control
+
+# making camping insufficient: same 48 berries over six clusters instead of three.
+# A NEGATIVE, and the sharpest one -- the return on navigation rises 58% and the
+# policy still will not travel. `--updates 0` is the zero-shot control again.
+python -m sim.train --config config/nav_spread.yaml --run-name nav-spread-zero \
+    --updates 0 --policy-mode individual --init-from checkpoints/m3-masked/latest.pt
+python -m sim.train --config config/nav_spread.yaml --run-name nav-spread --updates 200 \
+    --policy-mode individual --init-from checkpoints/m2/latest.pt
+python -m sim.train --config config/nav_spread.yaml --run-name nav-spread2 --updates 200 \
+    --policy-mode individual --init-from checkpoints/nav-spread/latest.pt
+python -m sim.navigation --checkpoint checkpoints/nav-spread2/latest.pt --baselines --value
+python -m sim.steering --checkpoint checkpoints/nav-spread2/latest.pt
 ```
 
 ## Compute budget — runs are longer than they need to be
@@ -516,6 +543,9 @@ did not list:
   `--nights`: why a night tick is spent outside, with a night-behaviour floor that
   keeps the policy by day and randomises only the night. That floor exists because
   the ordinary baselines never finish a shelter and so produce no night rows.
+- `sim/navigation.py --value` — V by distance to food, with hunger *and* the tick
+  window held. Without the tick window the measurement inverts, because far-from-food
+  ticks bunch at the start of an episode and V is then reading remaining horizon.
 - `sim/steering.py` — what NAVIGATION is worth: every decision the policy makes is
   kept and only the direction of its moves is replaced, so the tick budget is
   identical and the difference is walking. The movement counterpart of
@@ -1260,6 +1290,83 @@ inequality: a dominant pair eats and the excluded starve.) The single-variable t
 is in the plan: spread the same six bushes over six clusters, so per-cluster income
 halves to 1 per 100 ticks — below one agent's need — and camping cannot feed even one
 agent. Supply stays exactly 48 berries.
+
+### `nav-spread` — camping made insufficient: the incentive rose 58% and the behaviour did not move
+
+The last explanation standing after `nav-refork` was the *equilibrium*: in
+`scarce.yaml` a lone camper's cluster earns 1 berry per 50 ticks against a need of 1
+per 70, so travelling is not merely risky, it is unnecessary. `config/nav_spread.yaml`
+spreads the same six bushes over six clusters (`num_clusters` 3 → 6,
+`bushes_per_cluster` 2 → 1), halving per-cluster income to 1 berry per 100 ticks —
+below one agent's need — while **supply stays exactly 48 berries**.
+
+**The world change did what it was supposed to.** Zero-shot, the unchanged m3-masked
+policy in the spread world, 20 paired islands:
+
+| | its own world | **the spread world** |
+|---|---|---|
+| m3-masked weights, zero-shot | 464.7 | 436.3 |
+| scripted forager | 497.4 | **509.5** |
+| **paired gap to the forager** | **−32.7 ± 10.8** | **−73.2 ± 13.7** |
+
+The forager gets slightly *better* and the camper 28 ticks worse, so the world now
+discriminates exactly as intended: it punishes standing still without being harder
+for something that walks.
+
+**Navigation did not appear.** Points over the random floor measured in the same
+world, and the run was extended to 400 updates because `nav-refork` had shown 200
+from a fresh start can be under-trained:
+
+| | updates | lifespan | berries | 3–6 | 6–10 | **10–20** | **20+** |
+|---|---|---|---|---|---|---|---|
+| `nav-spread` | 200 | 424.8 | 22.6 | +2.5 | +4.4 | **+0.8** | **+1.1** |
+| `nav-spread2` | 400 | 433.4 | 23.5 | +7.3 | +3.2 | **+1.7** | **+1.7** |
+| m3-masked, in its own world | 300 | 471.6 | 29.1 | −1 | +9 | **+6** | **+0** |
+
+And training bought nothing at all: `nav-spread2` against the *zero-shot* m3-masked
+weights in the same world is **+7.4 ± 8.5 ticks, better on 22 of 40 islands**. Four
+hundred updates in a world that starves campers produced a policy that still does not
+travel — it simply eats less (23.5 berries against the forager's 38.8).
+
+**The sharpest way to see it: the incentive is now bigger and still unclaimed.**
+`sim.steering`, which replaces only the direction of the policy's moves:
+
+| steering headroom | m4h world | **spread world** |
+|---|---|---|
+| steered at food − learned | +89.1 ± 11.4 (38/40) | **+140.9 ± 8.2 (40/40)** |
+| steered at food, absolute | 556.3 | **582.9** |
+| the scripted forager, same world | 465.8 | 511.5 |
+
+**Navigation is worth 58% more here than in the m4h world, on every single island,
+and PPO left all of it on the table.** That is as clean a statement as this project
+has: raising the return on a competence does not make PPO acquire it.
+
+**And the critic is not the problem either.** The remaining hypothesis was that V
+cannot separate "far from food" from "on food", leaving no gradient to climb. It can.
+V by distance to the nearest berry-bearing bush, with hunger held in [55, 85] *and*
+the tick window held to 150–450 (both conditions matter — see below):
+
+| `nav-spread2` | 0–3 | 3–6 | 6–10 | 10–20 | 20+ |
+|---|---|---|---|---|---|
+| V | **2.27** | 1.43 | 1.16 | 1.04 | 1.21 |
+| vs the nearest band | — | −0.84 | −1.11 | **−1.23** | −1.05 |
+
+A clean monotone fall of ~1.2 in value from standing on food to being 10–20 units
+away, so the gradient exists. `m3-masked` has the same shape (2.15 → 1.23). Two
+caveats kept: the 20+ band ticks back up, and the `nav-probe` control is
+**inconclusive** — that policy is at its cluster on almost every mid-episode tick, so
+its far bands have too few samples to compare. Without the tick window the whole
+measurement inverts, because far-from-food ticks bunch at the start of an episode and
+V is reading remaining horizon; `sim.navigation --value` holds both.
+
+**What is left, and it is now arithmetic rather than a hypothesis.** The value
+difference across the whole 10–20 band is ~1.2, and one move covers 0.8 units, so a
+single step toward food is worth about **1.2 × 0.8 / 15 ≈ 0.06** of advantage — against
+per-tick reward noise of ±1.0 from a gather landing or not. The gradient is real and
+roughly twenty times smaller than the noise it has to be found in. That points at
+temporal resolution rather than at the world: a policy that commits to a direction for
+k ticks, or a longer-horizon advantage, would see the same slope at twenty times the
+step size. **Unverified** — the arithmetic is sound but nothing has been run.
 
 ### Declined theft was a counting artefact — and the steals it declines are worth nothing
 

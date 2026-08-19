@@ -1,0 +1,55 @@
+# Make CAMPING insufficient. One variable off m3_masked, and it is the food's
+# geography rather than its quantity.
+#
+# THE ARITHMETIC THAT MOTIVATES IT. Every other explanation for the navigation
+# collapse is dead -- competition (`nav_compete`), the berry-lifetime/travel-time
+# ratio (`nav_move`, which moved it 2.4x and changed nothing), perception below 20
+# units, and re-forking the chain from a navigating policy (`nav-refork`, a dead
+# heat whose far-field navigation decayed away in flight). What survives is the
+# equilibrium: in `scarce.yaml` a policy does not NEED to travel.
+#
+#   one cluster's regrowth income   2 bushes / 100 ticks   = 1 berry per  50 ticks
+#   one agent's demand              eat_restore 35 / 0.5   = 1 berry per  70 ticks
+#                                                            ------------------
+#   a lone camper therefore earns 1.4x what it needs.
+#
+# So standing still is not merely safer than walking, it is sufficient, and PPO
+# unlearning navigation is correct play. (With six agents on three clusters it is
+# two per cluster, i.e. 1 berry per 100 ticks each against a need of 1 per 70 --
+# which is exactly the documented M3 inequality: a dominant pair eats and the
+# excluded starve.)
+#
+# THE LEVER. Spread the same six bushes over six clusters instead of three:
+#
+#   one cluster's income            1 bush / 100 ticks     = 1 berry per 100 ticks
+#
+# That is 0.7x one agent's need, so camping cannot feed even one agent and every
+# agent has to work at least two clusters. SUPPLY IS UNCHANGED: 6 bushes x 2
+# capacity = 12 initial, plus 6 bushes x 6 regrowths = 36, total 48 berries, the
+# same number `scarce.yaml` sizes itself against.
+#
+# PREDICTION, written before the run.
+#
+#   * If the equilibrium is what suppresses navigation: the 6-10 and 10-20 bands
+#     clear the random floor MEASURED IN THIS WORLD by more than m3-masked's
+#     +9 / +6, because a policy that camps now starves. That is the result.
+#   * If they stay flat, the equilibrium is not it either, and what is left is the
+#     credit path itself -- whether the value function can even separate "10 units
+#     from food" from "on food" -- which is a measurement, not a world change.
+#   * LIFESPAN WILL FALL, for the learned policy and for both scripted references,
+#     because the same 48 berries are now spread over twice the ground. That is the
+#     world getting harder, not the policy getting worse; judge against this world's
+#     own floor and references, never against m3-masked's 471.6.
+#   * Note the tension worth measuring rather than assuming: spreading the bushes
+#     also LOWERS the lifetime/travel ratio, since the nearest berry is further
+#     away. `nav_move` says that ratio is not the constraint, so this should not
+#     matter -- but if navigation gets *worse* here, that is the reading to revisit.
+#
+#   python -m sim.train --config config/nav_spread.yaml --run-name nav-spread \
+#       --updates 200 --policy-mode individual --init-from checkpoints/m2/latest.pt
+#   python -m sim.navigation --checkpoint checkpoints/nav-spread/latest.pt --baselines
+extends: m3_masked.yaml
+
+bushes:
+  num_clusters: 6
+  bushes_per_cluster: 1

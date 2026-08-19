@@ -120,3 +120,55 @@ def test_night_exposure_separates_nothing_built_from_nobody_went_home():
     assert np.isnan(r["mean_distance"]), (
         "no finished shelter can be a distance away; a number here means the "
         "distance branch is counting sites that are not done")
+
+
+def test_value_by_distance_reads_flat_for_a_constant_critic():
+    """A zeroed value head must produce identical numbers in every band.
+
+    This is the null the measurement exists to distinguish from a real gradient: if
+    a flat critic came out sloped, the "V separates distance" finding would be an
+    artefact of the conditioning rather than a property of the policy.
+    """
+    import torch
+
+    from sim.config import load_config
+    from sim.navigation import value_by_distance
+    from sim.policy import ActorCritic
+    from sim.agents import num_actions, observation_dim
+
+    cfg = load_config("config/m3_masked.yaml").replace(**{"world.max_ticks": 300})
+    torch.manual_seed(0)          # the rollout samples actions; pin it so the bands
+                                  # that get samples do not depend on test order
+    policy = ActorCritic(observation_dim(cfg), num_actions(cfg), (32, 32))
+    with torch.no_grad():
+        policy.value_head.weight.zero_()
+        policy.value_head.bias.zero_()
+
+    rows = value_by_distance(cfg, policy, episodes=2, tick_band=(100, 299))
+    sampled = [r for r in rows if r["n"] > 0]
+    assert len(sampled) >= 2, "fixture gave too few distance bands to compare"
+    for r in sampled:
+        assert r["value"] == pytest.approx(0.0, abs=1e-6), (
+            f"a zeroed critic read {r['value']} at {r['lo']}-{r['hi']} units")
+
+
+def test_value_by_distance_holds_hunger_and_the_tick_window():
+    """Both conditions are load-bearing, so assert they are actually applied.
+
+    V is dominated by hunger, and it also carries remaining-horizon value while
+    far-from-food ticks bunch at the start of an episode -- unconditioned, a
+    successful camper reads as valuing distance positively, which is the horizon
+    talking rather than the food.
+    """
+    from sim.config import load_config
+    from sim.navigation import value_by_distance
+    from sim.policy import ActorCritic
+    from sim.agents import num_actions, observation_dim
+
+    cfg = load_config("config/m3_masked.yaml").replace(**{"world.max_ticks": 300})
+    policy = ActorCritic(observation_dim(cfg), num_actions(cfg), (32, 32))
+    band = (65.0, 75.0)
+    rows = value_by_distance(cfg, policy, episodes=2, hunger_band=band, tick_band=(100, 299))
+    for r in rows:
+        if r["n"]:
+            assert band[0] <= r["mean_hunger"] <= band[1]

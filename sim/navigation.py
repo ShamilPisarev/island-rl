@@ -50,6 +50,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import torch
 
 from .agents import MOVE_VECTORS, N_MOVE_ACTIONS, night_phase
 from .config import Config
@@ -171,6 +172,58 @@ def measure(cfg: Config, act_fn: ActFn, episodes: int = 10, seed: int = 10000
     return out
 
 
+def value_by_distance(cfg: Config, policy, episodes: int = 10, seed: int = 10000,
+                      hunger_band: tuple[float, float] = (55.0, 85.0),
+                      tick_band: tuple[int, int] = (150, 450)) -> list[dict[str, float]]:
+    """Does the CRITIC separate "far from food" from "on food"?
+
+    If V is flat across distance there is no gradient for PPO to climb -- advantage
+    comes from V, so a step toward food that scores the same as a step away carries
+    no learning signal. That was the last standing explanation for the navigation
+    collapse, and this is how to check it rather than assume it.
+
+    TWO THINGS ARE HELD, and both matter. Hunger, because V is dominated by it and
+    pooling over it swamps any distance effect. And the tick window, because V also
+    carries remaining-horizon value while far-from-food ticks bunch at the start of
+    an episode -- without the window, a policy that camps successfully reads as
+    valuing distance *positively*, which is the horizon talking.
+    """
+    lo_h, hi_h = hunger_band
+    lo_t, hi_t = tick_band
+    ids = torch.arange(cfg.world.num_agents)
+    vals: dict[int, list[float]] = {k: [] for k in range(len(BANDS))}
+    hung: dict[int, list[float]] = {k: [] for k in range(len(BANDS))}
+    act_fn = policy_act_fn(policy)
+
+    for e in range(episodes):
+        w = World(cfg, seed=seed + e)
+        obs = w.observations()
+        for _ in range(cfg.world.max_ticks):
+            loaded = w.bush_berries > 0
+            if loaded.any() and lo_t <= w.tick <= hi_t:
+                with torch.no_grad():
+                    v = policy.value(torch.as_tensor(obs), ids).numpy()
+                for i in np.flatnonzero(w.pool.alive):
+                    h = float(w.pool.hunger[i])
+                    if not lo_h <= h <= hi_h:
+                        continue
+                    d = float(np.hypot(w.bush_x[loaded] - w.pool.x[i],
+                                       w.bush_z[loaded] - w.pool.z[i]).min())
+                    k = _band(d)
+                    if k is not None:
+                        vals[k].append(float(v[i]))
+                        hung[k].append(h)
+            result = w.step(act_fn(obs, w.action_mask()))
+            obs = result.obs
+            if result.episode_done:
+                break
+
+    return [{"lo": BANDS[k][0], "hi": BANDS[k][1], "n": len(vals[k]),
+             "value": float(np.mean(vals[k])) if vals[k] else float("nan"),
+             "mean_hunger": float(np.mean(hung[k])) if hung[k] else float("nan")}
+            for k in range(len(BANDS))]
+
+
 def night_exposure(cfg: Config, act_fn: ActFn, episodes: int = 10, seed: int = 10000,
                    night_random: bool = False) -> dict[str, float]:
     """Why is a night tick spent outside: nothing built, or nobody went home?
@@ -269,6 +322,9 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=10000)
     ap.add_argument("--baselines", action="store_true",
                     help="also measure random actions and the scripted forager")
+    ap.add_argument("--value", action="store_true",
+                    help="also report V by distance to food: is there a gradient for "
+                         "PPO to climb at all?")
     ap.add_argument("--nights", action="store_true",
                     help="also report why night ticks are spent exposed, with a "
                          "night-behaviour floor (construction worlds only)")
@@ -317,6 +373,21 @@ def main() -> None:
               f"{b['sat_both_axes']:5.1%} both   "
               f"toward when seen {vis} (n={b['n_visible']:>5}) / "
               f"unseen {uns} (n={b['n_unseen']:>5})")
+
+    if args.value:
+        rows_v = value_by_distance(cfg, policy, args.episodes, args.seed)
+        ref = next((r["value"] for r in rows_v if r["n"] >= 50), float("nan"))
+        print("\n  --- V by distance to the nearest berry-bearing bush "
+              "(hunger and tick window held) ---")
+        for r in rows_v:
+            if r["n"] < 50:
+                continue
+            span = f"{r['lo']:.0f}+" if r["hi"] > 1e8 else f"{r['lo']:.0f}-{r['hi']:.0f}"
+            print(f"  {span:>6}: V = {r['value']:7.3f}   "
+                  f"vs the nearest band {r['value'] - ref:+6.3f}   "
+                  f"n={r['n']:>5}   mean hunger {r['mean_hunger']:5.1f}")
+        print("  a monotone fall with distance IS the gradient PPO would climb; flat "
+              "would mean\n  there is nothing to learn from, whatever the world pays.")
 
     if args.nights and cfg.construction.enabled:
         print("\n  --- exposed nights: no shelter, or did not go? ---")
