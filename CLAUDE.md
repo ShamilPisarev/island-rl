@@ -4,6 +4,25 @@ Assume you are starting cold with only this file and `PROJECT_BRIEF.md`. This is
 the state of the project, the decisions behind it, and the things that will bite
 you.
 
+## How to talk to me in this repo
+
+**Short and skimmable. Answer first, then at most a few bullets or one small
+table.** No narrative build-up, no restating the question, no summarising what you
+are about to do before doing it. The detail belongs in this file and in commit
+messages, which is where it already goes — not in chat.
+
+What brevity does **not** licence, because this project runs on it:
+
+* Say when a result is inside noise. "+7 ticks on a ±73 spread" is the honest
+  form; "improved" is not.
+* Say when a previous claim was wrong, in one line, and move on. Two metric
+  errors in this file were caught that way (rules 5 and 6).
+* Keep the control. A number without its baseline is not a result, and every
+  wrong answer in this file was wrong for that reason.
+
+Measure before choosing a lever (rule 2), and if a claim is unverified, say so
+rather than smoothing it over.
+
 ## START HERE — handoff for the next session
 
 **Milestones 1–5 are all trained, verified and written up.** Every milestone the
