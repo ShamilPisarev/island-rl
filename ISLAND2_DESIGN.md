@@ -835,7 +835,9 @@ the hard one.
   the learned 20 EXPERIENCE sheltered nights from tick 0 (shelters exist,
   V can price them) without being taught to build. Whether they free-ride or
   contribute is then a real measurement, and the mixed-population machinery is
-  a day's work in the trainer.
+  a day's work in the trainer. **RUN, same day -- see "The mixed population
+  run" below: they shelter (84% of nights), beat the scripted arbiter in its
+  own slots (+19.1 +- 7.4), and free-ride on construction completely.**
 * **A household-level value baseline** -- the critic currently prices an
   individual's return, and construction is a household good. A critic that sees
   (or a baseline that subtracts) the household's mean return turns "my unit
@@ -849,6 +851,79 @@ the hard one.
   the same honest cost: what emerges is when-to-build, never building.
 * **Not reward shaping.** Paying for builds at the option level is rule 1 with
   fewer steps; the M3/M5 ablations already priced that lesson.
+
+### The mixed population run (the first of the three levers), pre-registered
+
+Written 2026-08-25, before the results. `--learn-agents 20` trains PPO on the
+first 20 agents only -- households are round-robin, so that is ONE learned agent
+per household, each with four scripted housemates -- while the other 80 run the
+scripted arbiter in the same training worlds (`sim/arbiter.py`, the teacher
+seeded identically to the trainer's traits so the 80 behave exactly as an
+all-scripted population). Gamma 0.997, the regime where the objective itself
+prefers sheltering (8.24 vs 7.22, measured above), so any forager collapse is
+optimisation again, not alignment. From scratch, no imitation: the hypothesis
+is that the STATE DISTRIBUTION -- experiencing sheltered nights the scripted 80
+provide from tick 0 -- substitutes for the teacher that in-flight PPO erased.
+
+What settles it, all paired on the same seed block (`--vs utility`, plus the
+`mixedrandom` floor -- a random-goal minority carried by the same scripted 80,
+which prices what the society hands a passenger for free):
+
+* the learned 20's nights indoors. 0-3% again means the state distribution was
+  never the missing piece and the refusal survives even when the shelter exists,
+  is visible, and is on the menu every night.
+* the learned slots' paired lifespan against the same slots all-scripted, read
+  against the mixedrandom floor's same number.
+* contribution vs free-riding: the learned 20's deliver/store/build-adjacent
+  goal shares against the scripted 80's, now printed per subset by sim.society.
+
+**The results (same day), and the first learned-over-scripted number in the
+project.** `arb5-mix`, 150 updates, curve flat from ~update 30; 10 paired
+islands, seeds 10000+:
+
+| the learned slots (20 agents) | lifespan | nights in | vs the same slots all-scripted |
+|---|---|---|---|
+| **learned minority (`arb5-mix`)** | **594.5** | **84.0%** | **+19.1 +- 7.4 (7/10)** |
+| random-goal minority (the floor) | 519.5 | 63.2% | **-55.9 +- 8.3 (0/10)** |
+
+Three findings, in the order the pre-registration asked:
+
+* **The state distribution WAS the missing piece for sheltering.** The learned
+  20 spend 84.0% of nights indoors -- every all-learned run managed 0-3.3% --
+  with `shelter` at 65.9% of their goal-ticks and a visible dusk commute. Given
+  a world where shelters exist from tick 0, the critic prices a sheltered night
+  and PPO holds the behaviour it erased in every from-scratch, warm-started and
+  critic-warmed run. Nothing about the objective changed; only who else was in
+  the world did.
+* **It clears both bars, and it is not the society carrying a passenger.** The
+  random-goal minority in the same slots loses 55.9 ticks against the same
+  all-scripted control (0/10 islands) and shelters 63% by accident, so the menu
+  plus a scripted society hand a passenger nothing like this. +19.1 +- 7.4 over
+  the scripted arbiter in its own slots is the first time a learned chooser has
+  beaten the needs scorer anywhere in stage 5 -- and it wins by SUBTRACTION: the
+  learned 20 raid 0.0% and steal 0.0% (the scripted 80: 6.5% and 3.6%), skipping
+  the grudge economy whose raids are 81-89% revenge, and spend the ticks on
+  shelter and forage instead. Read it with its scope: an answer to "is
+  abandoning the feud good play for an individual among 80 scripted feuders",
+  not "for a population" -- see the residual below.
+* **And they free-ride on construction completely, which is the compound wall
+  again.** harvest_wood, harvest_stone, deliver and store_material are all 0.0%
+  of the learned goal-ticks (store_food is 4.4% -- they do bank food). They
+  shelter under roofs the scripted 80 build and rebuild all episode. The
+  spillover cost is nil at this ratio (scripted slots -0.5 +- 4.7), but the
+  finding stands: even placed inside a working construction economy, one-agent
+  PPO at gamma 0.997 never buys a single unit of the compound good. The
+  household-level baseline is now the sharpest remaining lever, because this
+  run isolates exactly the credit it cannot assign.
+
+Do not re-run: this configuration is measured (150 updates, flat from ~30;
+10 paired islands each way). The open follow-ups are the OTHER two levers --
+a household-level value baseline (does a critic that sees the household's
+return make the free-rider contribute?), and persist-until-goal options.
+Raising the learned share (20 -> 50 -> 100) is the population version of the
+mix-anneal question and would say where free-riding stops scaling -- at 100%
+it must collapse back into `arb4c`, so somewhere in between the shelters stop
+getting built.
 
 ### The stage-5 verdict, one paragraph
 
@@ -866,3 +941,12 @@ judgement about the future that survival-reward RL at any gamma here refuses
 to hold. That is the sharpest statement this project has produced about what
 utility AI is FOR, and it is a positive result about authored agents wearing
 the clothes of a negative one about learning.
+
+One amendment from the mixed run (see above): the refusal to hold "be under
+cover tonight" is a fact about the TRAINING POPULATION, not about the
+objective or the operator alone. Twenty learned agents embedded among eighty
+scripted ones learn to shelter at 84% and beat the scripted arbiter in its own
+slots by shedding its feuds -- while still refusing the compound good
+entirely. So the standing verdict narrows to construction: PPO at the option
+level can learn WHEN to use what a society provides, and still never helps
+provide it.

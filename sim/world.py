@@ -308,6 +308,12 @@ class World:
         self._completions = 0
         self._night_sheltered = 0
         self._night_exposed = 0
+        # Per-agent mirrors of the two night counters. Pure bookkeeping (no RNG,
+        # no dynamics), added for the mixed-population comparison: a subset
+        # statistic like "the learned 20's nights indoors" cannot be recovered
+        # from the aggregate.
+        self.night_sheltered_agent = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self.night_exposed_agent = np.zeros(cfg.world.num_agents, dtype=np.int64)
 
         # --- Island 2.0 stage 4: households, stockpiles, reputation, shocks
         sc = cfg.society
@@ -814,6 +820,8 @@ class World:
                 sheltered = protection >= 0.5   # "indoors" for the stats
                 self._night_sheltered += int((acted & sheltered).sum())
                 self._night_exposed += int((acted & ~sheltered).sum())
+                self.night_sheltered_agent += acted & sheltered
+                self.night_exposed_agent += acted & ~sheltered
         pool.hunger = np.where(acted, pool.hunger - drain, pool.hunger)
 
         # 3. auto-eat. Eating is automatic rather than an 11th action for two

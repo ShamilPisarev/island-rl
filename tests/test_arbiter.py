@@ -94,7 +94,7 @@ def test_trainer_redecide_matches_option_runner(cfg):
     env = trainer.envs[0]
     env.goals = runner.goals.copy()
     env.ticks_left = runner.ticks_left.copy()
-    env.has_open[:] = True                      # isolate the shared terms
+    env.started[:] = True                       # isolate the shared terms
     view = ObsView(obs, cfg)
     got = trainer._redecide_mask(env, view)
 
@@ -218,3 +218,95 @@ def test_checkpoint_roundtrip_and_1_0_refusal(cfg, tmp_path):
     torch.save({"policy_state": {}, "policy_config": {}}, fake)
     with pytest.raises(ValueError, match="not a goal-arbiter"):
         load_arbiter(fake, cfg)
+
+
+# --- the mixed population (stage 5's first lever) ------------------------------
+
+def test_mixed_transitions_come_only_from_learned_agents(cfg):
+    """A scripted agent must never leak a PPO transition: the whole point of the
+    mixed run is that the gradient sees only the minority's decisions while the
+    majority shapes the state distribution."""
+    tcfg = TrainConfig(num_envs=2, rollout_ticks=130)
+    trainer = ArbiterTrainer(cfg, tcfg, seed=0, learn_agents=np.arange(4))
+    buffers = {k: [] for k in ("stream", "obs", "goal", "logprob", "value",
+                               "mask", "reward", "discount", "next_obs",
+                               "done", "agent")}
+    trainer.collect(buffers)
+    agents = np.asarray(buffers["agent"])
+    assert len(agents) > 0
+    assert (agents < 4).all()
+    # ...and the update still runs on the subset's transitions alone
+    stats = trainer.update(buffers, lr=tcfg.lr)
+    assert np.isfinite(stats["policy_loss"])
+
+
+def test_scripted_majority_keeps_its_commitments(cfg):
+    """The redecide flag used to key first-decision off has_open, which a
+    scripted agent never sets -- so it would have re-decided EVERY tick and the
+    commitment would be decorative. Pinned by checking a scripted agent's goal
+    survives more ticks than a decide-every-tick world could ever show."""
+    tcfg = TrainConfig(num_envs=1, rollout_ticks=1)
+    trainer = ArbiterTrainer(cfg, tcfg, seed=2, learn_agents=np.arange(2))
+    env = trainer.envs[0]
+    buffers = {k: [] for k in ("stream", "obs", "goal", "logprob", "value",
+                               "mask", "reward", "discount", "next_obs",
+                               "done", "agent")}
+    scripted = np.flatnonzero(~trainer.learn_mask)
+    trainer.collect(buffers)              # tick 1: everyone decides
+    committed = env.ticks_left[scripted].copy()
+    trainer.collect(buffers)              # tick 2
+    # a freshly committed scripted agent's clock ticks DOWN rather than being
+    # re-armed to commit_ticks every tick
+    still = env.ticks_left[scripted] == committed - 1
+    assert still.any()
+
+
+def test_mixed_arbiter_routes_each_row_to_its_owner(cfg):
+    from sim.arbiter import MixedArbiter
+    world = World(cfg, seed=4)
+    view = ObsView(world.observations(), cfg)
+    mask = world.action_mask()
+    acfg = ArbiterConfig()
+    scripted = UtilityArbiter(cfg, acfg, seed=4)
+    learned = fresh_arbiter(cfg, seed=4)
+    learn_mask = np.zeros(cfg.world.num_agents, dtype=bool)
+    learn_mask[:3] = True
+    mixed = MixedArbiter(scripted, learned, learn_mask)
+    rng = np.random.default_rng(0)
+    got = mixed.choose(view, mask, rng)
+    want_s = UtilityArbiter(cfg, acfg, seed=4).choose(view, mask,
+                                                      np.random.default_rng(0))
+    assert np.array_equal(got[~learn_mask], want_s[~learn_mask])
+    want_l = fresh_arbiter(cfg, seed=4).choose(view, mask, np.random.default_rng(0))
+    assert np.array_equal(got[learn_mask], want_l[learn_mask])
+
+
+def test_mixed_checkpoint_carries_the_split_into_society(cfg, tmp_path):
+    tcfg = TrainConfig(num_envs=1, rollout_ticks=30)
+    trainer = ArbiterTrainer(cfg, tcfg, seed=3, learn_agents=np.arange(4))
+    path = tmp_path / "latest.pt"
+    save_checkpoint(path, trainer, update=1)
+    arb = load_arbiter(path, cfg)
+    assert arb.learn_agents == [0, 1, 2, 3]
+
+    rep = run_episodes(cfg, 1, 10000, policy="mixed", checkpoint=str(path))
+    assert rep.learn_mask is not None
+    assert rep.learn_mask.sum() == 4
+    # the per-subset splits actually accumulated
+    assert rep.goal_ticks_learned.sum() > 0
+    assert rep.goal_ticks_scripted.sum() > 0
+    assert len(rep.night_in_agent) == 1
+
+    # an all-learned checkpoint must refuse --arbiter mixed rather than invent
+    # a split
+    trainer_all = ArbiterTrainer(cfg, tcfg, seed=3)
+    path2 = tmp_path / "all.pt"
+    save_checkpoint(path2, trainer_all, update=1)
+    with pytest.raises(ValueError, match="not trained mixed"):
+        run_episodes(cfg, 1, 10000, policy="mixed", checkpoint=str(path2))
+
+
+def test_mixedrandom_is_runnable_and_reports_the_split(cfg):
+    rep = run_episodes(cfg, 1, 10000, policy="mixedrandom")
+    assert rep.learn_mask is not None
+    assert rep.learn_mask.sum() == cfg.society.num_households

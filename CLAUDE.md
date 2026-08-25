@@ -113,6 +113,26 @@ each:
   reappears intact for compound multi-agent prizes (construction).** §10 has
   the do-not-re-run list and the three levers worth trying (mixed populations,
   household-level baseline, persist-until-goal options).
+  **The first lever is RUN (`arb5-mix`), and it produced the project's first
+  learned-over-scripted number.** 20 learned agents (one per household,
+  `--learn-agents 20`, gamma 0.997, from scratch, no imitation) trained among
+  80 scripted: they shelter **84.0% of nights** where every all-learned run
+  managed 0-3.3% -- the state distribution, not the objective, was what blocked
+  sheltering -- and beat the scripted arbiter in its own slots
+  **+19.1 +- 7.4 paired (7/10)**, by abandoning the grudge economy (raid and
+  steal both 0.0% against the scripted 80's 6.5%/3.6%). The floor holds it
+  honest: a random-goal minority in the same slots is **-55.9 +- 8.3 (0/10)**,
+  so the society is not carrying a passenger. And they free-ride on
+  construction totally (harvest_wood/deliver/store_material all 0.0%, though
+  they do bank food at 4.4%; spillover cost to the 80 is -0.5 +- 4.7, nil at
+  this ratio) -- the compound wall stands, now isolated to exactly the credit
+  a household-level baseline would assign. New: `--learn-agents` in
+  `sim.arbiter`, `MixedArbiter`, `--arbiter mixed|mixedrandom` and a
+  per-subset section plus learned-slot paired diffs in `sim.society`,
+  per-agent night counters in `world.py`, five pinning tests. Do not re-run
+  this configuration; the open follow-ups are the household-level baseline,
+  persist-until-goal options, and the learned-share sweep (20 -> 50 -> 100,
+  where free-riding must collapse back into `arb4c`).
 
 **Stage 1 (engine scale pass) detail.** The design doc's forecast
 that O(n²) neighbour queries would need a spatial hash was refuted by the

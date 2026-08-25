@@ -114,6 +114,28 @@ class LearnedArbiter:
         return goals.numpy()
 
 
+class MixedArbiter:
+    """A scripted majority and a learned minority behind one `choose` interface.
+
+    The evaluation half of the mixed-population experiment: `OptionRunner` and
+    everything on top of it (sim.society, the replay recorder) run unchanged,
+    and the split is a boolean mask over agent rows. Both sub-choosers see the
+    same view; each agent's goal comes from whichever chooser owns it.
+    """
+
+    def __init__(self, scripted, learned, learn_mask: np.ndarray) -> None:
+        self.scripted = scripted
+        self.learned = learned
+        self.learn_mask = np.asarray(learn_mask, dtype=bool)
+        self.acfg = scripted.acfg
+
+    def choose(self, view: ObsView, mask: np.ndarray,
+               rng: np.random.Generator) -> np.ndarray:
+        g = self.scripted.choose(view, mask, rng)
+        gl = self.learned.choose(view, mask, rng)
+        return np.where(self.learn_mask, gl, g)
+
+
 class RandomGoalArbiter:
     """Uniform over the available goals: the floor the learned arbiter must beat.
 
@@ -190,19 +212,46 @@ class _EnvState:
         self.reward_acc = np.zeros(n, dtype=np.float64)
         self.disc = np.ones(n, dtype=np.float64)            # gamma^j inside the option
         self.has_open = np.zeros(n, dtype=bool)
+        # `started` is the "this agent has decided at least once this episode"
+        # flag. It used to be `has_open`, which is the same thing when every
+        # agent is learned -- but a SCRIPTED agent in a mixed population never
+        # opens a transition, so keying first-decision off has_open would make
+        # it redecide every tick and turn its commitment decorative.
+        self.started = np.zeros(n, dtype=bool)
 
 
 class ArbiterTrainer:
     """PPO over goals, one transition per option decision."""
 
     def __init__(self, cfg: Config, tcfg: TrainConfig, seed: int = 0,
-                 acfg: ArbiterConfig | None = None) -> None:
+                 acfg: ArbiterConfig | None = None,
+                 learn_agents: np.ndarray | None = None) -> None:
         self.cfg = cfg
         self.tcfg = tcfg
         self.acfg = acfg or ArbiterConfig()
         self.seed = seed
         n = cfg.world.num_agents
         self.traits = agent_traits(n, seed, self.acfg)
+        # Mixed population (design doc section 10, the first lever): only the
+        # agents in `learn_agents` are driven by -- and train -- the policy; the
+        # rest run the scripted arbiter in the SAME worlds. The point is the
+        # state distribution: a minority among scripted builders EXPERIENCES
+        # sheltered nights from tick 0, so the critic can price one without the
+        # chicken-and-egg that sank the from-scratch runs. With households
+        # assigned round-robin (agent i -> household i % H), the first H agents
+        # are one per household, each with scripted housemates.
+        self.learn_mask = np.zeros(n, dtype=bool)
+        if learn_agents is None:
+            self.learn_mask[:] = True
+            self.learn_agents = np.arange(n)
+            self.teacher = None
+        else:
+            self.learn_agents = np.asarray(learn_agents, dtype=np.int64)
+            self.learn_mask[self.learn_agents] = True
+            from .utility import UtilityArbiter
+            # Same seed and construction as self.traits, so the scripted agents
+            # behave exactly as an all-scripted population's would.
+            self.teacher = UtilityArbiter(cfg, self.acfg, seed=seed)
         self.in_dim = observation_dim(cfg) + N_GOALS
         torch.manual_seed(seed)
         self.policy = ActorCritic(self.in_dim, n_actions=N_GOALS,
@@ -212,6 +261,7 @@ class ArbiterTrainer:
         seeds = np.random.SeedSequence(seed).generate_state(tcfg.num_envs, dtype=np.uint32)
         self.envs = [_EnvState(cfg, self.acfg, int(s)) for s in seeds]
         self.finished: list = []
+        self.finished_learned: list[float] = []   # learned subset's mean lifespan
 
     # --- collection --------------------------------------------------------
 
@@ -228,7 +278,7 @@ class ArbiterTrainer:
         emergency = needs[:, NEED_HUNGER] >= self.acfg.critical
         pursuing_food = np.isin(env.goals, (FORAGE, GOAL_STEAL, DRAW_FOOD, GOAL_RAID))
         return (~viable) | (env.ticks_left <= 0) | (emergency & ~pursuing_food) \
-            | (~env.has_open)
+            | (~env.started)
 
     def collect(self, buffers: dict) -> None:
         """Advance every env `rollout_ticks`, appending completed transitions."""
@@ -241,27 +291,34 @@ class ArbiterTrainer:
                 redecide = self._redecide_mask(env, view) & alive
                 if redecide.any():
                     rows = np.flatnonzero(redecide)
+                    lrows = rows[self.learn_mask[rows]]
+                    srows = rows[~self.learn_mask[rows]]
                     # close the open transition: the state it lands in is the
                     # state the NEXT decision is made from, so V(s') bootstraps it
-                    self._close(buffers, e, env, rows, env.obs, done=False)
-                    available = goal_mask(view, cfg, acfg)
-                    with torch.no_grad():
-                        g, lp, v = self.policy.act(
-                            self._inputs(env.obs[rows], rows),
-                            mask=torch.as_tensor(available[rows]))
-                    if env.dec_obs.shape[1] == 0:
-                        env.dec_obs = np.zeros(
-                            (cfg.world.num_agents, env.obs.shape[1]), dtype=np.float32)
-                    env.dec_obs[rows] = env.obs[rows]
-                    env.dec_goal[rows] = g.numpy()
-                    env.dec_logprob[rows] = lp.numpy()
-                    env.dec_value[rows] = v.numpy()
-                    env.dec_mask[rows] = available[rows]
-                    env.goals[rows] = g.numpy()
+                    self._close(buffers, e, env, lrows, env.obs, done=False)
+                    if srows.size:
+                        choice = self.teacher.choose(view, None, env.rng)
+                        env.goals[srows] = choice[srows]
+                    if lrows.size:
+                        available = goal_mask(view, cfg, acfg)
+                        with torch.no_grad():
+                            g, lp, v = self.policy.act(
+                                self._inputs(env.obs[lrows], lrows),
+                                mask=torch.as_tensor(available[lrows]))
+                        if env.dec_obs.shape[1] == 0:
+                            env.dec_obs = np.zeros(
+                                (cfg.world.num_agents, env.obs.shape[1]), dtype=np.float32)
+                        env.dec_obs[lrows] = env.obs[lrows]
+                        env.dec_goal[lrows] = g.numpy()
+                        env.dec_logprob[lrows] = lp.numpy()
+                        env.dec_value[lrows] = v.numpy()
+                        env.dec_mask[lrows] = available[lrows]
+                        env.goals[lrows] = g.numpy()
+                        env.has_open[lrows] = True
                     env.ticks_left[rows] = acfg.commit_ticks
                     env.reward_acc[rows] = 0.0
                     env.disc[rows] = 1.0
-                    env.has_open[rows] = True
+                    env.started[rows] = True
                     fresh_explore = redecide & (env.goals == EXPLORE)
                     if fresh_explore.any():
                         roll = env.rng.integers(0, N_MOVE_ACTIONS, size=view.n)
@@ -289,10 +346,13 @@ class ArbiterTrainer:
                     self._close(buffers, e, env, rows, res.obs,
                                 done=not res.truncated)
                     self.finished.append(env.world.stats())
+                    self.finished_learned.append(
+                        float(env.world.alive_ticks[self.learn_agents].mean()))
                     env.obs = env.world.reset()
                     env.goals[:] = REST
                     env.ticks_left[:] = 0
                     env.has_open[:] = False
+                    env.started[:] = False
 
     def _close(self, buffers: dict, e: int, env: _EnvState, rows: np.ndarray,
                next_obs: np.ndarray, done: bool) -> None:
@@ -362,7 +422,7 @@ class ArbiterTrainer:
                         batch_agent.append(rows)
                         env.goals[rows] = choice[rows]
                         env.ticks_left[rows] = self.acfg.commit_ticks
-                        env.has_open[rows] = True   # bookkeeping only; no PPO buffer
+                        env.started[rows] = True   # bookkeeping only; no PPO buffer
                         fresh = redecide & (env.goals == EXPLORE)
                         if fresh.any():
                             roll = env.rng.integers(0, N_MOVE_ACTIONS, size=view.n)
@@ -379,6 +439,7 @@ class ArbiterTrainer:
                         env.goals[:] = REST
                         env.ticks_left[:] = 0
                         env.has_open[:] = False
+                        env.started[:] = False
             obs = np.concatenate(batch_obs)
             goals = torch.as_tensor(np.concatenate(batch_goal))
             masks = torch.as_tensor(np.concatenate(batch_mask))
@@ -502,6 +563,10 @@ def save_checkpoint(path: Path, trainer: ArbiterTrainer, update: int) -> None:
         "policy_config": trainer.policy.config_dict(),
         "config": trainer.cfg.to_dict(),
         "seed": trainer.seed,
+        # None means "all agents were learned"; a list is the mixed-population
+        # subset, so evaluation can rebuild the same split without being told.
+        "learn_agents": (None if trainer.learn_mask.all()
+                         else trainer.learn_agents.tolist()),
     }, path)
 
 
@@ -518,8 +583,10 @@ def load_arbiter(path: str | Path, cfg: Config | None = None,
                          hidden_sizes=pc["hidden_sizes"])
     policy.load_state_dict(blob["policy_state"])
     policy.eval()
-    return LearnedArbiter(policy, cfg, seed=blob.get("seed", 0),
-                          deterministic=deterministic)
+    arb = LearnedArbiter(policy, cfg, seed=blob.get("seed", 0),
+                         deterministic=deterministic)
+    arb.learn_agents = blob.get("learn_agents")   # None unless mixed-trained
+    return arb
 
 
 def main() -> None:
@@ -542,6 +609,12 @@ def main() -> None:
     ap.add_argument("--value-warmup", type=int, default=0,
                     help="after imitation, fit the critic alone for this many "
                          "updates before any policy gradient flows")
+    ap.add_argument("--learn-agents", type=int, default=0,
+                    help="mixed population: only the FIRST N agents train under "
+                         "PPO; the rest run the scripted arbiter in the same "
+                         "worlds. Households are round-robin (agent i -> "
+                         "household i%%H), so N=num_households puts one learned "
+                         "agent in every household. 0 = all learned.")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -555,7 +628,11 @@ def main() -> None:
     tcfg = TrainConfig(**kw)
     torch.set_num_threads(cfg.ppo.threads or 4)
 
-    trainer = ArbiterTrainer(cfg, tcfg, seed=args.seed)
+    learn = np.arange(args.learn_agents) if args.learn_agents else None
+    trainer = ArbiterTrainer(cfg, tcfg, seed=args.seed, learn_agents=learn)
+    if learn is not None:
+        print(f"mixed population: agents 0..{args.learn_agents - 1} learn, "
+              f"{cfg.world.num_agents - args.learn_agents} run the scripted arbiter")
     if args.imitate:
         acc = trainer.imitate(args.imitate)
         print(f"imitation warm start: {args.imitate} updates, "
@@ -564,8 +641,8 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     ckpt = Path(cfg.logging.checkpoint_dir) / args.run_name / "latest.pt"
 
-    fields = ["update", "lifespan", "deaths", "transitions", "entropy",
-              "explained_variance", "policy_loss", "value_loss", "sps"]
+    fields = ["update", "lifespan", "lifespan_learned", "deaths", "transitions",
+              "entropy", "explained_variance", "policy_loss", "value_loss", "sps"]
     log = open(run_dir / "metrics.csv", "w", newline="")
     writer = csv.DictWriter(log, fieldnames=fields)
     writer.writeheader()
@@ -582,6 +659,7 @@ def main() -> None:
                   f"ev {stats['explained_variance']:.3f} "
                   f"v_loss {stats['value_loss']:.3f}")
     trainer.finished = []
+    trainer.finished_learned = []
 
     for update in range(1, tcfg.total_updates + 1):
         buffers: dict = {k: [] for k in ("stream", "obs", "goal", "logprob",
@@ -593,10 +671,14 @@ def main() -> None:
 
         eps = trainer.finished
         trainer.finished = []
+        eps_l = trainer.finished_learned
+        trainer.finished_learned = []
         lifespan = float(np.mean([e.mean_lifespan for e in eps])) if eps else float("nan")
+        life_l = float(np.mean(eps_l)) if eps_l else float("nan")
         deaths = float(np.mean([e.deaths for e in eps])) if eps else float("nan")
         ticks_done = update * tcfg.rollout_ticks * tcfg.num_envs * cfg.world.num_agents
         row = {"update": update, "lifespan": round(lifespan, 1),
+               "lifespan_learned": round(life_l, 1),
                "deaths": round(deaths, 2), "transitions": stats["transitions"],
                "entropy": round(stats["entropy"], 4),
                "explained_variance": round(stats["explained_variance"], 4),
@@ -607,6 +689,7 @@ def main() -> None:
         log.flush()
         if update % 5 == 0 or update == 1:
             print(f"[{update:>4}/{tcfg.total_updates}] lifespan {row['lifespan']} "
+                  f"(learned {row['lifespan_learned']}) "
                   f"deaths {row['deaths']} ent {row['entropy']} "
                   f"ev {row['explained_variance']} sps {row['sps']}")
         if update % 25 == 0 or update == tcfg.total_updates:

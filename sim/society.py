@@ -80,6 +80,16 @@ class SocietyReport:
     # actually hungry -- desperation against revenge, which is what separates a
     # raid economy that moves food to someone who needs it from pure churn.
     raid_hungry: list[float] = field(default_factory=list)
+    # --- mixed population (stage 5's first lever): who is learned, and the
+    # per-subset splits of the numbers the free-ride-or-contribute question
+    # turns on. None/empty unless the runner is a MixedArbiter.
+    learn_mask: np.ndarray | None = None
+    night_in_agent: list[np.ndarray] = field(default_factory=list)
+    night_out_agent: list[np.ndarray] = field(default_factory=list)
+    goal_ticks_learned: np.ndarray = field(
+        default_factory=lambda: np.zeros(N_GOALS, dtype=np.int64))
+    goal_ticks_scripted: np.ndarray = field(
+        default_factory=lambda: np.zeros(N_GOALS, dtype=np.int64))
 
 
 def gini(values: np.ndarray) -> float:
@@ -196,6 +206,33 @@ def make_runner(cfg: Config, policy: str, seed: int,
         arb = load_arbiter(checkpoint, cfg)
         arb.acfg = acfg or arb.acfg
         return OptionRunner(arb, cfg, seed=seed)
+    if policy == "mixed":
+        from .arbiter import MixedArbiter, load_arbiter
+        if not checkpoint:
+            raise ValueError("--arbiter mixed needs --checkpoint")
+        arb = load_arbiter(checkpoint, cfg)
+        arb.acfg = acfg or arb.acfg
+        ids = getattr(arb, "learn_agents", None)
+        if ids is None:
+            raise ValueError(f"{checkpoint} was not trained mixed (no "
+                             f"learn_agents in the checkpoint); use --arbiter "
+                             f"learned for an all-learned population")
+        learn_mask = np.zeros(cfg.world.num_agents, dtype=bool)
+        learn_mask[np.asarray(ids, dtype=np.int64)] = True
+        scripted = UtilityArbiter(cfg, acfg or arb.acfg, seed=seed)
+        return OptionRunner(MixedArbiter(scripted, arb, learn_mask), cfg, seed=seed)
+    if policy == "mixedrandom":
+        # The mixed experiment's own floor: the same scripted 80 carrying a
+        # RANDOM-goal minority in the same slots. If this minority already
+        # survives well, "learned matches scripted" would mean the society
+        # carries any passenger -- so the learned run is read against this.
+        from .arbiter import MixedArbiter, RandomGoalArbiter
+        n_learn = max(cfg.society.num_households, 1)
+        learn_mask = np.zeros(cfg.world.num_agents, dtype=bool)
+        learn_mask[:n_learn] = True
+        scripted = UtilityArbiter(cfg, acfg, seed=seed)
+        rand = RandomGoalArbiter(cfg, acfg, seed=seed)
+        return OptionRunner(MixedArbiter(scripted, rand, learn_mask), cfg, seed=seed)
     raise ValueError(f"unknown arbiter {policy!r}")
 
 
@@ -207,6 +244,10 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
         world = World(cfg, seed=seed + e)
         runner = make_runner(cfg, policy, seed + e, acfg, checkpoint)
         rng = np.random.default_rng(seed + e + 99991)
+        learn_mask = (getattr(getattr(runner, "arbiter", None), "learn_mask", None)
+                      if runner is not None else None)
+        if learn_mask is not None:
+            rep.learn_mask = learn_mask
         obs = world.observations()
         day_r: list[float] = []
         night_r: list[float] = []
@@ -224,6 +265,12 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
             res = world.step(actions)
             obs = res.obs
             pool = world.pool
+            if learn_mask is not None:
+                # Same counting rule as OptionRunner.goal_ticks (every agent,
+                # every tick), split by who owns the agent, so the two subsets'
+                # shares are comparable with the population line above them.
+                np.add.at(rep.goal_ticks_learned, runner.goals[learn_mask], 1)
+                np.add.at(rep.goal_ticks_scripted, runner.goals[~learn_mask], 1)
             if world.tick % 10 == 0 and pool.alive.any():
                 _, is_night = night_phase(world.tick, cfg)
                 # Rhythm is measured as distance to the nearest FINISHED shelter,
@@ -293,6 +340,9 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
         rep.builds.append(stats.builds)
         rep.night_in.append(stats.night_ticks_sheltered)
         rep.night_out.append(stats.night_ticks_exposed)
+        if learn_mask is not None:
+            rep.night_in_agent.append(world.night_sheltered_agent.copy())
+            rep.night_out_agent.append(world.night_exposed_agent.copy())
         if runner is not None:
             rep.goal_ticks += runner.goal_ticks
             rep.decisions.append(float(runner.decisions.mean()))
@@ -397,6 +447,41 @@ def format_report(cfg: Config, rep: SocietyReport, label: str) -> str:
 
     if cfg.society.enabled and rep.house_lifespan:
         out.append(_household_section(cfg, rep))
+    if rep.learn_mask is not None:
+        out.append(_mixed_section(cfg, rep))
+    return "\n".join(out)
+
+
+def _mixed_section(cfg: Config, rep: SocietyReport) -> str:
+    """The free-ride-or-contribute split for a mixed population.
+
+    Three columns of the same statistic, learned vs scripted, because the mixed
+    experiment's question is not "did the population survive" (the scripted 80
+    guarantee most of that) but what the learned minority DID with a society
+    around it: did it shelter at all (the thing every all-learned run refused),
+    and did it put anything in -- build/deliver/store shares -- or only draw out.
+    """
+    m = rep.learn_mask
+    lives = np.stack(rep.lifespans)                     # (episodes, agents)
+    ni = np.stack(rep.night_in_agent).sum(axis=0).astype(np.float64)
+    no = np.stack(rep.night_out_agent).sum(axis=0).astype(np.float64)
+
+    def night_share(mask: np.ndarray) -> float:
+        tot = ni[mask].sum() + no[mask].sum()
+        return 100.0 * ni[mask].sum() / max(tot, 1.0)
+
+    gl, gs = rep.goal_ticks_learned, rep.goal_ticks_scripted
+    tl, ts = max(int(gl.sum()), 1), max(int(gs.sum()), 1)
+    out = [f"\n-- mixed population: {int(m.sum())} learned among "
+           f"{int((~m).sum())} scripted --",
+           f"  {'':<16} {'learned':>9} {'scripted':>9}",
+           f"  {'mean lifespan':<16} {lives[:, m].mean():9.1f} {lives[:, ~m].mean():9.1f}",
+           f"  {'nights indoors':<16} {night_share(m):8.1f}% {night_share(~m):8.1f}%",
+           "  goal shares (% of the subset's own goal-ticks):"]
+    for g in np.argsort(-(gl / tl + gs / ts)):
+        a, b = 100.0 * gl[g] / tl, 100.0 * gs[g] / ts
+        if max(a, b) >= 0.5:
+            out.append(f"    {GOAL_NAMES[g]:<14} {a:8.1f}% {b:8.1f}%")
     return "\n".join(out)
 
 
@@ -504,10 +589,14 @@ def main() -> None:
     ap.add_argument("--softmax", type=float, default=None, help="goal sampling temperature")
     ap.add_argument("--random", action="store_true", help="also run the random-action floor")
     ap.add_argument("--arbiter", default="utility",
-                    choices=["utility", "learned", "randomgoal"],
-                    help="which chooser drives the population")
-    ap.add_argument("--checkpoint", default=None, help="for --arbiter learned")
-    ap.add_argument("--vs", default=None, choices=["utility", "learned", "randomgoal"],
+                    choices=["utility", "learned", "randomgoal", "mixed", "mixedrandom"],
+                    help="which chooser drives the population ('mixed' rebuilds "
+                         "the learned/scripted split recorded in the checkpoint; "
+                         "'mixedrandom' is its floor -- a random-goal minority in "
+                         "the first num_households slots)")
+    ap.add_argument("--checkpoint", default=None, help="for --arbiter learned/mixed")
+    ap.add_argument("--vs", default=None,
+                    choices=["utility", "learned", "randomgoal", "mixed", "mixedrandom"],
                     help="also run this arbiter on the SAME seeds and print the "
                          "paired per-island differences (rule 7)")
     ap.add_argument("--vs-checkpoint", default=None)
@@ -540,6 +629,24 @@ def main() -> None:
         se = d.std(ddof=1) / np.sqrt(len(d)) if len(d) > 1 else float("nan")
         print(f"\npaired, {args.arbiter} - {args.vs}: {d.mean():+.1f} +- {se:.1f} "
               f"ticks (better on {int((d > 0).sum())}/{len(d)} islands)")
+        if rep.learn_mask is not None:
+            # The population diff above is diluted 4:1 by scripted agents who are
+            # near-identical in both runs. The learned SLOTS are the experiment:
+            # same agent indices under the other arbiter, same seeds, so the
+            # comparison is what those twenty lives cost or gained.
+            m = rep.learn_mask
+            a = np.array([float(np.mean(l[m])) for l in rep.lifespans])
+            b = np.array([float(np.mean(l[m])) for l in other.lifespans])
+            d = a - b
+            se = d.std(ddof=1) / np.sqrt(len(d)) if len(d) > 1 else float("nan")
+            print(f"paired at the LEARNED slots only: {d.mean():+.1f} +- {se:.1f} "
+                  f"ticks (better on {int((d > 0).sum())}/{len(d)} islands)")
+            a = np.array([float(np.mean(l[~m])) for l in rep.lifespans])
+            b = np.array([float(np.mean(l[~m])) for l in other.lifespans])
+            d = a - b
+            se = d.std(ddof=1) / np.sqrt(len(d)) if len(d) > 1 else float("nan")
+            print(f"paired at the SCRIPTED slots (spillover): {d.mean():+.1f} "
+                  f"+- {se:.1f} ticks (better on {int((d > 0).sum())}/{len(d)} islands)")
 
     if args.random:
         floor = run_episodes(cfg, args.episodes, args.seed, acfg, policy="random")
