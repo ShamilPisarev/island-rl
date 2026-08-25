@@ -1,0 +1,21 @@
+# Island 2.0, stage 1: 100 agents with EVERY 1.0 mechanic switched on.
+#
+# The profiling worst case: m5b's mechanics (competition + masking +
+# construction + exchange) at 100 agents, with entity counts scaled to the same
+# per-cluster density as m5b (one site, two trees, ~one rock per cluster).
+# Like engine100.yaml this is an engine testbed -- the economy is NOT sized;
+# stage 2 recomputes subsistence with `sim` before reading behaviour off it.
+extends: ../m5b.yaml
+
+world:
+  island_radius: 100.0
+  num_agents: 100
+
+bushes:
+  num_clusters: 20
+  bushes_per_cluster: 4
+
+construction:
+  num_trees: 40
+  num_rocks: 25
+  num_sites: 20

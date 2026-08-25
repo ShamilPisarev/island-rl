@@ -1,0 +1,19 @@
+# Island 2.0, stage 1: the 100-agent ENGINE config.
+#
+# This exists to profile and scale the engine (ISLAND2_DESIGN.md stage 1), not
+# to be a balanced society. Sizing rules applied from the design doc:
+#   - 1 cluster per 4-6 agents  -> 20 clusters for 100 agents
+#   - island area grows with population (radius 100 = ~2.7x the 1.0 density,
+#     dense enough to be watchable, sparse enough that travel exists)
+# Food supply is NOT sized yet -- stage 2 must recompute subsistence with `sim`
+# rather than by hand (CLAUDE.md rule) before any behaviour is read off this
+# world. Random policies only for now.
+extends: ../default.yaml
+
+world:
+  island_radius: 100.0
+  num_agents: 100
+
+bushes:
+  num_clusters: 20
+  bushes_per_cluster: 4

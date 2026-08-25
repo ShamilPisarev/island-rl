@@ -28,6 +28,25 @@ rather than smoothing it over.
 `.claude/output-styles/skimmable.md` carries the same rule so it survives a machine
 switch.
 
+## Island 2.0 is on the table — read `ISLAND2_DESIGN.md` first
+
+Decided 2026-08-25: the next likely direction is a watchable 50–100-agent
+society (utility/"Maslow" arbiter + scripted controllers first, then a learned
+option-level policy on the same interface). The plan below remains the 1.0
+research thread and is unaffected.
+
+**Stage 1 (engine scale pass) is DONE, same day.** The design doc's forecast
+that O(n²) neighbour queries would need a spatial hash was refuted by the
+profile: 100 agents with every mechanic on already ran at 98k agent-steps/s
+(~20× the exit bar) because the queries were vectorised all along. The one
+measured hotspot — the full argsort in `_k_nearest` — was replaced with
+argpartition + a stable k-sort, **bit-identical** to the old path (checksummed
+against the stashed original on default/m3_masked/m5b; `tests/test_scale.py`).
+After: **144k agent-steps/s** full-mechanics at 100 agents. New: `sim/profile_engine.py`,
+`config/island2/engine100{,_full}.yaml` (economies NOT sized — stage 2 must
+recompute subsistence with `sim`). No spatial hash exists; do not build one
+below a few hundred agents.
+
 ## Plan for the next session
 
 Written 2026-08-19, at the end of the session that measured the advantage signal

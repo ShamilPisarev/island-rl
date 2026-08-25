@@ -339,7 +339,23 @@ def _k_nearest(dist2: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
     rows, cols = dist2.shape
     if cols == 0:
         return np.zeros((rows, k), dtype=np.int64), np.zeros((rows, k), dtype=bool)
-    order = np.argsort(dist2, axis=1, kind="stable")[:, :k]
+    if cols > k:
+        # argpartition + a stable sort of just the k winners, instead of a full
+        # argsort of every entity per agent. Profiled at 100 agents with every
+        # mechanic on, the full sort was the single largest cost in the engine
+        # (~32% of the tick). Results are bit-identical to the stable argsort:
+        # sorting the partitioned indices ascending first makes the final stable
+        # sort break distance ties by original index, exactly as before. The one
+        # tie the partition itself could split differently is a tie ACROSS the
+        # k-boundary, which for these inputs is either impossible (continuous
+        # random positions) or invisible (inf-masked entries are zero-padded via
+        # `valid` whichever index is taken).
+        part = np.argpartition(dist2, k - 1, axis=1)[:, :k]
+        part.sort(axis=1)
+        vals = np.take_along_axis(dist2, part, axis=1)
+        order = np.take_along_axis(part, np.argsort(vals, axis=1, kind="stable"), axis=1)
+    else:
+        order = np.argsort(dist2, axis=1, kind="stable")[:, :k]
     valid = np.isfinite(np.take_along_axis(dist2, order, axis=1))
     if order.shape[1] < k:
         pad = k - order.shape[1]

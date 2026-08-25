@@ -852,8 +852,13 @@ async function populateManifest() {
       $('loading').style.display = 'none';
       return;
     }
-    select.value = entries[0].file;
-    await loadFromUrl(`replays/${entries[0].file}`);
+    // The manifest is newest-first, so entry 0 is whatever run finished last --
+    // usually a diagnostic probe world with most mechanics switched off. Honour
+    // an explicit ?replay= first so a link can point at a specific run.
+    const asked = new URLSearchParams(location.search).get('replay');
+    const wanted = entries.some((e) => e.file === asked) ? asked : entries[0].file;
+    select.value = wanted;
+    await loadFromUrl(`replays/${wanted}`);
   } catch (err) {
     // file:// blocks fetch, so this is the normal path when the page is opened
     // by double-clicking it. Say so instead of showing a bare error.

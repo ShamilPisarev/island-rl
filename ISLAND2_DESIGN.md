@@ -1,0 +1,317 @@
+# Island 2.0 — design document (no code yet)
+
+Written 2026-08-25, after the session that found the viewer was auto-loading a
+stripped-down probe replay (fixed: `?replay=` deep link in `viewer/main.js`).
+Status: DESIGN ONLY. Nothing in here is implemented. Island 1.0 (milestones
+1-5, all verified) stays intact whatever happens; 2.0 is a new code path, new
+configs, and must not touch the existing results.
+
+## 0. The goal has changed, and it is worth saying plainly
+
+Island 1.0 asked a science question: does social behaviour emerge UNPAID from
+survival pressure, with six agents? Answered: foraging, specialisation, theft
+and construction did; exchange did not. One deep open problem remains (PPO will
+not take a ~20-step trip worth +173 because every one-step prefix is correctly
+priced <= 0).
+
+Island 2.0 asks a different question: can we get a WATCHABLE SOCIETY at 50-100
+agents -- groups, conflict over resources, trade, maybe trade wars -- on this
+laptop, without giving up learning entirely?
+
+Those are different projects. The honest trade at the centre of 2.0: every
+piece of scripted competence we hand the agents makes the sim more watchable
+and makes "it emerged" mean less. The design below tries to draw that line
+deliberately instead of by accident: SCRIPT THE MUSCLES, LEARN THE CHOICES.
+
+## 1. What games actually do for NPCs (the landscape)
+
+None of the big titles use RL for shipped NPCs. Designers need authorability
+and predictability; a trained policy gives neither. What they use instead, in
+rough order of appearance:
+
+### Finite State Machines (FSM)
+The classic: states (patrol, chase, flee) with hand-written transitions.
+Simple, fast, and it is what most GTA-era ambient pedestrians effectively run:
+walk-along-navmesh, react-to-event, flee. Scales to hundreds of agents because
+each tick is a switch statement. Breaks down when behaviours multiply --
+transitions grow quadratically.
+
+### Behavior Trees (BT)
+Popularised by Halo 2, now the default in Unreal and most AAA AI. A tree of
+composites (sequence, selector, parallel) over condition and action leaves,
+re-evaluated top-down every tick. The win over FSMs is modularity: "flee"
+is a subtree you graft anywhere, and priority is just ordering under a
+selector. A BT is still 100% authored -- it does exactly what you wrote,
+which is the point.
+
+### GTA specifically: hierarchical tasks + scenario points
+Rockstar's system (worth knowing because it is what "GTA crowds" actually
+are): every ped runs a stack of hierarchical TASKS (a task decomposes into
+subtasks down to motor primitives), plus the world is sprinkled with
+SCENARIO POINTS -- markers saying "an NPC here can lean on this railing /
+sweep this floor / sit and smoke". Ambient life is peds attaching to nearby
+scenarios. The crowd looks alive because the WORLD carries the behaviour,
+not because the agents are smart. That trick transfers directly to us:
+bushes, sites and stockpiles can advertise what can be done at them.
+
+### Utility AI / needs systems -- THE SIMS, and what "Maslow arbiter" means
+The Sims is the real ancestor of what I called a "Maslow arbiter". Each Sim
+has needs/motives (hunger, energy, social, fun...) that decay over time.
+Every object in the world ADVERTISES what it restores ("fridge: +hunger").
+Each tick-ish, the Sim scores every advertised action:
+
+    score(action) = sum over needs of (how low the need is) x (how much this restores it)
+                    x distance discount x personality weight
+
+and takes the best one. That is utility AI. The "Maslow" part is just a
+priority shaping on top: survival needs dominate the score until satisfied,
+then safety, then social -- a hierarchy of needs, hence the name. It is not
+an algorithm from the literature; it is a weighting scheme over a utility
+scorer. Concretely for us:
+
+    needs:  hunger (exists), safety (night exposure), shelter-stock,
+            wealth (inventory), social (near group), ...
+    goals:  eat / forage-near / TRAVEL-TO-FOOD / harvest-wood / harvest-stone /
+            deliver / build / go-home / steal / give / raid / idle
+    arbiter: score each goal from needs + world state, pick argmax
+             (or softmax for variety), commit until done or interrupted
+
+### GOAP and HTN (for completeness)
+GOAP (F.E.A.R.): actions have preconditions/effects, a planner chains them
+backwards from a goal at runtime. HTN (Killzone): hand-authored task
+decompositions. Both give plan-shaped behaviour. Overkill for us -- our action
+chains are short (harvest -> deliver -> build) and a utility arbiter over
+whole-chain goals covers them.
+
+### The colony sims -- the actual model for Island 2.0
+RimWorld and Dwarf Fortress are the proof that AUTHORED agents + rich world
+mechanics = emergent-LOOKING societies. Their agents are utility-scored job
+pickers, nothing more. The drama (sieges, tantrum spirals, economies) emerges
+at the POPULATION level from the interaction of simple agents with deep world
+mechanics. Lesson: if 2.0 wants trade wars, the leverage is in the WORLD
+MECHANICS (ownership, scarcity, asymmetry), not in agent brain size. Island
+1.0's own data agrees: M5 doubled the value of trading and PPO still could
+not find it -- headcount and incentive were never the missing piece,
+mechanics were.
+
+## 2. Architecture options, and the recommendation
+
+The spectrum, from no-learning to all-learning:
+
+### Option A -- pure utility agents (no RL)
+The Maslow arbiter picks a goal; scripted controllers execute it. We ALREADY
+HAVE the controllers: the scripted forager, builder, thief and trader in
+`sim/policy.py` are exactly the goal-executors this needs, tested and priced.
+Per-agent personality = a small random weight vector over the needs (agent 7
+values wealth 1.3x, agent 12 is a coward about night...). Cost per agent per
+decision: scoring ~12 goals = trivial. Scales to hundreds.
+
+  + Watchable on day one. Deterministic. Debuggable. Fast.
+  + Validates the 100-agent ENGINE before any training exists.
+  - Nothing is learned. "Emergence" moves up a level: you author individual
+    behaviour and study population dynamics (the RimWorld deal).
+
+### Option B -- hybrid: RL CHOOSES THE GOAL, scripts execute it  << recommended
+Same controllers as A, but the arbiter is a LEARNED policy: PPO over the
+~12 goals instead of the 16 micro-actions. An option runs until it terminates
+(ate / delivered / arrived / interrupted / timeout ~20-30 ticks); PPO trains
+on one transition per OPTION with the discounted rewards summed -- semi-MDP
+style, and `world.decision_interval` already built 80% of that machinery
+(sum-rewards-per-decision, episode-boundary handling, tested).
+
+Why this is not just a compromise but the RIGHT move given 1.0's findings:
+the entire remaining open problem is that PPO cannot take a 20-step trip
+whose every one-step prefix prices <= 0. Make "travel to the nearest loaded
+bush" ONE action and the +173 prize becomes a one-step decision -- exactly
+the "travel option" the CLAUDE.md plan already ranks as the most defensible
+fix. Option B is that fix, generalised to every behaviour. The science
+question survives in a sharper form: given the muscles, does PPO learn WHEN
+to travel, build, steal, trade? M5's answer for trade was "no" at the
+micro-level; the option level is a genuinely new experiment.
+
+  + Keeps RL, and aims it at the one level where 1.0 proved it fails.
+  + Credit assignment collapses: a trade is 1 decision, not a 40-tick chain.
+  + One shared policy + per-agent trait embedding scales to 100 agents
+    (see section 4 -- 100 individual brains is dead on arrival).
+  - What emerges is when-to-X, never X itself. Say so in every write-up.
+  - Off-policy wrinkle: ticks inside an option are not policy decisions.
+    Handled the decision_interval way (the world enforces the commitment,
+    PPO sees one transition), so the ratio stays on-policy. Interruption
+    (a higher-priority need fires mid-option) must terminate the option and
+    write the transition -- design this before coding, it is the one place
+    the semi-MDP bookkeeping can silently rot.
+
+### Option C -- inverted hybrid: scripted arbiter, RL executes
+A BT/utility layer picks the need, an RL policy does the low-level control.
+Rejected: low-level local competence is the one thing 1.0's PPO is GOOD at,
+and this puts all the interesting decisions in the scripted layer. Maximum
+cost, minimum science.
+
+### Option D -- population heterogeneity tricks (orthogonal, cheap)
+Whatever the brain, per-agent trait vectors (needs weights for A, an
+embedding fed to the shared policy for B) give visible individual character
+at 100 agents without 100 brains. M2's specialisation result suggests
+differentiation will also be learned into the embedding.
+
+RECOMMENDATION: build A first (1-2 sessions, validates engine + world +
+watchability), then swap the arbiter for B on the same interface. The
+arbiter is one function: `goal = decide(agent_state, world_view)`. Design
+that interface once and A and B are interchangeable -- and directly
+comparable, which becomes the headline experiment:
+
+    same world, same controllers:
+      scripted Maslow arbiter  vs  learned option-policy
+    -> does the learned one beat the authored one, and where do they differ?
+
+## 3. World mechanics needed for groups and trade wars
+
+1.0's data says these do not come from headcount. What has to be in the world:
+
+* RESOURCE ASYMMETRY BY REGION. Wood-rich north, stone-rich south, berries
+  in between. Forces travel; makes trade the cheap alternative to a long
+  walk. (M5's own postmortem: a relay needs its chain shortened by
+  GEOGRAPHY, not its deliveries made fungible.)
+* OWNED STOCKPILES. A household stockpile that members deposit into and
+  draw from. Gives theft a target worth raiding (trade-WAR needs something
+  to fight over; a berry in a pocket is not it).
+* HOUSEHOLDS AS THE GROUP PRIMITIVE. Shared shelter = household = shared
+  stockpile. Group identity for free, no new abstract channel: "my group"
+  is "who sleeps where I sleep". Observation carries same-household flags.
+* REPUTATION, minimal version: per-pair theft memory decaying over time,
+  visible in the observation. Enables retaliation and guarding without any
+  scripted "war" logic.
+* SHOCKS (the RimWorld storyteller, tiny version): a bad berry season, a
+  storm that damages shelters. Populations that never get stressed never
+  visibly cooperate. Deterministic from the seed, like everything else.
+* Scale housekeeping: keep supply per agent at ~1.2-1.5x subsistence (1.0's
+  knife-edge sizing was for measurement, not watchability). Recompute with
+  `sim`, never by hand (CLAUDE.md rule).
+
+Forecast of failure modes to watch for (pre-registered):
+* Utility agents + stockpiles -> runaway hoarding by early-rich households
+  (inequality snowball). Probably GOOD drama; cap only if degenerate.
+* Raid goal scored too cheap -> permanent war, nobody forages, collapse.
+  The M3 lesson (theft redistributes, never creates) at population scale.
+* 100 agents on too-few clusters -> one mega-camp. Region count must scale
+  with population (rough rule: 1 cluster per 4-6 agents, from 1.0's data).
+
+## 4. Feasibility forecast at 50-100 agents (before writing any code)
+
+**STAGE 1 RAN (2026-08-25), AND THE HEADLINE FORECAST BELOW IS REFUTED.**
+The spatial hash is NOT needed at n=100: the neighbour queries were already
+fully vectorised, and a 100x100 pairwise matrix is trivial for numpy.
+Measured with `sim.profile_engine` (random actions, mask computed per tick as
+VecWorld does): 100 agents with EVERY mechanic on (m5b's world, scaled --
+`config/island2/engine100_full.yaml`) ran at **98k agent-steps/s** before any
+change, ~20x the 5k exit bar. The one real hotspot was the full stable argsort
+in `_k_nearest` (~32% of the tick); replaced with argpartition + a stable sort
+of the k winners, **bit-identical** to the old path (checksummed against the
+stashed original across default/m3_masked/m5b worlds; `tests/test_scale.py`
+pins the equivalence and 100-agent determinism). After: **144k agent-steps/s**
+full-mechanics, 345k on the plain world. Configs: `config/island2/engine100.yaml`
+and `engine100_full.yaml` (neither economy is sized yet -- stage 2 must
+recompute subsistence with `sim`). Rule 2 held again: the pre-registered lever
+was not the constraint. Revisit the hash only if the population goes well past
+a few hundred.
+
+Measured base (1.0): ~14k agent-steps/s, env step = 92.7% of cost, network
+7.3%. Six agents x 32 envs = 192 concurrent agent-streams already run fine.
+
+* NEIGHBOUR QUERIES ARE THE WALL. Current world does O(n^2)-ish scans
+  (nearest bushes, neighbours in radius). 6 -> 100 agents is ~278x pairwise
+  pairs. REQUIRED: a spatial hash grid (cell size = max query radius), which
+  makes it O(n). Must iterate cells in deterministic order -- CPU determinism
+  is a project invariant and several results depend on it.
+* OBSERVATION STAYS FIXED-WIDTH: k-nearest everything (k unchanged), plus
+  household/reputation channels. Width grows by ~10 dims, not with n.
+* ONE SHARED POLICY + trait embedding. M2's six brains cost 15% throughput
+  at n=6; 100 brains is absurd, and a shared policy is also the only way a
+  100-agent batch is one matmul. Individual character comes from the
+  embedding (option D).
+* TRAINING BUDGET (option B): 100 agents x 8 envs = 800 streams, ~4x today's
+  192. Env cost per step also grows ~linear in n with the spatial hash. Rough
+  honest guess: a 200-update-equivalent run goes from ~6 min to ~40-60 min on
+  this laptop. Tolerable, fanless throttling noted. Options help again here:
+  one DECISION per ~10-20 ticks cuts PPO's transitions 10-20x.
+* UTILITY AGENTS (option A): no training at all, and scoring is trivial next
+  to the env step. 100 agents real-time or faster. This is why A goes first.
+* REPLAYS: 100 agents x 600 ticks is ~17x today's replay size (~2MB JSON).
+  Fine. Viewer rendering is the graphics section's problem.
+* GPU still irrelevant (7.3% network share), CUDA still breaks determinism.
+
+## 5. Graphics: agents need bodies
+
+Current agents are capsules. Two routes, and the recommendation is the one
+with zero external dependencies:
+
+### Route 1 -- procedural low-poly biped (recommended)
+Build a ~150-triangle humanoid in code from Three.js boxes/cylinders: torso,
+head (with a 2-triangle nose or painted eyes via canvas texture), two arms,
+two legs. Animate procedurally from replay data -- walk = sinusoidal arm/leg
+swing keyed to speed, gather = lean forward, build = arm hammer loop, night =
+sit. No rigging, no assets, no new CDN dependency, works offline like the
+rest of the viewer, and 100 of these instanced is nothing for Three.js.
+Colour = agent identity; a coloured headband/shirt = household.
+
+### Route 2 -- rigged GLB characters (Quaternius / Kenney, CC0)
+Real modelled characters with skeletal animations via AnimationMixer. Looks
+better, costs: asset files in the repo, SkinnedMesh x100 needs care
+(~500-tri models are fine, but it is the first real render cost), and clip
+management. Do this later if Route 1 looks too crude -- the replay schema
+work below is identical either way.
+
+Either route needs one schema change: the replay should carry a per-tick
+ANIMATION STATE per agent (walking/gathering/building/eating/sleeping/
+stealing/giving -- derivable from the action already recorded, so possibly
+zero schema change, just viewer-side mapping). Check before bumping
+SCHEMA_VERSION; if the action column is enough, do not bump it.
+
+Also worth it at 100 agents, cheap: name labels on hover, household banner
+colours, a "follow this agent" camera, and a population sidebar replacing
+the per-agent list (6 fit; 100 do not).
+
+## 6. Staged plan (each stage ends runnable and watchable)
+
+0. DECIDE SCOPE (you, now): is 2.0 a fork (new repo/dir) or a mode
+   (config-gated, like every 1.0 mechanic)? Recommendation: config-gated
+   mode, `island2/` configs -- 1.0's zero-shot/fork tooling is too useful
+   to leave behind.
+1. ENGINE SCALE PASS. Spatial hash, 100-agent config, deterministic order,
+   profile it. No AI changes -- random policies. Exit: 100 agents at >= 5k
+   agent-steps/s, tests green, byte-identical at n=6 with hash on.
+   **DONE 2026-08-25, with one deviation the measurement forced: no spatial
+   hash (see section 4 -- 144k agent-steps/s at 100 agents full-mechanics,
+   byte-identity verified against the original code, all tests green).**
+2. UTILITY AGENTS (option A). Needs + goal scoring + controller reuse +
+   trait vectors. Exit: a 100-agent replay a stranger finds watchable;
+   day/night rhythm visible; the pre-registered failure modes checked.
+3. GRAPHICS. Procedural biped + animation mapping + follow-cam + population
+   sidebar. Parallel with 2.
+4. SOCIETY MECHANICS. Regions, households, stockpiles, reputation, shocks.
+   Iterate on utility agents (fast loop, no training). Exit: raids and
+   deliveries between households visible in a replay; an exchange-ledger
+   view at household level.
+5. LEARNED ARBITER (option B). Swap scoring for a shared PPO policy over
+   goals, trait embedding, semi-MDP transitions. Train, then run the
+   headline comparison: learned vs scripted arbiter, same world, paired
+   islands (rule 7: paired, always).
+6. WRITE IT UP against 1.0's findings -- especially whether the option-level
+   policy finally takes the travel/trade decisions the micro-level one
+   priced away.
+
+Session-sized: 1 is one session; 2-3 together maybe two; 4 is open-ended by
+design; 5 is one to build + the usual 6-minute-x-many experiment loop.
+
+## 7. What this design deliberately gives up, so nobody rediscovers it
+
+* "Trade emerged" can no longer mean what it meant in 1.0. The trade
+  CONTROLLER is scripted; only the DECISION to trade can emerge. Every
+  write-up must say which level it is claiming.
+* The one-step-vs-20-step-prize problem is not solved, it is ROUTED AROUND
+  by making the 20 steps one option. The pure-RL question stays open in
+  1.0 (mix-anneal is still the cheapest next probe there, ~6 min).
+* Scripted controllers read world state today (steering reads the true
+  nearest loaded bush). Port them to read only the OBSERVATION before they
+  become option-executors, or 2.0's agents are quietly psychic. The scripted
+  forager already proves observation-only is enough for foraging; do the
+  same audit for builder/thief/trader.
