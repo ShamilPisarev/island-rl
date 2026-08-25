@@ -313,6 +313,91 @@ class ArbiterTrainer:
             buffers["agent"].append(int(i))
         env.has_open[rows] = False
 
+    # --- imitation warm start -------------------------------------------------
+
+    def imitate(self, updates: int, lr: float = 1e-3) -> float:
+        """Behaviour-clone the scripted arbiter's choices, then hand over to PPO.
+
+        Rule 3, translated to the option level. From scratch, option-level PPO
+        converged to a hyper-competent PURE FORAGER -- 93% of the island
+        harvested, food stores at 9.8 of 12, and 0% of nights indoors, because a
+        population where nobody builds never experiences a sheltered night (so
+        the critic cannot price one) and never finishes a shelter (so the
+        `shelter` goal is masked out of the menu all episode -- the option-level
+        chicken-and-egg). -122.5 +- 8.3 against the scripted arbiter, worse on
+        10 of 10 islands.
+
+        This is the M1 -> M2 move -- fork from competence, then diverge -- with
+        the teacher being a program instead of a checkpoint: collect states with
+        the SCRIPTED arbiter driving (so shelters exist and the state
+        distribution is the one competent play visits) and train the goal head
+        by cross-entropy on its choices at decision points, masked by the shared
+        menu. The critic trains on nothing here; PPO fits it afterwards on the
+        semi-MDP returns. What the headline comparison then asks is sharper, not
+        weaker: given the scripted arbiter's own behaviour as a starting point,
+        does PPO find improvements the needs scorer cannot express?
+        """
+        from .utility import UtilityArbiter
+        teacher = UtilityArbiter(self.cfg, self.acfg, seed=self.seed)
+        # The teacher's traits ARE this trainer's traits (same seed, same
+        # construction), so the student sees the inputs that explain the
+        # teacher's per-agent quirks rather than having to average over them.
+        opt = torch.optim.Adam(self.policy.parameters(), lr=lr, eps=1e-5)
+        last_acc = 0.0
+        for _ in range(updates):
+            batch_obs, batch_goal, batch_mask, batch_agent = [], [], [], []
+            for env in self.envs:
+                from .utility import EXPLORE, N_MOVE_ACTIONS, execute_goals
+                for _ in range(self.tcfg.rollout_ticks):
+                    view = ObsView(env.obs, self.cfg)
+                    alive = env.world.pool.alive
+                    redecide = self._redecide_mask(env, view) & alive
+                    if redecide.any():
+                        rows = np.flatnonzero(redecide)
+                        available = goal_mask(view, self.cfg, self.acfg)
+                        choice = teacher.choose(view, None, env.rng)
+                        batch_obs.append(env.obs[rows].copy())
+                        batch_goal.append(choice[rows])
+                        batch_mask.append(available[rows])
+                        batch_agent.append(rows)
+                        env.goals[rows] = choice[rows]
+                        env.ticks_left[rows] = self.acfg.commit_ticks
+                        env.has_open[rows] = True   # bookkeeping only; no PPO buffer
+                        fresh = redecide & (env.goals == EXPLORE)
+                        if fresh.any():
+                            roll = env.rng.integers(0, N_MOVE_ACTIONS, size=view.n)
+                            env.explore_heading = np.where(fresh, roll,
+                                                           env.explore_heading)
+                    env.ticks_left -= 1
+                    mask = env.world.action_mask()
+                    actions = execute_goals(env.goals, ObsView(env.obs, self.cfg),
+                                            self.cfg, mask, env.explore_heading)
+                    res = env.world.step(actions)
+                    env.obs = res.obs
+                    if res.episode_done:
+                        env.obs = env.world.reset()
+                        env.goals[:] = REST
+                        env.ticks_left[:] = 0
+                        env.has_open[:] = False
+            obs = np.concatenate(batch_obs)
+            goals = torch.as_tensor(np.concatenate(batch_goal))
+            masks = torch.as_tensor(np.concatenate(batch_mask))
+            agents = np.concatenate(batch_agent)
+            inputs = self._inputs(obs, agents)
+            logits, _ = self.policy(inputs)
+            logits = self.policy._masked(logits, masks)
+            loss = torch.nn.functional.cross_entropy(logits, goals)
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            last_acc = float((logits.argmax(dim=1) == goals).float().mean())
+        # PPO must not start with open transitions half-recorded under the
+        # teacher: reset every env so the first collect() is clean.
+        seeds = np.random.SeedSequence(self.seed).generate_state(
+            self.tcfg.num_envs, dtype=np.uint32)
+        self.envs = [_EnvState(self.cfg, self.acfg, int(s)) for s in seeds]
+        return last_acc
+
     # --- update -------------------------------------------------------------
 
     def update(self, buffers: dict, lr: float) -> dict:
@@ -432,18 +517,34 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--updates", type=int, default=None)
     ap.add_argument("--envs", type=int, default=None)
+    ap.add_argument("--gamma", type=float, default=None,
+                    help="override the semi-MDP discount. 1.0's 0.99 is myopic "
+                         "at this level: measured, the pure-forager policy's "
+                         "DISCOUNTED return beats the scripted arbiter's (4.47 "
+                         "vs 4.41) while dying 127 ticks sooner -- the night "
+                         "bill lands 100-300 ticks after the build decision and "
+                         "0.99^300 is 0.05. Undiscounted, sheltering wins.")
+    ap.add_argument("--imitate", type=int, default=0,
+                    help="behaviour-clone the scripted arbiter for this many "
+                         "updates before PPO (the option-level fork)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    tcfg = TrainConfig()
+    kw = {}
     if args.updates is not None:
-        tcfg = TrainConfig(total_updates=args.updates,
-                           num_envs=args.envs or tcfg.num_envs)
-    elif args.envs is not None:
-        tcfg = TrainConfig(num_envs=args.envs)
+        kw["total_updates"] = args.updates
+    if args.envs is not None:
+        kw["num_envs"] = args.envs
+    if args.gamma is not None:
+        kw["gamma"] = args.gamma
+    tcfg = TrainConfig(**kw)
     torch.set_num_threads(cfg.ppo.threads or 4)
 
     trainer = ArbiterTrainer(cfg, tcfg, seed=args.seed)
+    if args.imitate:
+        acc = trainer.imitate(args.imitate)
+        print(f"imitation warm start: {args.imitate} updates, "
+              f"final agreement with the teacher {100 * acc:.1f}%")
     run_dir = Path(cfg.logging.run_dir) / args.run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     ckpt = Path(cfg.logging.checkpoint_dir) / args.run_name / "latest.pt"
