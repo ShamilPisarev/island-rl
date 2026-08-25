@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -34,7 +35,8 @@ from .config import Config, load_config
 from .economy import subsistence
 from .policy import random_actions
 from .replay import ReplayRecorder
-from .utility import GOAL_NAMES, N_GOALS, ArbiterConfig, utility_runner
+from .utility import (GOAL_NAMES, GOAL_RAID, N_GOALS, ArbiterConfig,
+                      utility_runner)
 from .world import World
 
 
@@ -56,6 +58,28 @@ class SocietyReport:
     nn_distance: list[float] = field(default_factory=list)
     day_positions: list[float] = field(default_factory=list)
     night_positions: list[float] = field(default_factory=list)
+    # --- stage 4
+    deposits: list[int] = field(default_factory=list)
+    withdrawals: list[int] = field(default_factory=list)
+    raids: list[int] = field(default_factory=list)
+    storms: list[int] = field(default_factory=list)
+    damaged: list[int] = field(default_factory=list)
+    blight_ticks: list[int] = field(default_factory=list)
+    # per-household, concatenated over episodes
+    house_lifespan: list[np.ndarray] = field(default_factory=list)
+    house_stock_food: list[np.ndarray] = field(default_factory=list)
+    house_stock_material: list[np.ndarray] = field(default_factory=list)
+    # (raider household, victim household) counts, summed over episodes
+    raid_matrix: np.ndarray | None = None
+    # mean stockpile food over the episode, sampled -- the level, not the endpoint,
+    # because a pile that filled and was drained twice ends where it started.
+    stock_trace: list[float] = field(default_factory=list)
+    home_distance: list[float] = field(default_factory=list)
+    displaced: list[float] = field(default_factory=list)
+    # of the agents holding the `raid` goal at a sample tick, the share that were
+    # actually hungry -- desperation against revenge, which is what separates a
+    # raid economy that moves food to someone who needs it from pure churn.
+    raid_hungry: list[float] = field(default_factory=list)
 
 
 def gini(values: np.ndarray) -> float:
@@ -95,6 +119,37 @@ def _distance_to_shelter(world: World) -> float:
     return float(np.sqrt(d2.min(axis=1)).mean())
 
 
+def household_dispersion(world: World) -> tuple[float, float]:
+    """(mean distance to own household site, share of agents nearer a foreign one).
+
+    The household-world replacement for failure mode 3's control, and it exists
+    because the stage-2 control stopped applying the moment households became
+    places. Nearest-neighbour distance against uniform placement asks "has the
+    population piled up?" -- and a stage-4 population is SUPPOSED to have piled
+    up, twenty times over, one pile per household. Measured, that reads 0.47x of
+    chance and trips a WATCH on behaviour the design asked for. Rule 5: when you
+    change a mechanic, re-derive the arithmetic that justified the check.
+
+    What "mega-camp" means once households exist is that the piles stop being
+    SEPARATE -- everyone drifts onto one cluster and household stops predicting
+    location. The second number is the direct test of that: an agent closer to
+    somebody else's home than to its own has left its household behind, and a
+    population where most agents have done so has one camp, not twenty.
+    """
+    pool = world.pool
+    idx = np.flatnonzero(pool.alive)
+    if idx.size == 0 or world.stock_x.size < 2:
+        return float("nan"), float("nan")
+    dx = world.stock_x[None, :] - pool.x[idx][:, None]
+    dz = world.stock_z[None, :] - pool.z[idx][:, None]
+    d = np.sqrt(dx ** 2 + dz ** 2)
+    rows = np.arange(idx.size)
+    own = d[rows, world.household[idx]]
+    foreign = d.copy()
+    foreign[rows, world.household[idx]] = np.inf
+    return float(own.mean()), float((foreign.min(axis=1) < own).mean())
+
+
 def expected_nearest_neighbour(radius: float, n: int) -> float:
     """Mean nearest-neighbour distance for n uniform points in a disc of `radius`.
 
@@ -109,6 +164,13 @@ def expected_nearest_neighbour(radius: float, n: int) -> float:
     return float(0.5 / np.sqrt(density))
 
 
+def _nanmean(values: list[float]) -> float:
+    """Mean of the non-nan entries, or nan if there are none. No warning."""
+    arr = np.asarray(values, dtype=np.float64)
+    arr = arr[~np.isnan(arr)]
+    return float(arr.mean()) if arr.size else float("nan")
+
+
 def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | None = None,
                  policy: str = "utility") -> SocietyReport:
     rep = SocietyReport(episodes=episodes)
@@ -121,6 +183,10 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
         day_r: list[float] = []
         night_r: list[float] = []
         nn: list[float] = []
+        stock_trace: list[float] = []
+        home_d: list[float] = []
+        displaced: list[float] = []
+        raid_hungry: list[float] = []
         while True:
             mask = world.action_mask()
             if runner is not None:
@@ -145,9 +211,50 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
                 # intended behaviour read as the degenerate failure mode.
                 if not is_night:
                     nn.append(mean_nearest_neighbour(pool.x, pool.z, pool.alive))
+                if cfg.society.enabled:
+                    stock_trace.append(float(world.stock_food.mean()))
+                    # HOUSEHOLD COHESION IS A NIGHT STATISTIC, for the mirror of
+                    # the reason crowding is a day one. By day an agent is out
+                    # foraging and the nearest foreign home is often closer than
+                    # its own, which is not defection -- it is a commute. Where an
+                    # agent actually sleeps is what "my group is who sleeps where
+                    # I sleep" is a claim about. Measured over all ticks this read
+                    # 37.3% and tripped a WATCH on agents who went home every
+                    # single night.
+                    if is_night:
+                        own, away = household_dispersion(world)
+                        home_d.append(own)
+                        displaced.append(away)
+                    if runner is not None:
+                        raiders = (runner.goals == GOAL_RAID) & pool.alive
+                        if raiders.any():
+                            hungry = pool.hunger[raiders] < cfg.hunger.eat_threshold
+                            raid_hungry.append(float(hungry.mean()))
             if res.episode_done:
                 break
         stats = world.stats()
+        if cfg.society.enabled:
+            rep.deposits.append(stats.deposits)
+            rep.withdrawals.append(stats.withdrawals)
+            rep.raids.append(stats.raids)
+            rep.storms.append(stats.storms)
+            rep.damaged.append(stats.shelters_damaged)
+            rep.blight_ticks.append(stats.blight_ticks)
+            h = cfg.society.num_households
+            lives_by_house = np.zeros(h)
+            np.add.at(lives_by_house, world.household, world.alive_ticks)
+            counts = np.bincount(world.household, minlength=h)
+            rep.house_lifespan.append(lives_by_house / np.maximum(counts, 1))
+            rep.house_stock_food.append(stats.stock_food_final.astype(np.float64))
+            rep.house_stock_material.append(stats.stock_material_final.astype(np.float64))
+            rep.stock_trace.append(float(np.mean(stock_trace)) if stock_trace else 0.0)
+            rep.home_distance.append(_nanmean(home_d))
+            rep.displaced.append(_nanmean(displaced))
+            rep.raid_hungry.append(_nanmean(raid_hungry))
+            if rep.raid_matrix is None:
+                rep.raid_matrix = np.zeros((h, h), dtype=np.int64)
+            for _tick, raider_h, victim_h, _item in stats.raid_ledger:
+                rep.raid_matrix[raider_h, victim_h] += 1
         rep.ticks.append(stats.ticks)
         rep.lifespans.append(world.alive_ticks)
         rep.deaths.append(stats.deaths)
@@ -162,8 +269,11 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
             rep.goal_ticks += runner.goal_ticks
             rep.decisions.append(float(runner.decisions.mean()))
         rep.nn_distance.append(float(np.nanmean(nn)) if nn else float("nan"))
-        rep.day_positions.append(float(np.mean(day_r)) if day_r else float("nan"))
-        rep.night_positions.append(float(np.mean(night_r)) if night_r else float("nan"))
+        # nanmean, not mean: a storm can knock every shelter back to incomplete,
+        # and a tick with nothing finished to measure against legitimately has no
+        # distance. One such sample used to poison the whole episode's mean.
+        rep.day_positions.append(_nanmean(day_r))
+        rep.night_positions.append(_nanmean(night_r))
     return rep
 
 
@@ -180,7 +290,11 @@ def format_report(cfg: Config, rep: SocietyReport, label: str) -> str:
         f"berries / episode  {np.mean(rep.berries):7.1f} of {econ.supply:.0f} the island makes "
         f"({100 * np.mean(rep.berries) / max(econ.supply, 1):.0f}% harvested, "
         f"demand {econ.demand_sheltered:.0f})",
-        f"shelters / episode {np.mean(rep.shelters):7.2f} of {cfg.construction.num_sites}",
+        f"shelters / episode {np.mean(rep.shelters):7.2f} of {cfg.construction.num_sites}"
+        + (" COMPLETIONS, not distinct sites: a storm knocks finished shelters back "
+           "to incomplete and they are rebuilt, so this counts rebuilds and can "
+           "exceed num_sites" if cfg.society.enabled and cfg.society.shock_interval
+           else ""),
         f"nights indoors     {100 * sum(rep.night_in) / night_total:7.1f}%",
         f"steals / episode   {np.mean(rep.steals):7.1f}",
         f"gifts / episode    {np.mean(rep.gifts):7.1f}",
@@ -210,9 +324,33 @@ def format_report(cfg: Config, rep: SocietyReport, label: str) -> str:
     nn = float(np.mean([v for v in rep.nn_distance if v == v] or [float("nan")]))
     chance = expected_nearest_neighbour(cfg.world.island_radius, cfg.world.num_agents)
     ratio = nn / chance if chance == chance else float("nan")
-    camp = "DEGENERATE" if ratio < 0.35 else ("WATCH" if ratio < 0.6 else "OK")
-    out.append(f"  3. mega-camp    daytime nearest neighbour {nn:.2f} vs {chance:.2f} "
-               f"at random ({ratio:.2f}x) [{camp}]")
+    if cfg.society.enabled and rep.displaced:
+        # The stage-2 verdict band does not apply once households are places, so
+        # it is not printed: the check is whether the piles are still SEPARATE.
+        # See household_dispersion for why the old control had to be retired.
+        #
+        # THE CONTROL, and it is not 50%. If sleeping position told you nothing
+        # about household, an agent's own home would be the nearest of H by chance
+        # alone, so 1 - 1/H of the population would be displaced -- 95% at twenty
+        # households. Note also what the RANDOM-ACTION floor gives: 14.8%, and
+        # LOWER than the utility agents', because random agents barely leave the
+        # spawn point they were placed on. So the floor is not the control here;
+        # the uniform-position expectation is.
+        away = _nanmean(rep.displaced)
+        h = max(cfg.society.num_households, 1)
+        chance_away = 1.0 - 1.0 / h
+        camp = "DEGENERATE" if away > 0.6 else ("WATCH" if away > 0.35 else "OK")
+        out.append(f"  3. mega-camp    AT NIGHT, {100 * away:.1f}% of agents are nearer a "
+                   f"FOREIGN household's home than their own, against "
+                   f"{100 * chance_away:.0f}% if position told you nothing [{camp}]")
+        out.append(f"                  (mean night distance to own home "
+                   f"{_nanmean(rep.home_distance):.1f}; daytime nearest neighbour "
+                   f"{nn:.2f} vs {chance:.2f} at random -- that ratio no longer has "
+                   f"a meaningful band, see household_dispersion)")
+    else:
+        camp = "DEGENERATE" if ratio < 0.35 else ("WATCH" if ratio < 0.6 else "OK")
+        out.append(f"  3. mega-camp    daytime nearest neighbour {nn:.2f} vs {chance:.2f} "
+                   f"at random ({ratio:.2f}x) [{camp}]")
 
     def mean_or_nan(values: list[float]) -> float:
         """nanmean over a list that may be empty or all-nan without warning.
@@ -228,6 +366,83 @@ def format_report(cfg: Config, rep: SocietyReport, label: str) -> str:
     night = mean_or_nan(rep.night_positions)
     out.append(f"\n-- day/night rhythm --\n  mean distance to the nearest finished shelter: "
                f"day {day:.1f}, night {night:.1f} ({night - day:+.1f} at dusk)")
+
+    if cfg.society.enabled and rep.house_lifespan:
+        out.append(_household_section(cfg, rep))
+    return "\n".join(out)
+
+
+def _household_section(cfg: Config, rep: SocietyReport) -> str:
+    """Stage 4: the household economy, and its own pre-registered failure modes.
+
+    Read this INSTEAD OF the per-agent inequality line above when households are
+    on. Stage 2's lifespan Gini was 0.058 and the write-up said the honest thing
+    about it -- "not much drama either; households and stockpiles are what would
+    give inequality something to accumulate in". The between-household Gini is the
+    number that claim has to be judged on, and it is not the same statistic: a
+    world can be perfectly equal between individuals and starkly unequal between
+    groups, which is the shape of inequality stage 4 was built to produce.
+    """
+    sc = cfg.society
+    houses = np.stack(rep.house_lifespan)          # (episodes, households)
+    food = np.stack(rep.house_stock_food)
+    mat = np.stack(rep.house_stock_material)
+    per_house = houses.mean(axis=0)
+    out = ["\n-- the household economy (stage 4) --",
+           f"  {sc.num_households} households of "
+           f"{cfg.world.num_agents / max(sc.num_households, 1):.0f}",
+           f"  deposits / episode      {np.mean(rep.deposits):7.1f}",
+           f"  withdrawals / episode   {np.mean(rep.withdrawals):7.1f}",
+           f"  raids / episode         {np.mean(rep.raids):7.1f}",
+           f"  stockpile food, mean level over the episode "
+           f"{np.mean(rep.stock_trace):5.2f} of {sc.stockpile_food_capacity}",
+           f"  stockpile at the end    food {food.mean():5.2f}, "
+           f"material {mat.mean():5.2f} per household"]
+    if rep.storms:
+        out.append(f"  shocks: {np.mean(rep.blight_ticks):.0f} blighted ticks, "
+                   f"{np.mean(rep.storms):.1f} storms damaging "
+                   f"{np.mean(rep.damaged):.1f} shelters")
+
+    out.append("\n-- two more pre-registered failure modes, from the design doc --")
+    # 4. INEQUALITY SNOWBALL, the version stage 2 could not test. The doc's guess
+    # is that this is good drama and only needs capping if it goes degenerate, so
+    # the verdict bands are deliberately looser than a moral judgement would be.
+    hg = gini(per_house)
+    verdict = "OK" if hg < 0.20 else ("WATCH" if hg < 0.35 else "DEGENERATE")
+    order = np.argsort(-per_house)
+    out.append(f"  4. household inequality  Gini {hg:.3f} [{verdict}]  "
+               f"richest household {per_house[order[0]]:.0f} ticks / "
+               f"poorest {per_house[order[-1]]:.0f}")
+    # 5. PERMANENT WAR at household scale. The doc's own forecast: "raid goal
+    # scored too cheap -> permanent war, nobody forages, collapse". A raid is
+    # gated on motive rather than on distance precisely because stage 2 watched
+    # the un-gated version of this fire, so the number to watch is raids against
+    # deposits -- a store that is raided more often than it is filled is a store
+    # nobody will keep filling.
+    dep = max(np.mean(rep.deposits), 1e-9)
+    ratio = np.mean(rep.raids) / dep
+    war = "DEGENERATE" if ratio > 1.0 else ("WATCH" if ratio > 0.4 else "OK")
+    out.append(f"  5. raid economy          {np.mean(rep.raids):.1f} raids per "
+               f"{dep:.1f} deposits ({ratio:.2f}x) [{war}]")
+    hungry = _nanmean(rep.raid_hungry)
+    if hungry == hungry:
+        out.append(f"     of agents holding the raid goal, {100 * hungry:.0f}% were "
+                   f"below the eat threshold (the rest are settling grudges)")
+
+    if rep.raid_matrix is not None and rep.raid_matrix.sum():
+        m = rep.raid_matrix
+        raiders = m.sum(axis=1)
+        victims = m.sum(axis=0)
+        top_r = int(np.argmax(raiders))
+        top_v = int(np.argmax(victims))
+        # Directionality is what separates a feud from noise. Symmetric raiding
+        # is everyone helping themselves; a household that raids far more than it
+        # is raided is a predator, and one raided far more than it raids is prey.
+        # `reciprocity` here is the same idea sim.exchange applies to gifts.
+        pairs = np.minimum(m, m.T).sum() / max(m.sum(), 1)
+        out.append(f"  raiding: household {top_r} took {raiders[top_r]} times "
+                   f"(most), household {top_v} was hit {victims[top_v]} times "
+                   f"(most); reciprocity {pairs:.2f}")
     return "\n".join(out)
 
 
@@ -282,8 +497,13 @@ def main() -> None:
         print(f"\nutility / random lifespan: {a / max(b, 1e-9):.2f}x")
 
     if args.replay:
-        path = args.replay_path or f"{cfg.logging.replay_dir}/society100.json"
-        written = record_replay(cfg, args.seed, path, "island2 utility agents", acfg)
+        # Named after the CONFIG, not hardcoded: stage 4 has its own world and
+        # overwriting stage 2's replay with it would quietly destroy the thing the
+        # two are meant to be compared against.
+        stem = Path(args.config).stem
+        path = args.replay_path or f"{cfg.logging.replay_dir}/{stem}.json"
+        written = record_replay(cfg, args.seed, path,
+                                f"island2 utility agents ({stem})", acfg)
         print(f"\nreplay written: {written}")
         print(f"open viewer/index.html?replay={written.split('/')[-1]}")
 

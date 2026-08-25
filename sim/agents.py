@@ -36,6 +36,19 @@ CONSTRUCTION_ACTION_NAMES: tuple[str, ...] = STEAL_ACTION_NAMES + ("chop", "mine
 # whole construction block is present (inert if construction is off), so
 # give_food and give_material are fixed indices in every exchange world.
 EXCHANGE_ACTION_NAMES: tuple[str, ...] = CONSTRUCTION_ACTION_NAMES + ("give_food", "give_material")
+# Island 2.0 stage 4 appends five more, by the same append-never-insert rule:
+# enabling `society` implies the whole exchange block is present (inert if
+# exchange is off), so these are fixed indices in every stage-4 world.
+#
+# Deposit and withdraw are SPLIT BY ECONOMY for the reason M5 split giving: food
+# keeps an agent alive and material builds shelter, and an agent carrying both
+# would otherwise be unable to say which economy it is taking part in. Raid is
+# ONE action rather than a foreign-stockpile variant of each withdraw, because a
+# raid is a distinct social act -- it is the thing that creates a grudge -- and
+# keeping the reputation bookkeeping behind a single action means there is one
+# place it can be got wrong. A raider takes whatever is there, food first.
+SOCIETY_ACTION_NAMES: tuple[str, ...] = EXCHANGE_ACTION_NAMES + (
+    "deposit_food", "deposit_material", "withdraw_food", "withdraw_material", "raid")
 N_MOVE_ACTIONS = 8
 IDLE = 8
 GATHER = 9
@@ -45,6 +58,11 @@ MINE = 12
 BUILD = 13
 GIVE_FOOD = 14
 GIVE_MATERIAL = 15
+DEPOSIT_FOOD = 16
+DEPOSIT_MATERIAL = 17
+WITHDRAW_FOOD = 18
+WITHDRAW_MATERIAL = 19
+RAID = 20
 N_ACTIONS = len(BASE_ACTION_NAMES)
 
 # Item codes for the transfer ledger and the replay's per-tick transfer list.
@@ -53,6 +71,8 @@ ITEM_NAMES: tuple[str, ...] = ("food", "wood", "stone")
 
 
 def action_names(cfg: Config) -> tuple[str, ...]:
+    if cfg.society.enabled:
+        return SOCIETY_ACTION_NAMES
     if cfg.exchange.enabled:
         return EXCHANGE_ACTION_NAMES
     if cfg.construction.enabled:
@@ -124,6 +144,48 @@ class ConstructionView:
     tick: int
 
 
+@dataclass
+class SocietyView:
+    """The slice of world state stage 4's observations and masks need.
+
+    Same shape of bundle as ``ConstructionView``, for the same reason: agents.py
+    keeps no dependency on world.py and a test can fabricate one in three lines.
+
+    ``household`` is per agent; the stockpile arrays are per household, and a
+    household's stockpile sits at its own shelter site, so ``stock_x[h]`` is also
+    where household h sleeps. ``grudge[i, j]`` is how much i remembers j taking
+    from it.
+    """
+
+    household: np.ndarray          # (A,) household index per agent
+    stock_x: np.ndarray            # (H,)
+    stock_z: np.ndarray
+    stock_food: np.ndarray         # (H,)
+    stock_material: np.ndarray     # (H,)
+    grudge: np.ndarray             # (A, A)
+    blight: bool
+
+
+def neighbour_society_channels(cfg: Config) -> int:
+    """Stage-4 additions to a neighbour slot: same-household, and a grudge."""
+    if not cfg.society.enabled:
+        return 0
+    return int(cfg.society.observe_household) + int(cfg.society.observe_grudge)
+
+
+def society_channels(cfg: Config) -> int:
+    """Fixed-width stage-4 block: own stockpile, home offset, nearest foreign pile.
+
+    Nine channels, plus one if blights are observed. It does NOT grow with the
+    number of households -- the nearest foreign stockpile is one k-nearest slot,
+    exactly as bushes and sites are, which is what keeps the observation width
+    independent of population (design doc section 4).
+    """
+    if not cfg.society.enabled:
+        return 0
+    return 9 + int(cfg.society.observe_shock)
+
+
 def night_phase(tick: int, cfg: Config) -> tuple[float, bool]:
     """(cycle phase in [0,1), is it night). Night is the last `night_fraction`."""
     cc = cfg.construction
@@ -146,7 +208,8 @@ def neighbour_channels(cfg: Config) -> int:
     without being it.
     """
     return (3 + int(cfg.competition.observe_neighbour_food)
-            + 2 * int(cfg.exchange.observe_neighbour_materials))
+            + 2 * int(cfg.exchange.observe_neighbour_materials)
+            + neighbour_society_channels(cfg))
 
 
 def bush_channels(cfg: Config) -> int:
@@ -186,6 +249,7 @@ def observation_dim(cfg: Config) -> int:
         dim += 3 * cc.k_rocks       # dx, dz, stone left
         dim += site_channels(cfg) * cc.k_sites
         dim += 2                    # cycle phase, is_night
+    dim += society_channels(cfg)
     return dim
 
 
@@ -196,6 +260,7 @@ def action_mask(
     bush_berries: np.ndarray,
     cfg: Config,
     construction: "ConstructionView | None" = None,
+    society: "SocietyView | None" = None,
 ) -> np.ndarray:
     """Which actions can possibly do anything, per agent. Shape ``(A, n_actions)``.
 
@@ -231,6 +296,11 @@ def action_mask(
         np.fill_diagonal(agent_d2, np.inf)
         victims = ((agent_d2 <= cfg.competition.steal_radius ** 2)
                    & pool.alive[None, :] & (pool.food[None, :] > 0))
+        if cfg.society.enabled and cfg.society.household_theft_immunity:
+            # Mirrors World.step's rule exactly. A mask that promised a steal the
+            # world then refuses is the doomed action masking exists to delete.
+            assert society is not None, "society world state missing"
+            victims &= society.household[None, :] != society.household[:, None]
         mask[:, STEAL] = has_room & victims.any(axis=1)
 
     if cfg.construction.enabled and construction is not None:
@@ -282,6 +352,45 @@ def action_mask(
             room = (pool.wood + pool.stone) < cfg.construction.material_capacity
             mask[:, GIVE_MATERIAL] = ((pool.wood + pool.stone) > 0) & (near & room[None, :]).any(axis=1)
 
+    if cfg.society.enabled:
+        assert society is not None, "society world state missing"
+        sc = cfg.society
+        mine = society.household
+        rows = np.arange(n)
+        # Distance to my OWN stockpile, and to the nearest foreign one. Both are
+        # world-state reads the mask is entitled to make -- the mask says what is
+        # reachable, and reachability is a fact about the world (the M3 note).
+        home_d2 = ((society.stock_x[mine] - pool.x) ** 2
+                   + (society.stock_z[mine] - pool.z) ** 2)
+        at_home = home_d2 <= sc.stockpile_radius ** 2
+        food_room = society.stock_food[mine] < sc.stockpile_food_capacity
+        mat_room = society.stock_material[mine] < sc.stockpile_material_capacity
+        mask[:, DEPOSIT_FOOD] = at_home & (pool.food > 0) & food_room
+        carrying = (pool.wood + pool.stone) > 0
+        mask[:, DEPOSIT_MATERIAL] = at_home & carrying & mat_room
+        mask[:, WITHDRAW_FOOD] = (at_home & (society.stock_food[mine] > 0)
+                                  & (pool.food < cfg.food.capacity))
+        if cfg.construction.enabled:
+            room_m = (pool.wood + pool.stone) < cfg.construction.material_capacity
+        else:
+            room_m = np.zeros(n, dtype=bool)
+        mask[:, WITHDRAW_MATERIAL] = (at_home & (society.stock_material[mine] > 0) & room_m)
+
+        h = society.stock_x.shape[0]
+        if h > 1:
+            dx = society.stock_x[None, :] - pool.x[:, None]
+            dz = society.stock_z[None, :] - pool.z[:, None]
+            d2 = dx ** 2 + dz ** 2
+            d2[rows, mine] = np.inf
+            # A raid can take food or material, so it is legal at a foreign pile
+            # holding either, as long as the raider has room for what is there.
+            has_food = society.stock_food[None, :] > 0
+            has_mat = society.stock_material[None, :] > 0
+            in_reach = d2 <= sc.stockpile_radius ** 2
+            takeable = ((has_food & (pool.food < cfg.food.capacity)[:, None])
+                        | (has_mat & room_m[:, None]))
+            mask[:, RAID] = (in_reach & takeable).any(axis=1)
+
     mask[~pool.alive] = False
     mask[~pool.alive, IDLE] = True
     return mask
@@ -313,6 +422,10 @@ def observation_layout(cfg: Config) -> tuple[str, ...]:
             names.append(f"neighbour{j}.food")
         if cfg.exchange.observe_neighbour_materials:
             names += [f"neighbour{j}.wood", f"neighbour{j}.stone"]
+        if cfg.society.enabled and cfg.society.observe_household:
+            names.append(f"neighbour{j}.same_household")
+        if cfg.society.enabled and cfg.society.observe_grudge:
+            names.append(f"neighbour{j}.grudge")
     if cfg.construction.enabled:
         cc = cfg.construction
         for j in range(cc.k_trees):
@@ -325,6 +438,12 @@ def observation_layout(cfg: Config) -> tuple[str, ...]:
             if cc.observe_final_unit:
                 names.append(f"site{j}.finishes")
         names += ["night.phase", "night.is_night"]
+    if cfg.society.enabled:
+        names += ["own.stock_food", "own.stock_material",
+                  "home.dx", "home.dz", "home.complete",
+                  "raid.dx", "raid.dz", "raid.food", "raid.material"]
+        if cfg.society.observe_shock:
+            names.append("shock.blight")
     names += ["edge.room", "edge.outward_x", "edge.outward_z"]
     return tuple(names)
 
@@ -393,6 +512,7 @@ def build_observations(
     bush_berries: np.ndarray,
     cfg: Config,
     construction: "ConstructionView | None" = None,
+    society: "SocietyView | None" = None,
 ) -> np.ndarray:
     """Egocentric fixed-size observation for every agent, shape ``(A, obs_dim)``.
 
@@ -485,6 +605,21 @@ def build_observations(
         if cfg.exchange.observe_neighbour_materials:
             out[:, extra + 0] = np.where(ok, pool.wood[take] / mat_cap, 0.0)
             out[:, extra + 1] = np.where(ok, pool.stone[take] / mat_cap, 0.0)
+            extra += 2
+        if cfg.society.enabled:
+            assert society is not None, "society world state missing"
+            if cfg.society.observe_household:
+                # "My group" is a flag, not something to be inferred: households
+                # are stable from tick 0 and an agent has no way to work out who
+                # sleeps where from offsets alone. Same call as neighbours' food
+                # before theft -- a mechanic the policy cannot see is one it
+                # cannot respond to.
+                same = society.household[take] == society.household
+                out[:, extra] = np.where(ok, same.astype(np.float32), 0.0)
+                extra += 1
+            if cfg.society.observe_grudge:
+                out[:, extra] = np.where(ok, society.grudge[np.arange(n), take], 0.0)
+                extra += 1
         col += channels
 
     # --- Milestone 4: material nodes, shelter sites, and the clock
@@ -526,6 +661,53 @@ def build_observations(
         out[:, col + 0] = phase
         out[:, col + 1] = float(is_night)
         col += 2
+
+    # --- Island 2.0 stage 4: my household's stockpile, and the nearest foreign one
+    if cfg.society.enabled:
+        assert society is not None, "society world state missing"
+        sc = cfg.society
+        mine = society.household
+        rows = np.arange(n)
+        food_cap = max(sc.stockpile_food_capacity, 1)
+        mat_cap_s = max(sc.stockpile_material_capacity, 1)
+        out[:, col + 0] = society.stock_food[mine] / food_cap
+        out[:, col + 1] = society.stock_material[mine] / mat_cap_s
+        home_dx = society.stock_x[mine] - pool.x
+        home_dz = society.stock_z[mine] - pool.z
+        out[:, col + 2] = np.clip(home_dx / scale, -1.0, 1.0)
+        out[:, col + 3] = np.clip(home_dz / scale, -1.0, 1.0)
+        # DOES MY OWN HOUSE HAVE A ROOF ON IT? Derivable in principle from the
+        # k-nearest site block, but only when the home site happens to rank inside
+        # k -- and after a storm, standing anywhere else, it may not. An agent
+        # certainly knows whether its own shelter is finished, and a household
+        # that cannot tell has no reason to prefer home over the nearest hut,
+        # which is measurably what dissolves the household as a place: without
+        # this channel 55.7% of agents ended a run nearer a foreign home than
+        # their own, and "my group is who sleeps where I sleep" stopped being true.
+        h = society.stock_x.shape[0]
+        if construction is not None:
+            home_done = ((construction.site_wood_needed[:h] == 0)
+                         & (construction.site_stone_needed[:h] == 0))
+            out[:, col + 4] = home_done[mine].astype(np.float32)
+        col += 5
+        # The nearest stockpile that is NOT mine. One slot, so the width does not
+        # grow with the number of households; a raider only ever needs the
+        # closest target, and the design doc's fixed-width rule (section 4) is
+        # what keeps a stage-5 policy trainable at any population.
+        if h > 1:
+            dx = society.stock_x[None, :] - pool.x[:, None]
+            dz = society.stock_z[None, :] - pool.z[:, None]
+            d2 = dx ** 2 + dz ** 2
+            d2[rows, mine] = np.inf     # never raid your own pantry
+            j = np.argmin(d2, axis=1)
+            out[:, col + 0] = np.clip(dx[rows, j] / scale, -1.0, 1.0)
+            out[:, col + 1] = np.clip(dz[rows, j] / scale, -1.0, 1.0)
+            out[:, col + 2] = society.stock_food[j] / food_cap
+            out[:, col + 3] = society.stock_material[j] / mat_cap_s
+        col += 4
+        if sc.observe_shock:
+            out[:, col] = float(society.blight)
+            col += 1
 
     # --- shoreline
     r = np.sqrt(pool.x**2 + pool.z**2)

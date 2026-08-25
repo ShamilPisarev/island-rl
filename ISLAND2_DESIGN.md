@@ -5,20 +5,27 @@ stripped-down probe replay (fixed: `?replay=` deep link in `viewer/main.js`).
 Island 1.0 (milestones 1-5, all verified) stays intact whatever happens; 2.0 is
 a new code path, new configs, and must not touch the existing results.
 
-**STATUS: stages 1, 2 and 3 are built (all 2026-08-25). Stage 4 is next.** The
-sections below are the original design as written; where a stage has since been
-run, an inline note says what actually happened, and **section 8 carries the
-stage 2/3 results and the four corrections the build forced**. Two of the
-design's own forecasts were refuted by measurement -- the spatial hash
-(section 4) and the schema bump for animation state (section 5) -- so read the
-notes before trusting a prediction here.
+**STATUS: stages 1-4 are built (all 2026-08-25). Stage 5, the learned arbiter,
+is next.** The sections below are the original design as written; where a stage
+has since been run, an inline note says what actually happened. **Section 8
+carries the stage 2/3 results and section 9 the stage 4 results**, each with the
+corrections its build forced. Three of the design's own forecasts have now been
+refuted by measurement -- the spatial hash (section 4), the schema bump for
+animation state (section 5), and the guess that stockpiles would produce runaway
+hoarding (section 3) -- so read the notes before trusting a prediction here.
 
 Run it:
 
 ```bash
-python -m sim.economy  --config config/island2/society100.yaml   # size the world
+# stage 4, the current world
+python -m sim.economy  --config config/island2/society4.yaml     # size the world
+python -m sim.society  --config config/island2/society4.yaml --episodes 5 --random
+python -m sim.society  --config config/island2/society4.yaml --replay
+python -m sim.exchange --config config/island2/society4.yaml --policy utility \
+    --episodes 2 --out viewer/reports/exchange.json     # household ledger view
+
+# stage 2's world, kept as the control the stage-4 numbers are read against
 python -m sim.society  --config config/island2/society100.yaml --episodes 5 --random
-python -m sim.society  --config config/island2/society100.yaml --replay
 python -m sim.profile_engine --config config/island2/engine100_full.yaml --profile
 ```
 
@@ -322,6 +329,17 @@ the per-agent list (6 fit; 100 do not).
    Iterate on utility agents (fast loop, no training). Exit: raids and
    deliveries between households visible in a replay; an exchange-ledger
    view at household level.
+   **DONE 2026-08-25.** All five mechanics, config-gated behind `society.*`, so
+   every 1.0 world and stages 1-3 stay bit-identical. Five appended actions
+   (deposit/withdraw x food/material, and raid), observation 61 -> 77 dims,
+   replay schema v4 (stockpiles and raids per tick, households at top level),
+   five new goals and two household needs in the arbiter, and household sections
+   in both the society report and the exchange view. Exit met: raids render as
+   red arcs from the robbed store to the raider, the household raid matrix is
+   sparse and directional (household 12 raided household 9 134 times in two
+   episodes), and `config/island2/society4.yaml` is the world. **Six corrections
+   the build forced are in section 9, and one of the doc's own forecasts above
+   is refuted** -- hoarding did not run away, the store churned instead.
 5. LEARNED ARBITER (option B). Swap scoring for a shared PPO policy over
    goals, trait embedding, semi-MDP transitions. Train, then run the
    headline comparison: learned vs scripted arbiter, same world, paired
@@ -448,3 +466,185 @@ the symptom in `tests/test_utility.py`.
   untouched, which is what keeps the headline comparison honest. `OptionRunner`
   already tracks decisions per agent for the one-transition-per-option
   bookkeeping.
+
+## 9. Stage 4 results, and the six corrections the build forced
+
+Written 2026-08-25, right after the runs. Numbers are 5 episodes of
+`config/island2/society4.yaml` against the random floor measured in the SAME
+world, seeds 10000+.
+
+### Where it landed
+
+| | utility agents | random floor |
+|---|---|---|
+| mean lifespan | **578.3** of 600 (96%) | 314.8 (52%) |
+| deaths / episode | **10.4** of 100 | 90.4 |
+| berries / episode | 882 of the 1080 the island makes (82%) | 315 (29%) |
+| nights indoors | **88.6%** | 28.0% |
+| deposits / episode | **2795** | 198 |
+| withdrawals / episode | 2031 | 163 |
+| raids / episode | **629** | 3.8 |
+| stockpile food, mean level | **5.40** of 12 | 0.49 |
+
+**1.84x the random floor, and that ratio is NOT comparable with stage 2's
+2.80x.** The floor rose, not the ceiling: stage 4 spawns a household together at
+its own shelter site, so random agents start next to cover and sleep indoors on
+28% of night ticks against stage 2's 6%. Absolute lifespan went **569.0 ->
+578.3** on the same tick limit. Read the absolute number and the floor together;
+the ratio between two different worlds' floors says nothing.
+
+Two more figures that do not transfer, flagged because the M4 `m4d` write-up was
+wrong for exactly this reason (rule 5):
+
+* **`shelters / episode` is now a FLOW, not a stock.** A storm knocks finished
+  shelters back to incomplete and they get rebuilt, so the counter reads 52 of 20
+  sites. It counts completions including rebuilds and the report says so inline.
+  Stage 2's "20.0 of 20" was a stock and cannot be set beside it.
+* **Nights indoors fell 98.1% -> 88.6%**, and that is the storms working rather
+  than the population getting worse: the roof over a household is periodically
+  removed, and 11% of night ticks are spent in a house that is being rebuilt.
+
+The five pre-registered failure modes, each against a control:
+
+* **inequality snowball (per agent)** -- Gini **0.035** [OK].
+* **permanent war (theft)** -- steal 3.5% of goal-ticks against forage 12.7%
+  [OK]. It fired first at 13.8%; see correction 2.
+* **mega-camp** -- the stage-2 measure had to be retired and replaced, because a
+  stage-4 population is *supposed* to have piled up, twenty times over. See
+  correction 4. At night **26.7%** of agents are nearer a foreign household's
+  home than their own, against **95%** if position told you nothing about
+  household [OK].
+* **household inequality** (the doc's own version, which stage 2 could not test)
+  -- Gini **0.016** across households, richest 599 ticks against poorest 537
+  [OK]. So the doc's forecast of a hoarding snowball is **refuted**: the store
+  turned out to be the opposite problem, a treadmill (correction 1).
+* **raid economy** -- 629 raids per 2795 deposits (0.23x) [OK]. Of agents holding
+  the raid goal, **19% were below the eat threshold**; the other 81% are settling
+  grudges, which is the reputation mechanic producing feuds rather than famine
+  relief. The household raid matrix is sparse and directional (reciprocity 0.61,
+  one household raided 302 times and another was hit 350).
+
+Watchability, the actual exit condition: twenty ringed settlements, each with a
+hut, a food crate and a material crate whose heights move as the store fills and
+empties; a visible dusk commute (mean distance to the nearest finished shelter
+9.2 by day, 4.5 at night); red arcs when a store is robbed. Verified in a
+browser on the v4 replay, no console errors, and v1/v2/v3 replays render
+unchanged. **Frame rate was not measured** -- the automation pane reports
+`document.hidden`, which throttles rAF -- so the cost claim rests on
+construction (20 stockpiles is 60 extra meshes) rather than on a timing.
+
+**Engine cost, measured.** `sim.profile_engine` at 100 agents: **101k
+agent-steps/s** with the stage-4 mechanics on against 137k with them off, i.e.
+the five mechanics cost ~26% of the tick and the world still runs at 20x stage
+1's 5k exit bar. Most of that is the per-agent Python loops the stockpile and
+raid phases use, in the same style as the existing gather/steal/build phases;
+vectorising them is available if stage 5's training budget ever needs it, and
+stage 1's lesson (measure before choosing a lever) says not to bother until it
+does.
+
+### The economy had to be resized, and the tool had to be taught why
+
+CLAUDE.md rule 5, and it fired before the world ran once. A blight suspends berry
+regrowth, so three blights over an episode cost the island 180 growing ticks of
+600 -- at `regrow_ticks` 100 that is two of every bush's six regrowths, 280 of
+1120 berries. Stage 2's 7 bushes per cluster would have run this world at
+**0.98x sheltered subsistence**, where nothing behavioural can be read off it.
+
+`sim.economy` now models blights and says so out loud, which is why this was
+caught by the sizing tool rather than by a puzzling result. 9 bushes per cluster
+puts it back in the doc's band: supply 1080, **1.26x** sheltered demand and
+**0.84x** exposed, so shelter stays load-bearing by arithmetic exactly as it is
+in M4.
+
+The surplus is the mechanism, not slack. A cluster earns 9 berries per 100 ticks
+against its 5 residents needing 7.1, so a household has ~1.26x its own
+subsistence to put in a pile -- which is where a stockpile's contents come from.
+During a blight that income is zero and the pile is the only thing between the
+household and the night.
+
+### The six corrections, because each looked right in code
+
+Every one is pinned by a test named after the symptom in `tests/test_society.py`,
+and four of them are an old lesson arriving in new clothes.
+
+1. **The stockpile became the M5 gift farm.** 5858 deposits and 5475 withdrawals
+   an episode with the pile never rising above **1.14 of 12**. An agent deposited
+   its surplus, which raised its own `food_stock` deficit, which made drawing the
+   best-scoring goal -- at the same location -- forever. The fix is the same shape
+   as every fix that has worked here: not a smaller weight, a mechanic that cannot
+   loop. A deposit needs a real SURPLUS (keep one unit back, and be above the eat
+   threshold); a draw needs a real SHORTAGE (be empty-handed and actually getting
+   hungry). The two are now mutually exclusive by construction. Pile level
+   1.14 -> **5.40**.
+2. **Theft exploded, and it was stage 2's correction 1 in a new world.** Spawning
+   a household together keeps five agents permanently inside `steal_radius`, so an
+   opportunistic steal fires every tick: **8105 steals an episode**, steal
+   overtaking forage as a share of intentions (13.8% against 12.0%), and the
+   grudges from all that theft then saturating every raid gate. `household_theft_immunity`
+   is the mechanic-level answer and it is also the coherent reading -- a household
+   shares a store, so you do not rob a housemate's pocket, you `withdraw`. Steals
+   8105 -> 1960, steal share -> 3.5%.
+3. **A household is not a place unless the shelter goal says so.** With `shelter`
+   targeting the nearest finished hut, **55.7%** of agents slept closer to a
+   foreign home than their own, so "my group is who sleeps where I sleep" was
+   quietly false and every household statistic was describing a round-robin index.
+   The fix needed a new observation channel, `home.complete`: an agent certainly
+   knows whether its own roof is on, and after a storm its home site may not rank
+   inside the `k_sites` nearest. It now sleeps at home when the roof is on and at
+   the nearest finished shelter when it is not. 55.7% -> 26.7%.
+4. **The mega-camp control expired when households became places.** Stage 2
+   measured daytime nearest-neighbour distance against uniform placement on the
+   same island, and stage 4 reads **0.47x** of chance -- tripping a WATCH on
+   behaviour the design asked for. What "mega-camp" means once households exist is
+   that the piles stop being SEPARATE, so the measure is now the share of agents
+   who sleep nearer a foreign home than their own. Two details that matter:
+   * it is a **NIGHT** statistic, the mirror of crowding being a day one. By day an
+     agent is out foraging and a foreign home is often closer, which is a commute,
+     not defection. Measured over all ticks it read 37.3% instead of 26.7%.
+   * **the control is not 50% and it is not the random floor.** If position told
+     you nothing, an agent's own home would be nearest by chance alone, i.e.
+     1 - 1/H = **95%** displaced. The random-action floor gives **14.6%** --
+     *lower* than the utility agents' -- because random agents barely leave the
+     spawn point they were placed on. The uniform-position expectation is the
+     control; the action floor is not.
+5. **A committed `explore` outlived its own reason.** 28.3% of all goal-ticks went
+   to exploring while the mean forage score among the explorers was 0.40 against
+   explore's 0.17 -- they were not choosing to wander, they were serving out a
+   25-tick commitment after a bush had come into view on tick three. Searching is
+   the one option whose purpose is a perception, so its termination test is one
+   too. This is a stage-2 bug found in stage 4, and **it changes a stage-2 number**:
+   that world's lifespan is now 569.0 where section 8 records 563.2.
+6. **One nan poisoned a whole episode's commute figure.** A storm can leave no
+   finished shelter to measure distance against, and a single such sample turned
+   the day/night rhythm into `nan`. `np.mean` -> a nanmean helper.
+
+### What stage 4 says about stage 5, before anyone builds it
+
+* **The option interface did not have to change**, which is the load-bearing
+  claim for stage 5. Five new goals went in as five more rows of `RESTORE`,
+  `GOAL_TIER` and the `execute_goals` dispatch; `arbiter.choose(view, mask, rng)`
+  and `execute_goals(...)` are untouched, so a learned chooser still drops in
+  beside the scripted one. The goal count is 10 -> 15 and the append-never-insert
+  rule held for both goals and actions, so a stage-5 trait embedding or goal head
+  keeps its meaning.
+* **Trade across a household boundary still does not happen: 5 gifts in two
+  episodes**, against 1337 raids. That is M5's wall standing exactly where it
+  stood, now with geography and a store on top of it -- and it is the sharpest
+  question stage 5 gets to ask, because at the option level "give this to a
+  neighbour who will use it" is one decision rather than a forty-tick chain.
+  Note honestly what stage 4 did NOT do: it did not make trade pay. `region_split`
+  makes one material a journey, but `fungible_materials` is inherited from the
+  m4h lineage, so a household can still substitute whichever material it has. A
+  world where a site genuinely needs the other region's material is the next
+  mechanic-level lever, and it is the one M5's own postmortem asked for.
+* **`raid` is the goal a learned arbiter will find most interesting**, because
+  its availability is gated on motive (desperation or a grudge) while its VALUE is
+  a distance-discounted score. That is the one place stage 4 encodes a judgement
+  the scripted arbiter cannot revise and a learned one could: 81% of raid
+  intentions are revenge rather than hunger, and whether that is good play is
+  exactly the sort of thing the headline comparison should settle.
+* **The `social` need is still not modelled.** Households give it teeth in
+  principle, but nothing in the world yet rewards standing near a housemate --
+  shelter protection is a radius around a site, not around a group. Adding the
+  need before adding the mechanic would score goals against an appetite the world
+  cannot feed, which is the same call section 8 made.

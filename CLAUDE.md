@@ -35,8 +35,9 @@ society (utility/"Maslow" arbiter + scripted controllers first, then a learned
 option-level policy on the same interface). The plan below remains the 1.0
 research thread and is unaffected.
 
-**Stages 1, 2 and 3 are DONE, same day.** Stage 4 (regions, households,
-stockpiles, reputation, shocks) is next. Stage 2/3 in one line each:
+**Stages 1-4 are DONE, same day.** Stage 5 (a learned option-level arbiter, and
+the headline scripted-vs-learned comparison) is next. Stage 2/3/4 in one line
+each:
 
 * **Stage 2, utility agents.** A needs arbiter over goal-level options
   (`sim/utility.py`), with the interface stage 5 swaps a learned chooser into:
@@ -61,6 +62,31 @@ stockpiles, reputation, shocks) is next. Stage 2/3 in one line each:
   hover labels, single-pass death ticks, gift-line cap 32 → 256. Verified in a
   browser on v1/v2/v3 replays, no console errors; six-agent 1.0 replays render
   unchanged in roster mode.
+
+* **Stage 4, society mechanics.** Regions, households, stockpiles, reputation
+  and shocks, all config-gated behind `society.*` so every 1.0 world and stages
+  1-3 stay bit-identical (`config/island2/society4.yaml`, 281 tests green). Five
+  appended actions (deposit/withdraw x food/material, and raid), observation
+  61 -> 77, replay schema **v4**, five new goals and two household needs in the
+  arbiter, household sections in both `sim.society`'s report and the exchange
+  view. 100 agents in 20 households of 5: **578.3 of 600 ticks** against a
+  314.8 random floor, 82% of the island harvested, 2795 deposits and 629 raids an
+  episode, and a stockpile holding 5.4 of 12 berries on average. The mechanics
+  cost ~26% of the tick (**101k agent-steps/s** at 100 agents against 137k with
+  them off), still 20x stage 1's exit bar.
+  **Three numbers do NOT transfer from stage 2 and the write-up says so**: the
+  1.84x floor ratio (the *floor* rose from 201 to 315, because a household spawns
+  at its own shelter site), `shelters/episode` (now a flow including storm
+  rebuilds, 52 of 20 sites), and nights indoors (98.1% -> 88.6%, which is storms
+  removing roofs). **Six corrections are written up in ISLAND2_DESIGN.md §9 and
+  pinned by tests named after the symptom** -- read them before touching the
+  scorer; two of them are old lessons in new clothes (the M5 gift farm rebuilt
+  out of a stockpile, and stage 2's theft correction firing again once households
+  spawn together), and one retired a pre-registered failure-mode measure whose
+  control had expired (rule 5). The economy had to be resized because blights cut
+  supply to 0.98x subsistence -- caught by `sim.economy`, which was taught about
+  blights first. One design-doc forecast is refuted: stockpiles produced churn,
+  not runaway hoarding.
 
 **Stage 1 (engine scale pass) detail.** The design doc's forecast
 that O(n²) neighbour queries would need a spatial hash was refuted by the
@@ -470,7 +496,7 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   original verdict was reached where nothing was worth trading: giving stops being
   selected against and the flow turns directional, but it still buys no survival.
   Best checkpoint: `checkpoints/m5b` (497.5 lifespan).
-- `pytest` passes (256 tests).
+- `pytest` passes (281 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -833,7 +859,8 @@ file will not appear in the dropdown. Drag-and-drop always works, including from
 import map, as the brief specified. There is no bundler and no vendored copy.
 
 **Replay schema is versioned and the viewer fails loudly.** `SCHEMA_VERSION` in
-`sim/replay.py`, `SUPPORTED_SCHEMA` in `viewer/main.js`. The viewer also
+`sim/replay.py` (v1 base, v2 construction, v3 exchange, **v4 island2 stage-4
+households/stockpiles/raids**), `SUPPORTED_SCHEMA` in `viewer/main.js`. The viewer also
 cross-checks the file's own `tick_fields.agent` against the column order it
 expects, so reordering columns cannot silently shift what gets rendered. Bump the
 version on *any* change to the tick encoding, and update both sides.

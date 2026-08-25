@@ -176,6 +176,88 @@ class ExchangeConfig:
 
 
 @dataclass(frozen=True)
+class SocietyConfig:
+    """Island 2.0 stage 4: regions, households, stockpiles, reputation, shocks.
+
+    All off by default, so every 1.0 world (and stages 1-3) stays bit-identical.
+    Enabling this appends five actions -- deposit/withdraw food and material, and
+    raid -- and widens the observation; the append-never-insert rule that carried
+    an M1 checkpoint into M3 applies here too.
+
+    WHY THESE FIVE MECHANICS AND NOT MORE. Stage 2 measured what the 100-agent
+    utility population was missing, and every item here answers one of those
+    findings rather than being a feature someone fancied:
+
+      * `region_split` -- stage 2's world had wood and stone on every cluster
+        (the m4f lineage's `materials_at_clusters`), so nobody ever needed
+        anything from anybody. M5's own postmortem says a relay needs its chain
+        shortened by GEOGRAPHY, not its deliveries made fungible; splitting the
+        island is that.
+      * households + stockpiles -- "construction is over by the first nightfall"
+        (20 sites x 4 units against 100 agents carrying one each), and lifespan
+        Gini was 0.058 because there was nothing for inequality to accumulate
+        IN. A stockpile is a store, a sustained demand, and a raid target.
+      * reputation -- retaliation and guarding without any scripted war logic.
+      * shocks -- populations that never get stressed never visibly cooperate.
+        Deterministic from the seed, like everything else here.
+    """
+
+    enabled: bool = False
+
+    # --- regions. Trees to one side of the island, rocks to the other, berries
+    # everywhere. `region_axis` is the compass angle (radians) of the wood half's
+    # outward normal; 0 puts wood at +z ("north") and stone at -z.
+    region_split: bool = False
+    region_axis: float = 0.0
+
+    # --- households. Agents are dealt round-robin, so a household is a stable
+    # group from tick 0 and "my group" needs no learning to identify. Each
+    # household owns the site of the same index (num_sites must be >= this), and
+    # that site's position is also its stockpile's.
+    num_households: int = 1
+    observe_household: bool = False   # per-neighbour same-household flag
+
+    # --- stockpiles. Capacity is per household, not per agent, which is the
+    # whole point: it is the first thing in this project bigger than a pocket.
+    stockpile_food_capacity: int = 12
+    stockpile_material_capacity: int = 12
+    stockpile_radius: float = 2.5
+    # May an agent rob a member of its OWN household?
+    #
+    # This is a correction, not a taste call, and it is stage 2's correction 1
+    # arriving in a new world exactly as rule 5 says to expect. Stage 4 spawns a
+    # household together at its own site, which packs five agents inside
+    # `steal_radius` of each other permanently -- and an opportunistic steal goal
+    # that only needs a loaded victim in reach then fires every tick. Measured:
+    # 8105 steals an episode against stage 2's 5.8% of goal-ticks becoming 13.8%,
+    # tripping the pre-registered PERMANENT WAR check, and cascading into raids
+    # because every housemate held a saturated grudge against every other.
+    #
+    # Immunity is also the coherent reading of the mechanic: a household shares a
+    # stockpile, so taking from a housemate's pocket is not how you get food out
+    # of your own group -- `withdraw` is. Theft stays available against everyone
+    # else, which is what keeps competition between households real.
+    household_theft_immunity: bool = False
+
+    # --- reputation. grudge[i, j] in [0, 1] is how much i remembers j taking
+    # from it (a steal from i, or a raid on i's household stockpile). Decays
+    # geometrically so an old robbery stops mattering, which is what lets a
+    # feud end.
+    reputation: bool = False
+    grudge_per_theft: float = 0.34    # three thefts saturate the memory
+    grudge_decay: float = 0.995       # half-life ~138 ticks
+    observe_grudge: bool = False      # per-neighbour grudge channel
+
+    # --- shocks. Every `shock_interval` ticks one fires, alternating
+    # deterministically between a blight (berry regrowth stops) and a storm
+    # (every finished shelter loses units and needs rebuilding). 0 disables.
+    shock_interval: int = 0
+    blight_ticks: int = 60            # how long a blight suspends regrowth
+    storm_damage: int = 2             # units knocked out of each finished site
+    observe_shock: bool = False       # one channel: is a blight running
+
+
+@dataclass(frozen=True)
 class MixConfig:
     """Train on TWO worlds at once: a share of the envs run a second config.
 
@@ -286,6 +368,7 @@ class Config:
     competition: CompetitionConfig = field(default_factory=CompetitionConfig)
     construction: ConstructionConfig = field(default_factory=ConstructionConfig)
     exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
+    society: SocietyConfig = field(default_factory=SocietyConfig)
     mix: MixConfig = field(default_factory=MixConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
@@ -340,6 +423,7 @@ _SECTIONS: dict[str, type] = {
     "competition": CompetitionConfig,
     "construction": ConstructionConfig,
     "exchange": ExchangeConfig,
+    "society": SocietyConfig,
     "mix": MixConfig,
     "observation": ObservationConfig,
     "reward": RewardConfig,

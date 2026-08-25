@@ -5,7 +5,7 @@
 // question -- what the whole block of episodes added up to, and whether the
 // pattern looks like trade or like churn.
 
-const SUPPORTED_SCHEMA = [1];
+const SUPPORTED_SCHEMA = [1, 2];   // 2 adds the island2 stage-4 household block
 const $ = (id) => document.getElementById(id);
 
 const LEDGER_COLUMNS = [
@@ -52,6 +52,7 @@ function render(report) {
     `${report.episodes} episodes · seed ${report.seed}`;
 
   renderKpis(report);
+  renderHouseholds(report);
   renderLedger(report, colors);
   renderMatrices(report, colors);
   renderRoles(report, colors);
@@ -98,6 +99,63 @@ function renderLedger(report, colors) {
     }).join('')}
   </tr>`).join('');
   $('ledgerTable').innerHTML = head + `<tbody>${rows}</tbody>`;
+}
+
+// Island 2.0 stage 4. The household ledger, and it leads with WITHIN vs ACROSS
+// because that is the question a group-level view exists to answer: a gift to a
+// housemate is housekeeping, and only one that crosses a boundary is trade. M5's
+// standing lesson is that a busy flow matrix can mean nothing at all, so the
+// headline here is not volume.
+function renderHouseholds(report) {
+  const host = $('households');
+  const h = report.households;
+  if (!host) return;
+  if (!h) { host.hidden = true; return; }
+  host.hidden = false;
+
+  const raids = h.raids;
+  const flow = h.flow;
+  const n = h.count;
+  const total = h.gifts_within + h.gifts_across;
+  const across = Math.round(100 * h.gifts_across / Math.max(total, 1));
+  const raidTotal = raids.reduce((s, row) => s + row.reduce((a, b) => a + b, 0), 0);
+
+  let html = `<div class="kpi">
+    <div><b>${h.gifts_across}</b>gifts across a household boundary</div>
+    <div><b>${across}%</b>of all gifts crossed one</div>
+    <div><b>${raidTotal}</b>raids</div>
+    <div><b>${h.raid_reciprocity.toFixed(2)}</b>raid reciprocity</div>
+  </div>`;
+
+  const peak = Math.max(...raids.flat(), 1);
+  html += `<h3 style="font-size:12px;color:var(--dim);margin:14px 0 4px">raids (row raided column)</h3>`;
+  html += `<div class="scrollx"><div class="matrix" style="grid-template-columns:repeat(${n + 1},auto)">`;
+  html += '<div class="head"></div>';
+  for (let j = 0; j < n; j++) html += `<div class="head" style="color:${h.colors[j]}">${j}</div>`;
+  for (let i = 0; i < n; i++) {
+    html += `<div class="head" style="color:${h.colors[i]}">${i}</div>`;
+    for (let j = 0; j < n; j++) {
+      if (i === j) { html += '<div style="background:#161e27;color:#3d4b5a">·</div>'; continue; }
+      const alpha = raids[i][j] ? 0.12 + 0.78 * (raids[i][j] / peak) : 0.04;
+      html += `<div style="background:rgba(255,89,74,${alpha.toFixed(3)})">${raids[i][j]}</div>`;
+    }
+  }
+  html += '</div></div>';
+
+  const rows = [];
+  for (let j = 0; j < n; j++) {
+    const took = raids[j].reduce((a, b) => a + b, 0);
+    const lost = raids.reduce((s, row) => s + row[j], 0);
+    const gave = flow[j].reduce((a, b) => a + b, 0) - flow[j][j];
+    const got = flow.reduce((s, row) => s + row[j], 0) - flow[j][j];
+    rows.push(`<tr><td><span class="swatch" style="background:${h.colors[j]}"></span>${j}</td>` +
+      `<td>${h.deposits[j]}</td><td>${h.withdrawals[j]}</td>` +
+      `<td>${took}</td><td>${lost}</td><td>${gave}</td><td>${got}</td></tr>`);
+  }
+  html += `<div class="scrollx"><table style="margin-top:14px"><thead><tr><th>household</th><th>deposited</th>` +
+    `<th>withdrew</th><th>raided</th><th>was raided</th><th>gave</th><th>received</th>` +
+    `</tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
+  host.innerHTML = html;
 }
 
 function renderMatrices(report, colors) {

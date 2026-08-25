@@ -1,0 +1,77 @@
+# Island 2.0, stage 4: regions, households, stockpiles, reputation, shocks.
+#
+# society100.yaml (stage 2) plus the five mechanics stage 2's own measurements
+# asked for. Each line below answers a specific finding from ISLAND2_DESIGN.md
+# section 8, not a feature anyone fancied:
+#
+#   * region_split -- stage 2 put wood and stone on every cluster, so no
+#     household ever needed anything from another. Splitting the island makes
+#     one material a journey, which is what M5's postmortem asked for ("a relay
+#     needs its chain shortened by GEOGRAPHY").
+#   * 20 households of 5 -- one per berry cluster, so a household is also a
+#     place. Lifespan Gini was 0.058 in stage 2 because there was nothing for
+#     inequality to accumulate IN.
+#   * stockpiles -- the sustained demand construction never had ("over by the
+#     first nightfall"), and the raid target a trade war needs.
+#   * reputation + shocks -- retaliation without scripted war logic, and stress,
+#     because a population that is never stressed never visibly cooperates.
+#
+# THE ECONOMY HAD TO BE RESIZED, and finding out why is CLAUDE.md rule 5 doing
+# its job. Stage 2 sat at 1.31x sheltered subsistence. A blight suspends berry
+# regrowth, so three of them over an episode (six shocks, alternating) cost the
+# island 180 growing ticks out of 600 -- and at regrow_ticks 100 that is two of
+# every bush's six regrowths, i.e. 280 of 1120 berries. Left at stage 2's 7
+# bushes per cluster this world runs at 0.98x and everybody starves, which
+# `sim.economy` now says out loud because it was taught about blights before this
+# config was written rather than after.
+#
+# 9 bushes per cluster puts it back in the doc's watchable band:
+#
+#   supply 1080 berries (180 bushes x 6 regrowths, blights already deducted)
+#   supply / sheltered demand   1.26x
+#   supply / exposed demand     0.84x   <- shelter still load-bearing
+#
+# The surplus is the point, not slack. A cluster now earns 9 berries per 100
+# ticks against its 5 residents needing 7.1, so a household has ~1.26x its own
+# subsistence to put in a pile -- which is where a stockpile's contents actually
+# come from. During a blight that income is zero and the pile is the only thing
+# standing between the household and the night. That is the mechanic doing the
+# work the design doc asked shocks to do.
+extends: society100.yaml
+
+bushes:
+  bushes_per_cluster: 9
+
+society:
+  enabled: true
+  region_split: true
+  # Wood at +z, stone at -z. The axis is a knob rather than a constant because
+  # the berry clusters are resampled every episode, so which clusters land on
+  # which side is not fixed and a single hardcoded split would be a layout
+  # coincidence rather than a rule.
+  region_axis: 0.0
+
+  # 100 agents / 20 sites = 5 per household. num_households must be <= num_sites
+  # (World.reset raises otherwise): a household's stockpile sits at its own
+  # shelter site, so "my group" and "where I sleep" are the same fact.
+  num_households: 20
+  observe_household: true
+
+  # A pile big enough to matter and small enough to run out. 12 berries is ~1.4
+  # meals per member of a 5-agent household, i.e. one bad night's insurance --
+  # enough to be worth raiding, not enough to make foraging optional.
+  stockpile_food_capacity: 12
+  stockpile_material_capacity: 12
+  stockpile_radius: 2.5
+  household_theft_immunity: true
+
+  reputation: true
+  observe_grudge: true
+
+  # Six shocks over a 600-tick episode, alternating blight and storm from the
+  # seed. 100 ticks is half a day/night cycle (night_cycle is 200), so a shock
+  # lands at a different point in the day each time rather than always at dusk.
+  shock_interval: 100
+  blight_ticks: 60
+  storm_damage: 2
+  observe_shock: true

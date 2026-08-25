@@ -51,7 +51,11 @@ from .config import Config, load_config
 from .replay import agent_color
 from .world import World
 
-REPORT_SCHEMA = 1
+# 2 adds the Island 2.0 stage 4 household block. Bumped rather than added
+# silently, because viewer/exchange.js refuses to render a schema it does not
+# know -- and a household ledger drawn as if it were an agent ledger would be
+# read as a claim about individuals.
+REPORT_SCHEMA = 2
 
 
 @dataclass
@@ -108,10 +112,23 @@ def analyse(cfg: Config, act_fn: Callable[..., np.ndarray], episodes: int, seed:
     lifespans = np.zeros(n)
     gifts_used = np.zeros(2, dtype=np.int64)      # [food, material]
     gifts_total = np.zeros(2, dtype=np.int64)
+    # --- stage 4. A gift between two agents of the same household is a different
+    # act from one across a boundary -- the first is housekeeping, the second is
+    # trade -- and only a household-indexed matrix can tell them apart. Raids are
+    # collected here too so one view holds both directions of the relationship:
+    # what a household GAVE another and what it TOOK from it.
+    sc = cfg.society
+    n_house = max(sc.num_households, 1) if sc.enabled else 1
+    house_of = np.zeros(n, dtype=np.int64)
+    flow_house = np.zeros((n_house, n_house), dtype=np.int64)
+    raid_house = np.zeros((n_house, n_house), dtype=np.int64)
+    deposits_h = np.zeros(n_house, dtype=np.int64)
+    withdrawals_h = np.zeros(n_house, dtype=np.int64)
     records: list[dict[str, Any]] = []
 
     for e in range(episodes):
         world = World(cfg, seed=seed + e)
+        house_of = world.household.copy()
         obs = world.observations()
         # Gifts waiting to be "used": the tick each arrived, per receiver. A
         # queue rather than a count so a gift that sat unused past the window
@@ -142,6 +159,14 @@ def analyse(cfg: Config, act_fn: Callable[..., np.ndarray], episodes: int, seed:
                 pending[r][kind].append(tick)
                 records.append({"episode": e, "tick": int(tick), "giver": int(g),
                                 "receiver": int(r), "item": ITEM_NAMES[item]})
+                if sc.enabled:
+                    flow_house[house_of[g], house_of[r]] += 1
+            if sc.enabled:
+                for raider, victim_h, _item in result.raids:
+                    raid_house[house_of[raider], victim_h] += 1
+                if result.deposited.size:
+                    np.add.at(deposits_h, house_of, result.deposited)
+                    np.add.at(withdrawals_h, house_of, result.withdrew)
 
             # Did the receiver do the thing the gift enables? Eating for food,
             # delivering for material. Upper bound: the agent may well have been
@@ -217,6 +242,25 @@ def analyse(cfg: Config, act_fn: Callable[..., np.ndarray], episodes: int, seed:
         "flow_food": [[int(v) for v in row] for row in flow_food],
         "agents": [asdict(a) for a in agents],
     }
+    if sc.enabled:
+        internal = int(np.trace(flow_house))
+        report["households"] = {
+            "count": n_house,
+            "colors": [agent_color(h * 7 + 3, n_house) for h in range(n_house)],
+            "agent_household": [int(v) for v in house_of],
+            "flow": [[int(v) for v in row] for row in flow_house],
+            "raids": [[int(v) for v in row] for row in raid_house],
+            "deposits": [int(v) for v in deposits_h],
+            "withdrawals": [int(v) for v in withdrawals_h],
+            # The one number that says whether exchange crossed a group boundary
+            # at all. M5's whole finding was that transfers happened and bought
+            # nothing; at household scale the prior question is whether they even
+            # left the family, and a diagonal-only matrix answers it "no".
+            "gifts_within": internal,
+            "gifts_across": int(flow_house.sum()) - internal,
+            "raid_reciprocity": float(np.minimum(raid_house, raid_house.T).sum()
+                                      / max(raid_house.sum(), 1)),
+        }
     return report, records
 
 
@@ -246,11 +290,45 @@ def summarise(report: dict[str, Any]) -> str:
                  f"(0 = one-way flow, 1 = every gift matched back along the same edge)")
 
     lines.append("")
-    lines.append("flow (row gave to column):")
     n = report["num_agents"]
-    lines.append("      " + " ".join(f"{j:>5d}" for j in range(n)))
-    for i, row in enumerate(report["flow"]):
-        lines.append(f"{i:>5d} " + " ".join(f"{v:>5d}" for v in row))
+    # A 100x100 matrix in a terminal is not a table, it is a wall. Above the size
+    # a reader can actually scan, print the household view instead -- which is the
+    # aggregation that was added for exactly this reason.
+    if n <= 12:
+        lines.append("flow (row gave to column):")
+        lines.append("      " + " ".join(f"{j:>5d}" for j in range(n)))
+        for i, row in enumerate(report["flow"]):
+            lines.append(f"{i:>5d} " + " ".join(f"{v:>5d}" for v in row))
+    else:
+        lines.append(f"per-agent flow matrix omitted ({n}x{n}); "
+                     f"viewer/exchange.html renders it")
+
+    h = report.get("households")
+    if h:
+        lines.append("")
+        lines.append(f"--- households ({h['count']}) ---")
+        # WITHIN vs ACROSS is the first question, not a detail. A gift to a
+        # housemate is housekeeping; only a gift across a boundary is trade, and
+        # M5's finding was that transfers can be plentiful and mean nothing.
+        total = h["gifts_within"] + h["gifts_across"]
+        lines.append(f"gifts: {h['gifts_within']} within a household, "
+                     f"{h['gifts_across']} across "
+                     f"({100 * h['gifts_across'] / max(total, 1):.0f}% crossed a boundary)")
+        raids = np.asarray(h["raids"])
+        lines.append(f"raids: {int(raids.sum())} total, reciprocity "
+                     f"{h['raid_reciprocity']:.2f} "
+                     f"(0 = one household preys on another, 1 = every raid answered)")
+        lines.append("")
+        hdr = (f"{'house':>6} {'deposit':>8} {'withdraw':>9} {'raided':>7} "
+               f"{'was raided':>11} {'gave':>6} {'got':>6}")
+        lines.append(hdr)
+        lines.append("-" * len(hdr))
+        flow = np.asarray(h["flow"])
+        for j in range(h["count"]):
+            lines.append(f"{j:>6} {h['deposits'][j]:>8} {h['withdrawals'][j]:>9} "
+                         f"{int(raids[j].sum()):>7} {int(raids[:, j].sum()):>11} "
+                         f"{int(flow[j].sum() - flow[j, j]):>6} "
+                         f"{int(flow[:, j].sum() - flow[j, j]):>6}")
     return "\n".join(lines)
 
 
@@ -259,7 +337,8 @@ def main() -> None:
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--config", default=None)
     parser.add_argument("--policy",
-                        choices=["learned", "random", "greedy", "thief", "builder", "trader"],
+                        choices=["learned", "random", "greedy", "thief", "builder",
+                                 "trader", "utility"],
                         default=None)
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--seed", type=int, default=10_000)
@@ -285,7 +364,22 @@ def main() -> None:
         cfg = load_config(args.config)
 
     kind = args.policy or ("learned" if policy is not None else "trader")
-    act_fn = make_act_fn(kind, cfg, policy, args.seed, device=args.device)
+    if kind == "utility":
+        # Island 2.0's population is not a checkpoint, so it needs its own driver.
+        # The runner is stateful across ticks (options are committed), which the
+        # 1.0 act_fns are not -- hence a closure over one runner rather than a
+        # make_act_fn entry, and hence one runner per analyse() call. `analyse`
+        # runs episodes back to back on one act_fn, so the runner is reset here
+        # when a world restarts; a stale commitment leaking across an episode
+        # boundary is exactly the semi-MDP rot utility.py warns about.
+        from .utility import utility_runner
+        runner = utility_runner(cfg, seed=args.seed)
+        _seen = {"tick": -1}
+
+        def act_fn(obs, mask):
+            return runner.act(obs, mask)
+    else:
+        act_fn = make_act_fn(kind, cfg, policy, args.seed, device=args.device)
 
     report, records = analyse(cfg, act_fn, args.episodes, args.seed, args.use_window)
     report["label"] = args.label or (Path(args.checkpoint).parent.name if args.checkpoint else kind)

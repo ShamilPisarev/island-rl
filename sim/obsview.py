@@ -117,6 +117,31 @@ class ObsView:
         else:
             self.trees = self.rocks = self.sites = self._empty()
 
+        # --- Island 2.0 stage 4. Absent columns come back as zeros/inf rather
+        # than raising, so a stage-2 arbiter reads a stage-4 view unchanged and a
+        # stage-4 arbiter running in a stage-2 world simply finds nothing to do.
+        sc = cfg.society
+        zero = np.zeros(self.n)
+        if sc.enabled:
+            self.stock_food = obs[:, col["own.stock_food"]]
+            self.stock_material = obs[:, col["own.stock_material"]]
+            self.home_dx = obs[:, col["home.dx"]] * self.scale
+            self.home_dz = obs[:, col["home.dz"]] * self.scale
+            self.home_complete = obs[:, col["home.complete"]] > 0.5
+            self.raid_dx = obs[:, col["raid.dx"]] * self.scale
+            self.raid_dz = obs[:, col["raid.dz"]] * self.scale
+            self.raid_food = obs[:, col["raid.food"]]
+            self.raid_material = obs[:, col["raid.material"]]
+            self.blight = obs[:, col["shock.blight"]] > 0.5 if sc.observe_shock \
+                else np.zeros(self.n, dtype=bool)
+        else:
+            self.stock_food = self.stock_material = zero
+            self.home_dx = self.home_dz = zero
+            self.home_complete = np.zeros(self.n, dtype=bool)
+            self.raid_dx = self.raid_dz = zero
+            self.raid_food = self.raid_material = zero
+            self.blight = np.zeros(self.n, dtype=bool)
+
         self.edge_room = obs[:, col["edge.room"]]
         self.outward_x = obs[:, col["edge.outward_x"]]
         self.outward_z = obs[:, col["edge.outward_z"]]
@@ -173,6 +198,57 @@ class ObsView:
         if not self.cfg.competition.observe_neighbour_food or not self.neighbours.extra:
             return np.zeros((self.n, self.cfg.observation.k_agents))
         return self.neighbours.extra[1]
+
+    @property
+    def home_distance(self) -> np.ndarray:
+        """World-unit distance to my household's stockpile.
+
+        A household always has one, so unlike every other target this is never
+        ``inf`` -- there is nothing to test for existence.
+        """
+        return np.hypot(self.home_dx, self.home_dz)
+
+    @property
+    def raid_distance(self) -> np.ndarray:
+        """Distance to the nearest FOREIGN stockpile; ``inf`` in a one-household world.
+
+        A single household has no foreign pile, and the observation writes zeros
+        there. Zero offsets would read as "a stockpile exactly underfoot", which
+        is the padding trap the observation's own docstring warns about -- so the
+        one-household case is detected from the config and reported as absent.
+        """
+        if not self.cfg.society.enabled or self.cfg.society.num_households < 2:
+            return np.full(self.n, np.inf)
+        return np.hypot(self.raid_dx, self.raid_dz)
+
+    def _neighbour_society_col(self, want_grudge: bool) -> int:
+        """Index into ``neighbours.extra`` of a stage-4 neighbour channel."""
+        base = 1 + int(self.cfg.competition.observe_neighbour_food) \
+            + 2 * int(self.cfg.exchange.observe_neighbour_materials)
+        if want_grudge:
+            return base + int(self.cfg.society.observe_household)
+        return base
+
+    @property
+    def same_household(self) -> np.ndarray:
+        """Per neighbour slot: is that neighbour in my household?
+
+        All-false when the channel is off, which makes every stage-4 goal that
+        depends on kinship simply unavailable rather than silently treating
+        strangers as family.
+        """
+        sc = self.cfg.society
+        if not (sc.enabled and sc.observe_household):
+            return np.zeros((self.n, self.cfg.observation.k_agents), dtype=bool)
+        return self.neighbours.extra[self._neighbour_society_col(False)] > 0.5
+
+    @property
+    def grudge(self) -> np.ndarray:
+        """Per neighbour slot: how much I remember that neighbour taking from me."""
+        sc = self.cfg.society
+        if not (sc.enabled and sc.observe_grudge):
+            return np.zeros((self.n, self.cfg.observation.k_agents))
+        return self.neighbours.extra[self._neighbour_society_col(True)]
 
     @property
     def neighbour_material(self) -> np.ndarray:

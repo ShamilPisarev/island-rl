@@ -38,8 +38,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .agents import (BUILD, CHOP, GATHER, GIVE_FOOD, GIVE_MATERIAL, IDLE, MINE,
-                     N_MOVE_ACTIONS, STEAL, num_actions)
+from .agents import (BUILD, CHOP, DEPOSIT_FOOD, DEPOSIT_MATERIAL, GATHER,
+                     GIVE_FOOD, GIVE_MATERIAL, IDLE, MINE, N_MOVE_ACTIONS, RAID,
+                     STEAL, WITHDRAW_FOOD, WITHDRAW_MATERIAL, num_actions)
 from .config import Config
 from .obsview import ObsView
 
@@ -57,14 +58,27 @@ GOAL_NAMES: tuple[str, ...] = (
     "give_material",   # relay material to someone standing at a site
     "explore",         # commit to a heading and cover ground
     "rest",            # idle
+    # --- stage 4
+    "store_food",      # carry surplus food home to the household stockpile
+    "store_material",  # ...and surplus material
+    "draw_food",       # eat out of the household store
+    "draw_material",   # take material out of the store to rebuild with
+    "raid",            # take from ANOTHER household's stockpile
 )
 (FORAGE, HARVEST_WOOD, HARVEST_STONE, DELIVER, SHELTER, GOAL_STEAL,
- GOAL_GIVE_FOOD, GOAL_GIVE_MATERIAL, EXPLORE, REST) = range(len(GOAL_NAMES))
+ GOAL_GIVE_FOOD, GOAL_GIVE_MATERIAL, EXPLORE, REST,
+ STORE_FOOD, STORE_MATERIAL, DRAW_FOOD, DRAW_MATERIAL, GOAL_RAID) = range(len(GOAL_NAMES))
 N_GOALS = len(GOAL_NAMES)
 
 # --- needs ------------------------------------------------------------------
-NEED_NAMES: tuple[str, ...] = ("hunger", "food_stock", "safety", "shelter_stock", "wealth")
-NEED_HUNGER, NEED_FOOD_STOCK, NEED_SAFETY, NEED_SHELTER_STOCK, NEED_WEALTH = range(5)
+NEED_NAMES: tuple[str, ...] = ("hunger", "food_stock", "safety", "shelter_stock", "wealth",
+                               # stage 4: the household's larder and its material store.
+                               # These are the first needs in the project that are
+                               # not about the agent's own body, which is what gives
+                               # a group something to be a group ABOUT.
+                               "house_food", "house_material")
+(NEED_HUNGER, NEED_FOOD_STOCK, NEED_SAFETY, NEED_SHELTER_STOCK, NEED_WEALTH,
+ NEED_HOUSE_FOOD, NEED_HOUSE_MATERIAL) = range(7)
 N_NEEDS = len(NEED_NAMES)
 
 # How much each goal restores each need, in [0, 1]. Rows are goals, columns
@@ -87,12 +101,22 @@ RESTORE[SHELTER, NEED_SAFETY] = 1.0
 # view goes looking instead of standing still.
 RESTORE[EXPLORE, NEED_FOOD_STOCK] = 0.15
 RESTORE[EXPLORE, NEED_HUNGER] = 0.15
+# stage 4. Note what `store_*` restores: a HOUSEHOLD need, never the depositor's
+# own. Depositing is a pure personal cost, and encoding it any other way would be
+# paying the agent for the behaviour stage 5 is supposed to ask about (rule 1).
+RESTORE[STORE_FOOD, NEED_HOUSE_FOOD] = 1.0
+RESTORE[STORE_MATERIAL, NEED_HOUSE_MATERIAL] = 1.0
+RESTORE[DRAW_FOOD, NEED_FOOD_STOCK] = 1.0
+RESTORE[DRAW_FOOD, NEED_HUNGER] = 0.9
+RESTORE[DRAW_MATERIAL, NEED_WEALTH] = 1.0
+RESTORE[GOAL_RAID, NEED_FOOD_STOCK] = 1.0
+RESTORE[GOAL_RAID, NEED_HUNGER] = 0.9
 
 # Maslow shaping: which tier each need sits in, lowest first. Only tiers that can
 # actually kill gate anything -- hunger, then night exposure. A half-empty
 # inventory is prudence, not an emergency, so food_stock/wealth/shelter_stock
 # contribute to scores without suppressing anything.
-NEED_TIER = np.array([0, 2, 1, 2, 2])
+NEED_TIER = np.array([0, 2, 1, 2, 2, 3, 3])
 # EXPLORE sits at tier 0, i.e. ungated, and that placement is a correction worth
 # recording. It was tier 4 first, which meant an agent whose inventory was empty
 # had tier-2 urgency at 1.0, which zeroed the gate on every tier above it --
@@ -100,7 +124,14 @@ NEED_TIER = np.array([0, 2, 1, 2, 2])
 # put 39.6% of all intentions into `rest`: hungry agents standing still because
 # wanting food had suppressed looking for it. Searching is never a luxury, so it
 # cannot sit above the needs it serves.
-GOAL_TIER = np.array([0, 2, 2, 2, 1, 0, 3, 3, 0, 4])
+#
+# The stage-4 tiers apply that same correction rather than rediscovering it.
+# `draw_food` and `raid` both SERVE hunger, so neither may sit above it -- a
+# starving agent whose own store is full must not have the tier gate zero out the
+# one goal that empties it. `store_*` and `draw_material` are prudence and sit
+# with the other tier-2 goals; a household larder is never an emergency.
+GOAL_TIER = np.array([0, 2, 2, 2, 1, 0, 3, 3, 0, 4,
+                      2, 2, 0, 2, 0])
 
 # A goal serving no need at all still has to be choosable, or an agent with
 # nothing visible would have no legal intention. These are the floors, and they
@@ -127,6 +158,12 @@ class ArbiterConfig:
     softmax_temp: float = 0.0       # 0 = argmax; >0 samples, for visible variety
     generosity_scale: float = 0.35  # weight on the two giving goals (trait-scaled)
     trait_spread: float = 0.35      # per-agent lognormal sigma on goal preferences
+    # stage 4: the two conditions under which a raid becomes thinkable at all.
+    # Kept as thresholds rather than as weights on purpose -- stage 2 showed a
+    # theft goal that competes on score alone wins on proximity and produces
+    # permanent war, so the correction belongs at availability, not in the number.
+    raid_hunger: float = 0.5        # hunger deficit at which desperation qualifies
+    raid_grudge: float = 0.5        # remembered theft at which revenge qualifies
 
 
 def agent_traits(num_agents: int, seed: int, cfg: ArbiterConfig) -> np.ndarray:
@@ -207,6 +244,16 @@ def compute_needs(view: ObsView, cfg: Config) -> np.ndarray:
         needs[:, NEED_SHELTER_STOCK] = np.where(visible > 0, unfinished / np.maximum(visible, 1), 0.0)
 
         needs[:, NEED_WEALTH] = np.clip(1.0 - view.material_carried, 0.0, 1.0)
+
+    if cfg.society.enabled:
+        # The household's larder and material store, read off my own observation
+        # -- I know what is in my household's pile because I live there, and the
+        # channel is there whether or not I am standing next to it. Note these are
+        # deficits of a SHARED thing: every member of a household reads the same
+        # number, which is what makes a run on the store, or a collective effort to
+        # fill it, something the population does together without being told to.
+        needs[:, NEED_HOUSE_FOOD] = np.clip(1.0 - view.stock_food, 0.0, 1.0)
+        needs[:, NEED_HOUSE_MATERIAL] = np.clip(1.0 - view.stock_material, 0.0, 1.0)
     return needs
 
 
@@ -264,6 +311,8 @@ def score_goals(view: ObsView, cfg: Config, needs: np.ndarray, traits: np.ndarra
 
     if cfg.competition.enable_steal:
         loaded = view.neighbour_food > 0.0
+        if cfg.society.enabled and cfg.society.household_theft_immunity:
+            loaded = loaded & ~view.same_household
         d_victim, _, _, _ = view.neighbours.nearest(loaded & view.neighbours.present)
         set_target(GOAL_STEAL, d_victim)
         # OPPORTUNISTIC ONLY: a steal is available when a victim is ALREADY in
@@ -301,7 +350,7 @@ def score_goals(view: ObsView, cfg: Config, needs: np.ndarray, traits: np.ndarra
         set_target(DELIVER, d_site)
         available[:, DELIVER] &= view.material_carried > 0.0
 
-        d_home, _, _, _ = view.sites.nearest(view.site_complete)
+        d_home, _, _ = shelter_target(view, cfg)
         set_target(SHELTER, d_home)
         # SHELTER IS A DEADLINE, NOT AN OPPORTUNITY, so it does not get discounted
         # for being far away. The distance discount encodes "a nearer satisfier is
@@ -359,8 +408,97 @@ def score_goals(view: ObsView, cfg: Config, needs: np.ndarray, traits: np.ndarra
     else:
         available[:, [GOAL_GIVE_FOOD, GOAL_GIVE_MATERIAL]] = False
 
+    # --- stage 4: the household store, and raiding somebody else's
+    if cfg.society.enabled:
+        sc = cfg.society
+        threshold = cfg.hunger.eat_threshold / cfg.hunger.max
+        d_home = view.home_distance
+        room_for_food = view.food < 1.0 - 1e-6
+        room_for_material = view.material_carried < 1.0 - 1e-6
+
+        # THE STORE AND THE DRAW MUST NOT BOTH BE AVAILABLE TO THE SAME AGENT, and
+        # the first version of this let them be. Measured: 5858 deposits and 5475
+        # withdrawals an episode, with the pile never rising above 1.14 of 12 --
+        # an agent deposited its surplus, which raised its own food_stock deficit,
+        # which made drawing the best goal, at the same location, forever. That is
+        # exactly M5's gift farm in new clothes (42x the transfers, nothing used),
+        # and the fix is the same shape: not a smaller weight, a mechanic that
+        # cannot loop. A deposit needs a real SURPLUS (keep one unit back); a draw
+        # needs a real SHORTAGE (be empty-handed and actually getting hungry). The
+        # two conditions are now mutually exclusive by construction.
+        capacity = max(cfg.food.capacity, 1)
+        surplus_food = view.food * capacity >= 2.0 - 1e-6
+        set_target(STORE_FOOD, d_home)
+        available[:, STORE_FOOD] &= (surplus_food & (view.hunger > threshold)
+                                     & (view.stock_food < 1.0 - 1e-6))
+        set_target(STORE_MATERIAL, d_home)
+        # Material has no personal use once every site is finished, so a full load
+        # is surplus by definition -- but keeping the "not empty" test explicit
+        # keeps the two directions symmetrical and readable.
+        available[:, STORE_MATERIAL] &= ((view.material_carried > 0.0)
+                                         & (view.stock_material < 1.0 - 1e-6))
+
+        set_target(DRAW_FOOD, d_home)
+        available[:, DRAW_FOOD] &= ((view.stock_food > 0.0) & (view.food <= 0.0)
+                                    & (needs[:, NEED_HUNGER] > 0.0))
+        set_target(DRAW_MATERIAL, d_home)
+        # Only worth drawing material out if there is something to build with it,
+        # otherwise the store becomes a treadmill: deposit, withdraw, repeat. That
+        # is the M5 gift farm's shape, and it is cheaper to forbid here than to
+        # discover in a ledger later.
+        wants_building = needs[:, NEED_SHELTER_STOCK] > 0.0
+        available[:, DRAW_MATERIAL] &= ((view.stock_material > 0.0)
+                                       & (view.material_carried <= 0.0)
+                                       & wants_building)
+
+        d_raid = view.raid_distance
+        set_target(GOAL_RAID, d_raid)
+        # RAIDING IS GATED ON MOTIVE, NOT ON PROXIMITY, and that is the whole
+        # lesson of stage 2's correction 1 applied to a bigger target. Theft as a
+        # simple travelling goal produced the pre-registered permanent war: with
+        # 100 agents packed together, the distance discount handed it every
+        # contest. A stockpile is a fatter prize than a pocket, so scored the same
+        # way it would be worse. So a raid needs a REASON -- either the raider is
+        # in real trouble (its own larder is empty and it is hungry) or it is
+        # settling a score (a grudge against someone whose household this is).
+        # Both are things a watcher can see coming, which is the point.
+        desperate = ((needs[:, NEED_HUNGER] >= acfg.raid_hunger)
+                     & (view.stock_food <= 0.0))
+        vengeful = view.grudge.max(axis=1) >= acfg.raid_grudge if view.grudge.size \
+            else np.zeros(n, dtype=bool)
+        has_loot = (view.raid_food > 0.0) | (view.raid_material > 0.0)
+        available[:, GOAL_RAID] &= (desperate | vengeful) & has_loot & (
+            room_for_food | room_for_material)
+    else:
+        available[:, [STORE_FOOD, STORE_MATERIAL, DRAW_FOOD, DRAW_MATERIAL,
+                      GOAL_RAID]] = False
+
     scores = base * gate * discount * traits
     return np.where(available, scores, 0.0)
+
+
+def shelter_target(view: ObsView, cfg: Config) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(distance, dx, dz) of the shelter this agent should sleep in.
+
+    Without households that is simply the nearest finished shelter. WITH them it
+    is the agent's OWN home whenever its roof is on, and the nearest finished
+    shelter otherwise (a storm can take your roof off, and standing in the rain on
+    principle is not loyalty).
+
+    This is what makes a household a place rather than a label. Targeting the
+    nearest finished shelter in a stage-4 world measured 55.7% of agents ending up
+    closer to a foreign home than their own -- twenty stockpiles with nobody
+    reliably living at any of them, so "my group is who sleeps where I sleep"
+    quietly became false and every household statistic was describing a
+    round-robin index rather than a group.
+    """
+    d_home, hx, hz, _ = view.sites.nearest(view.site_complete)
+    if not cfg.society.enabled:
+        return d_home, hx, hz
+    own = view.home_complete
+    return (np.where(own, view.home_distance, d_home),
+            np.where(own, view.home_dx, hx),
+            np.where(own, view.home_dz, hz))
 
 
 def _heading(dx: np.ndarray, dz: np.ndarray) -> np.ndarray:
@@ -390,6 +528,8 @@ def goal_viable(view: ObsView, cfg: Config, goals: np.ndarray) -> np.ndarray:
 
     if cfg.competition.enable_steal:
         loaded = view.neighbour_food > 0.0
+        if cfg.society.enabled and cfg.society.household_theft_immunity:
+            loaded = loaded & ~view.same_household
         d_victim, _, _, _ = view.neighbours.nearest(loaded & view.neighbours.present)
         # Terminates the moment the victim moves out of reach -- an opportunistic
         # steal is not something you follow someone around for. See score_goals.
@@ -404,11 +544,42 @@ def goal_viable(view: ObsView, cfg: Config, goals: np.ndarray) -> np.ndarray:
         incomplete = view.sites.present & ~view.site_complete
         d_site, _, _, _ = view.sites.nearest(incomplete)
         when(DELIVER, np.isfinite(d_site) & (view.material_carried > 0.0))
-        d_home, _, _, _ = view.sites.nearest(view.site_complete)
+        d_home, _, _ = shelter_target(view, cfg)
         # Shelter is only worth holding while the night lasts.
         when(SHELTER, np.isfinite(d_home) & (view.is_night | (view.phase > 0.5)))
 
-    # The gifts are single-tick by nature and `explore`/`rest` never fail.
+    if cfg.society.enabled:
+        threshold = cfg.hunger.eat_threshold / cfg.hunger.max
+        # A trip to the store terminates when the thing that justified it is gone
+        # -- the surplus was eaten, the pile filled up, somebody else emptied it.
+        # Every one of these is a state another agent can change while I walk,
+        # which is the whole reason the semi-MDP contract has a termination test
+        # rather than just a timeout.
+        capacity = max(cfg.food.capacity, 1)
+        when(STORE_FOOD, (view.food * capacity >= 2.0 - 1e-6) & (view.hunger > threshold)
+             & (view.stock_food < 1.0 - 1e-6))
+        when(STORE_MATERIAL, (view.material_carried > 0.0)
+             & (view.stock_material < 1.0 - 1e-6))
+        # These mirror score_goals' availability tests deliberately. A termination
+        # test looser than the availability test is how a committed option outlives
+        # the reason it was chosen -- and here that would have re-opened the
+        # deposit/withdraw treadmill one tick at a time.
+        when(DRAW_FOOD, (view.stock_food > 0.0) & (view.food <= 0.0))
+        when(DRAW_MATERIAL, (view.stock_material > 0.0) & (view.material_carried <= 0.0))
+        d_raid = view.raid_distance
+        when(GOAL_RAID, np.isfinite(d_raid)
+             & ((view.raid_food > 0.0) | (view.raid_material > 0.0)))
+
+    # EXPLORE ENDS WHEN THE SEARCH SUCCEEDS. It used to be unconditionally viable,
+    # which meant an agent that set off looking for food kept walking for the full
+    # 25-tick commitment even if a loaded bush came into view on tick three.
+    # Measured, that put 28.3% of all goal-ticks into `explore` while the mean
+    # forage score among the explorers was 0.40 against explore's 0.17 -- they
+    # were not choosing to wander, they were serving out a commitment whose reason
+    # had expired. Searching is the one option whose purpose is a perception, so
+    # its termination test is a perception too.
+    when(EXPLORE, ~(view.loaded_bushes.any(axis=1) & room_food))
+    # The gifts are single-tick by nature and `rest` never fails.
     when(GOAL_GIVE_FOOD, np.zeros(n, dtype=bool))
     when(GOAL_GIVE_MATERIAL, np.zeros(n, dtype=bool))
     return ok
@@ -444,6 +615,8 @@ def execute_goals(goals: np.ndarray, view: ObsView, cfg: Config,
 
     if cfg.competition.enable_steal:
         loaded = view.neighbours.present & (view.neighbour_food > 0.0)
+        if cfg.society.enabled and cfg.society.household_theft_immunity:
+            loaded = loaded & ~view.same_household
         d_victim, vx, vz, _ = view.neighbours.nearest(loaded)
         walk_then(GOAL_STEAL, d_victim, vx, vz, STEAL, cfg.competition.steal_radius)
 
@@ -468,7 +641,7 @@ def execute_goals(goals: np.ndarray, view: ObsView, cfg: Config,
         d_site = np.where(has_site, np.hypot(sx, sz), np.inf)
         walk_then(DELIVER, d_site, sx, sz, BUILD, cc.build_radius)
 
-        d_home, hx, hz, _ = view.sites.nearest(view.site_complete)
+        d_home, hx, hz = shelter_target(view, cfg)
         shelter_rows = goals == SHELTER
         if shelter_rows.any():
             # "Inside" is well within the radius, not on its lip: an agent that
@@ -482,6 +655,19 @@ def execute_goals(goals: np.ndarray, view: ObsView, cfg: Config,
         for goal, action in ((GOAL_GIVE_FOOD, GIVE_FOOD), (GOAL_GIVE_MATERIAL, GIVE_MATERIAL)):
             rows = (goals == goal) & mask[:, action]
             actions[rows] = action
+
+    if cfg.society.enabled:
+        sc = cfg.society
+        walk_then(STORE_FOOD, view.home_distance, view.home_dx, view.home_dz,
+                  DEPOSIT_FOOD, sc.stockpile_radius)
+        walk_then(STORE_MATERIAL, view.home_distance, view.home_dx, view.home_dz,
+                  DEPOSIT_MATERIAL, sc.stockpile_radius)
+        walk_then(DRAW_FOOD, view.home_distance, view.home_dx, view.home_dz,
+                  WITHDRAW_FOOD, sc.stockpile_radius)
+        walk_then(DRAW_MATERIAL, view.home_distance, view.home_dx, view.home_dz,
+                  WITHDRAW_MATERIAL, sc.stockpile_radius)
+        walk_then(GOAL_RAID, view.raid_distance, view.raid_dx, view.raid_dz,
+                  RAID, sc.stockpile_radius)
 
     # explore: hold a heading. Ballistic travel rather than a fresh random step
     # each tick, which is the one thing `nav-commit` showed is worth real ticks
@@ -582,7 +768,11 @@ class OptionRunner:
         viable = goal_viable(view, self.cfg, self.goals)
 
         emergency = needs[:, NEED_HUNGER] >= self.acfg.critical
-        pursuing_food = np.isin(self.goals, (FORAGE, GOAL_STEAL))
+        # A stage-4 agent that is already walking to its own larder, or to
+        # somebody else's, is pursuing food as surely as a forager is -- and
+        # interrupting it would restart the same decision every tick, which is
+        # how a commitment becomes decorative.
+        pursuing_food = np.isin(self.goals, (FORAGE, GOAL_STEAL, DRAW_FOOD, GOAL_RAID))
         interrupted = emergency & ~pursuing_food
 
         redecide = (~viable) | (self.ticks_left <= 0) | interrupted

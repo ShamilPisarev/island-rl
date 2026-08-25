@@ -10,7 +10,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createPopulation } from './biped.js';
 
 // --- replay schema this build can read (see sim/replay.py) ------------------
-const SUPPORTED_SCHEMA = [1, 2, 3];   // v2 = M4 materials/shelters/night, v3 = M5 transfers
+const SUPPORTED_SCHEMA = [1, 2, 3, 4];   // v2 = M4 materials/shelters/night, v3 = M5 transfers,
+                                         // v4 = island2 stage 4 households/stockpiles/raids
 // Column order inside each tick's `a` rows. Cross-checked against the file's
 // own tick_fields on load, so a schema change cannot silently shift a column.
 const A_X = 0, A_Z = 1, A_HUNGER = 2, A_FOOD = 3, A_ALIVE = 4, A_ACTION = 5;
@@ -26,6 +27,12 @@ const GIFT_FADE_TICKS = 10;   // how long a transfer line lingers after the tick
 // island started moving hundreds of units a tick -- and a picture that drops
 // half the transfers without saying so is worse than one that says "+N more".
 const MAX_GIFT_LINES = 256;
+// A raid is drawn like a transfer but red and from the STOCKPILE to the raider,
+// because that is the direction the food went. Kept in the same pool: raids and
+// gifts are both "an event with no trace in the state either side of it", and one
+// pool means one cap and one place the fade logic can be wrong.
+const RAID_COLOR = 0xff3b30;
+const RAID_FADE_TICKS = 20;   // longer than a gift: a raid is worth noticing
 // Above this population the per-agent list stops being glanceable and the panel
 // switches to a swatch grid plus aggregates. 6 agents fit; 100 do not.
 const ROSTER_LIMIT = 24;
@@ -125,6 +132,9 @@ const state = {
   trees: [],
   rocks: [],
   sites: [],
+  stockpiles: [],     // one per household (schema v4)
+  households: [],     // { x, z, color } -- static for the episode
+  society: false,
   actionNames: [],
   construction: false,
   exchange: false,
@@ -324,12 +334,49 @@ function buildSite(x, z, shelterRadius) {
   return { group, walls, roof, halo, lamp };
 }
 
+// A household's stockpile: a crate whose lid rises with what is in it, ringed in
+// the household's colour. Two stacks side by side rather than one blended bar,
+// because food and material are two economies and a household can be rich in one
+// and empty in the other -- which is exactly the state a relay or a raid is about.
+function buildStockpile(x, z, color) {
+  const group = new THREE.Group();
+  group.position.set(x, ISLAND_TOP, z);
+
+  const band = new THREE.Mesh(
+    new THREE.TorusGeometry(3.1, 0.2, 6, 20),
+    new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.8,
+                                     flatShading: true }),
+  );
+  band.rotation.x = -Math.PI / 2;
+  band.position.y = 0.12;
+  group.add(band);
+
+  function stack(dx, hex) {
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(1.1, 1.0, 1.1),
+      new THREE.MeshStandardMaterial({ color: hex, roughness: 0.9, flatShading: true }),
+    );
+    mesh.position.set(dx, 0.5, 2.4);
+    mesh.castShadow = true;
+    group.add(mesh);
+    return mesh;
+  }
+  // Same hues the gift arcs use for the same items, so a berry looks like a berry
+  // whether it is in a pile, in a hand, or in mid-air.
+  const food = stack(-0.7, GIFT_COLORS[0]);
+  const material = stack(0.7, GIFT_COLORS[1]);
+  return { group, band, food, material };
+}
+
 // Which colour the head pip takes for each action, so what a crowd is DOING is
 // readable without selecting anybody. Built once, not per agent per frame.
 const ACTION_PIP = {
   gather: GATHER_COLOR, steal: STEAL_COLOR,
   chop: 0x8a5a2b, mine: 0x9aa7b8, build: 0xe0b83c,
   give_food: 0x8ce08c, give_material: 0xe0b83c,
+  deposit_food: 0x8ce08c, deposit_material: 0xe0b83c,
+  withdraw_food: 0x8ce08c, withdraw_material: 0xe0b83c,
+  raid: RAID_COLOR,
 };
 
 function loadReplay(replay, origin) {
@@ -383,6 +430,17 @@ function loadReplay(replay, origin) {
     });
     state.sites = (replay.sites || []).map((e) => {
       const built = buildSite(e.x, e.z, replay.world.shelter_radius || 6);
+      worldGroup.add(built.group);
+      return built;
+    });
+  }
+
+  state.society = replay.schema_version >= 4;
+  state.stockpiles = [];
+  state.households = replay.households || [];
+  if (state.society) {
+    state.stockpiles = state.households.map((h) => {
+      const built = buildStockpile(h.x, h.z, h.color || '#ffffff');
       worldGroup.add(built.group);
       return built;
     });
@@ -538,7 +596,24 @@ function applyTick(t) {
     applyNight(0);
   }
 
-  if (state.exchange) applyTransfers(t);
+  if (state.society) {
+    const cap = state.replay.world;
+    for (let k = 0; k < state.stockpiles.length; k++) {
+      const [f, m] = cur.p?.[k] ?? [0, 0];
+      const pile = state.stockpiles[k];
+      // Floor the visible height rather than hiding an empty pile: a crate that
+      // vanishes reads as "no household here", and an empty larder is the most
+      // interesting state a household can be in.
+      const fy = Math.max(f / (cap.stockpile_food_capacity || 12), 0.04);
+      const my = Math.max(m / (cap.stockpile_material_capacity || 12), 0.04);
+      pile.food.scale.y = fy * 3.0;
+      pile.food.position.y = fy * 1.5;
+      pile.material.scale.y = my * 3.0;
+      pile.material.position.y = my * 1.5;
+    }
+  }
+
+  if (state.exchange || state.society) applyTransfers(t);
 
   updateAgentPanel(cur);
   const night = state.construction && nightFactor(t) > 0.5;
@@ -592,10 +667,54 @@ function ensureGiftLines() {
   }
 }
 
+// One arc, drawn from (ax, az) to (bx, bz) with an item riding the first half.
+// Shared by gifts and raids because the only difference between them is where the
+// two ends are and what colour it is.
+function drawArc(slot, ax, az, bx, bz, color, age) {
+  const p = slot.arc.geometry.attributes.position.array;
+  for (let j = 0; j < GIFT_ARC_POINTS; j++) {
+    const [x, y, z] = giftArcPoint(ax, az, bx, bz, j / (GIFT_ARC_POINTS - 1));
+    p[j * 3] = x; p[j * 3 + 1] = y; p[j * 3 + 2] = z;
+  }
+  slot.arc.geometry.attributes.position.needsUpdate = true;
+  slot.arc.geometry.computeBoundingSphere();
+  slot.arc.material.color.setHex(color);
+  slot.arc.material.opacity = 0.55 * (1 - age);
+  slot.arc.visible = true;
+  const [x, y, z] = giftArcPoint(ax, az, bx, bz, Math.min(age * 2, 1));
+  slot.item.position.set(x, y, z);
+  slot.item.material.color.setHex(color);
+  slot.item.material.opacity = 1 - age;
+  slot.item.visible = true;
+}
+
+// Raids (schema v4). Drawn FROM the stockpile TO the raider, which is the
+// direction the food went -- the opposite convention to a gift, where the arc
+// starts at the giver. Both are "who ended up with it", and getting that backwards
+// would make a raid look like a delivery.
+function applyRaids(t, used) {
+  const i0 = Math.min(Math.floor(t), state.lastTick);
+  for (let k = Math.max(0, i0 - RAID_FADE_TICKS); k <= i0 && used < MAX_GIFT_LINES; k++) {
+    const list = state.ticks[k].k;
+    if (!list) continue;
+    const age = Math.min(Math.max((t - k) / RAID_FADE_TICKS, 0), 1);
+    const rows = state.ticks[k].a;
+    for (const [raider, house] of list) {
+      if (used >= MAX_GIFT_LINES) break;
+      const home = state.households[house];
+      if (!home) continue;
+      drawArc(state.giftLines[used++], home.x, home.z,
+              rows[raider][A_X], rows[raider][A_Z], RAID_COLOR, age);
+    }
+  }
+  return used;
+}
+
 function applyTransfers(t) {
   ensureGiftLines();
   const i0 = Math.min(Math.floor(t), state.lastTick);
   let used = 0;
+  if (state.society) used = applyRaids(t, used);
   for (let k = Math.max(0, i0 - GIFT_FADE_TICKS); k <= i0 && used < MAX_GIFT_LINES; k++) {
     const list = state.ticks[k].g;
     if (!list) continue;
@@ -606,25 +725,7 @@ function applyTransfers(t) {
       const slot = state.giftLines[used++];
       const [ax, az] = [rows[giver][A_X], rows[giver][A_Z]];
       const [bx, bz] = [rows[receiver][A_X], rows[receiver][A_Z]];
-      const color = GIFT_COLORS[item] ?? 0xffffff;
-
-      const p = slot.arc.geometry.attributes.position.array;
-      for (let j = 0; j < GIFT_ARC_POINTS; j++) {
-        const [x, y, z] = giftArcPoint(ax, az, bx, bz, j / (GIFT_ARC_POINTS - 1));
-        p[j * 3] = x; p[j * 3 + 1] = y; p[j * 3 + 2] = z;
-      }
-      slot.arc.geometry.attributes.position.needsUpdate = true;
-      slot.arc.geometry.computeBoundingSphere();
-      slot.arc.material.color.setHex(color);
-      slot.arc.material.opacity = 0.55 * (1 - age);
-      slot.arc.visible = true;
-
-      // The item flies over the first half of the window, then the arc fades.
-      const [x, y, z] = giftArcPoint(ax, az, bx, bz, Math.min(age * 2, 1));
-      slot.item.position.set(x, y, z);
-      slot.item.material.color.setHex(color);
-      slot.item.material.opacity = 1 - age;
-      slot.item.visible = true;
+      drawArc(slot, ax, az, bx, bz, GIFT_COLORS[item] ?? 0xffffff, age);
     }
   }
   for (let i = used; i < state.giftLines.length; i++) {
@@ -830,6 +931,11 @@ function renderLegend() {
     gather: 'picking berries', steal: 'stealing from a neighbour',
     chop: 'chopping wood', mine: 'mining stone', build: 'building a shelter',
     give_food: 'giving food away', give_material: 'handing over material',
+    deposit_food: 'putting food in the household store',
+    deposit_material: 'putting material in the household store',
+    withdraw_food: 'taking food from their own store',
+    withdraw_material: 'taking material from their own store',
+    raid: "RAIDING another household's store",
   };
   for (const [action, color] of Object.entries(ACTION_PIP)) {
     if (names.has(action)) rows.push(item('diamond', hex(color), labels[action] ?? action));
@@ -846,9 +952,25 @@ function renderLegend() {
   }
   rows.push(item('', '#3f6b32', 'leafy bush', 'food; it goes bare brown when picked clean'));
 
-  if (state.exchange) {
-    rows.push('<div class="grp">lines between agents</div>');
-    rows.push(item('', hex(GIFT_COLORS[0]), 'a line', 'something was just handed over'));
+  if (state.society) {
+    rows.push('<div class="grp">households (stage 4)</div>');
+    rows.push(item('ring', 'none', 'coloured ring on the ground',
+                   "a household's home and its stockpile"));
+    rows.push(item('', hex(GIFT_COLORS[0]), 'green crate', 'food in the store'));
+    rows.push(item('', hex(GIFT_COLORS[1]), 'yellow crate', 'material in the store'));
+  }
+  if (state.exchange || state.society) {
+    rows.push('<div class="grp">arcs through the air</div>');
+    if (state.exchange) {
+      rows.push(item('', hex(GIFT_COLORS[0]), 'green or yellow arc',
+                     'something was just handed over, from giver to receiver'));
+    }
+    if (state.society) {
+      // The two arc colours mean opposite things about consent, and telling them
+      // apart is the whole reason the legend exists (the two-red-dots lesson).
+      rows.push(item('', hex(RAID_COLOR), 'red arc',
+                     'a raid — it runs from the robbed store to the raider'));
+    }
   }
   host.innerHTML = rows.join('');
 }
@@ -865,6 +987,14 @@ function renderSummary() {
   }
   if (s.gifts !== undefined) {
     html += ` · <b>${s.gifts}</b> transfers (${s.food_given ?? 0} food / ${s.materials_given ?? 0} material)`;
+  }
+  if (s.raids !== undefined) {
+    html += ` · <b>${s.deposits ?? 0}</b> deposits / <b>${s.withdrawals ?? 0}</b> withdrawals`
+          + ` · <b>${s.raids}</b> raids`;
+    if (s.storms) {
+      html += ` · <b>${s.storms}</b> storms (${s.shelters_damaged ?? 0} shelters hit),`
+            + ` <b>${s.blight_ticks ?? 0}</b> blighted ticks`;
+    }
   }
   $('summary').innerHTML = html;
 }

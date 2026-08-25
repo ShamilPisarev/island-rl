@@ -37,9 +37,15 @@ from .agents import (
     MINE,
     MOVE_VECTORS,
     N_MOVE_ACTIONS,
+    RAID,
+    DEPOSIT_FOOD,
+    DEPOSIT_MATERIAL,
+    WITHDRAW_FOOD,
+    WITHDRAW_MATERIAL,
     STEAL,
     AgentPool,
     ConstructionView,
+    SocietyView,
     action_mask,
     build_observations,
     night_phase,
@@ -77,6 +83,14 @@ class StepResult:
     # order they resolved. Always populated -- it is at most one row per agent --
     # while the per-episode ledger in EpisodeStats is opt-in.
     transfers: list[tuple[int, int, int]] = field(default_factory=list)
+    # Island 2.0 stage 4. `raided` counts a successful raid per raider this tick;
+    # `raids` is (raider, victim household, item) for the reputation ledger and
+    # the replay, since a raid -- like a transfer -- leaves no trace in the
+    # post-step state that a recorder could read back.
+    deposited: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    withdrew: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    raided: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    raids: list[tuple[int, int, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -103,6 +117,19 @@ class EpisodeStats:
     # exchange.log_transfers is on: training runs 32 worlds at once and does not
     # need the ledger, the analysis tools do.
     transfers: list[tuple[int, int, int, int]] = field(default_factory=list)
+    # stage 4
+    deposits: int = 0
+    withdrawals: int = 0
+    raids: int = 0
+    blight_ticks: int = 0
+    storms: int = 0
+    shelters_damaged: int = 0
+    stock_food_final: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    stock_material_final: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    # (tick, raider household, victim household, item) for the whole episode --
+    # small enough to always keep, unlike the gift ledger: a raid is rare where a
+    # gift can be thousands.
+    raid_ledger: list[tuple[int, int, int, int]] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -176,6 +203,31 @@ class World:
         jitter = self.rng.normal(0.0, spread, size=(2, count))
         return ccx[pick] + jitter[0], ccz[pick] + jitter[1]
 
+    def _at_clusters_in_region(self, count: int, wood_side: bool,
+                               spread: float = 1.5) -> tuple[np.ndarray, np.ndarray]:
+        """Entities dealt onto the clusters on ONE SIDE of the island only.
+
+        Stage 4's resource asymmetry. `materials_at_clusters` put wood and stone
+        on every cluster, which is why stage 2's population never needed anything
+        from anybody: a household could harvest both at home. Splitting the island
+        makes one of the two a journey -- and therefore makes a relay, or a raid,
+        the cheap alternative to the walk. M5's own postmortem asked for exactly
+        this ("a relay needs its chain shortened by GEOGRAPHY").
+
+        Falls back to every cluster if one side happens to hold none, so a
+        pathological layout degrades to the stage-2 behaviour rather than placing
+        nothing at all.
+        """
+        ccx, ccz = self._cluster_centres
+        axis = self.cfg.society.region_axis
+        side = ccx * np.sin(axis) + ccz * np.cos(axis)
+        keep = np.flatnonzero(side > 0 if wood_side else side <= 0)
+        if keep.size == 0:
+            keep = np.arange(ccx.shape[0])
+        pick = keep[np.arange(count) % keep.size]
+        jitter = self.rng.normal(0.0, spread, size=(2, count))
+        return ccx[pick] + jitter[0], ccz[pick] + jitter[1]
+
     def reset(self) -> np.ndarray:
         cfg = self.cfg
         if self._bush_layout is None or cfg.bushes.resample_each_episode:
@@ -200,12 +252,17 @@ class World:
             # nearest tree is 10.2 and to the nearest rock 15.5, against 2.4 to
             # the nearest bush, and agents are within harvest range on 2.7% of
             # ticks. materials_at_clusters finishes the job m4b started.
-            if cc.materials_at_clusters:
+            regions = cfg.society.enabled and cfg.society.region_split
+            if regions:
+                self.tree_x, self.tree_z = self._at_clusters_in_region(cc.num_trees, True)
+            elif cc.materials_at_clusters:
                 self.tree_x, self.tree_z = self._at_clusters(cc.num_trees)
             else:
                 self.tree_x, self.tree_z = self._scatter(cc.num_trees)
             self.tree_wood = np.full(cc.num_trees, cc.tree_wood, dtype=np.int64)
-            if cc.materials_at_clusters:
+            if regions:
+                self.rock_x, self.rock_z = self._at_clusters_in_region(cc.num_rocks, False)
+            elif cc.materials_at_clusters:
                 self.rock_x, self.rock_z = self._at_clusters(cc.num_rocks)
             else:
                 self.rock_x, self.rock_z = self._scatter(cc.num_rocks)
@@ -251,6 +308,50 @@ class World:
         self._completions = 0
         self._night_sheltered = 0
         self._night_exposed = 0
+
+        # --- Island 2.0 stage 4: households, stockpiles, reputation, shocks
+        sc = cfg.society
+        n_house = max(sc.num_households, 1) if sc.enabled else 1
+        if sc.enabled:
+            if cc.enabled and cc.num_sites < n_house:
+                raise ValueError(
+                    f"society.num_households={n_house} needs at least that many "
+                    f"construction.num_sites (have {cc.num_sites}): a household's "
+                    f"stockpile sits at its own shelter site.")
+            # Round-robin, so households are equal-sized and stable from tick 0.
+            # "My group is who sleeps where I sleep" needs no learning to identify
+            # and no new abstract channel (design doc section 3).
+            self.household = np.arange(cfg.world.num_agents) % n_house
+            self.stock_x = self.site_x[:n_house].copy()
+            self.stock_z = self.site_z[:n_house].copy()
+            # Agents start at their household's site rather than scattered: a
+            # household that begins as a crowd of strangers on opposite shores is
+            # a household in name only, and the whole point of stage 4 is that
+            # the group is the unit the drama happens between.
+            self.pool.x = self.stock_x[self.household] + self.rng.normal(0.0, 2.0,
+                                                                        size=cfg.world.num_agents)
+            self.pool.z = self.stock_z[self.household] + self.rng.normal(0.0, 2.0,
+                                                                        size=cfg.world.num_agents)
+        else:
+            self.household = np.zeros(cfg.world.num_agents, dtype=np.int64)
+            self.stock_x = np.zeros(1, dtype=np.float64)
+            self.stock_z = np.zeros(1, dtype=np.float64)
+        self.stock_food = np.zeros(n_house, dtype=np.int64)
+        self.stock_material = np.zeros(n_house, dtype=np.int64)
+        self.grudge = np.zeros((cfg.world.num_agents, cfg.world.num_agents))
+        self.blight_until = -1
+        self._shocks_fired = 0
+        self._blight_ticks = 0
+        self._storms = 0
+        self._damaged = 0
+        self._deposits = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self._withdrawals = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self._raids = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self.raid_ledger: list[tuple[int, int, int, int]] = []
+        self.last_raids: list[tuple[int, int, int]] = []
+        # Shocks come off their own stream so adding or removing one cannot shift
+        # the bush layout or the spawn positions of an otherwise identical world.
+        self.shock_rng = np.random.default_rng(self._seed + 991)
         return self.observations()
 
     def construction_view(self) -> ConstructionView | None:
@@ -265,12 +366,26 @@ class World:
             tick=self.tick,
         )
 
+    @property
+    def blight_active(self) -> bool:
+        return self.tick < self.blight_until
+
+    def society_view(self) -> SocietyView | None:
+        if not self.cfg.society.enabled:
+            return None
+        return SocietyView(
+            household=self.household,
+            stock_x=self.stock_x, stock_z=self.stock_z,
+            stock_food=self.stock_food, stock_material=self.stock_material,
+            grudge=self.grudge, blight=self.blight_active,
+        )
+
     # --- stepping ---------------------------------------------------------
 
     def observations(self) -> np.ndarray:
         return build_observations(
             self.pool, self.bush_x, self.bush_z, self.bush_berries, self.cfg,
-            self.construction_view(),
+            self.construction_view(), self.society_view(),
         )
 
     def action_mask(self) -> np.ndarray:
@@ -281,7 +396,7 @@ class World:
         if not self.cfg.competition.mask_invalid_actions:
             return np.ones((self.pool.n, num_actions(self.cfg)), dtype=bool)
         return action_mask(self.pool, self.bush_x, self.bush_z, self.bush_berries,
-                           self.cfg, self.construction_view())
+                           self.cfg, self.construction_view(), self.society_view())
 
     def step(self, actions: np.ndarray) -> StepResult:
         cfg = self.cfg
@@ -365,16 +480,24 @@ class World:
         #     through the food it yields and the eating that food enables. Paying
         #     the gather bonus for a successful robbery would be rewarding
         #     aggression directly, which is the thing we want to avoid asserting.
+        sc = cfg.society
         stole = np.zeros(n, dtype=np.int64)
         robbed = np.zeros(n, dtype=np.int64)
+        # (thief, victim) pairs this tick. Needed because `stole` and `robbed` are
+        # per-agent counts and a grudge is a relation -- reconstructing who robbed
+        # whom from two count vectors is not possible once two thefts land in the
+        # same tick.
+        theft_pairs: list[tuple[int, int]] = []
         if cfg.competition.enable_steal:
             for i in np.flatnonzero(acted & (actions == STEAL)):
                 if pool.food[i] >= cfg.food.capacity:
                     continue
                 d2 = (pool.x - pool.x[i]) ** 2 + (pool.z - pool.z[i]) ** 2
-                victims = np.flatnonzero(
-                    (d2 <= cfg.competition.steal_radius ** 2) & pool.alive & (pool.food > 0)
-                )
+                eligible = ((d2 <= cfg.competition.steal_radius ** 2) & pool.alive
+                            & (pool.food > 0))
+                if sc.enabled and sc.household_theft_immunity:
+                    eligible &= self.household != self.household[i]
+                victims = np.flatnonzero(eligible)
                 victims = victims[victims != i]
                 if victims.size == 0:
                     continue
@@ -384,6 +507,7 @@ class World:
                 rewards[i] += cfg.reward.steal   # 0.0 unless deliberately shaped
                 stole[i] = 1
                 robbed[victim] = 1
+                theft_pairs.append((int(i), victim))
 
         # 1d. construction (Milestone 4): harvest materials, deliver to sites.
         wood_got = np.zeros(n, dtype=np.int64)
@@ -510,6 +634,109 @@ class World:
             if transfers and cfg.exchange.log_transfers:
                 self.transfers.extend((self.tick, g, r, it) for g, r, it in transfers)
 
+        # 1f. stockpiles and raids (Island 2.0 stage 4). Placed here, before the
+        #     drain, for the same reason gathering and giving are: a berry drawn
+        #     from the household store on an agent's last tick can still save it.
+        #
+        #     Nothing here pays a reward. A deposit is a pure cost to the
+        #     depositor -- it hands a unit to a store somebody else may draw from
+        #     -- which is deliberately the same shape of chain that defeated M5's
+        #     giving, and the honest question stage 5 gets to ask at the option
+        #     level. The one difference from a gift, and the reason a stockpile is
+        #     not just a slower give: the depositor can draw it back out, so the
+        #     chain is a LOAN to the group rather than a donation, and hoarding is
+        #     a strategy rather than an accident.
+        deposited = np.zeros(n, dtype=np.int64)
+        withdrew = np.zeros(n, dtype=np.int64)
+        raided = np.zeros(n, dtype=np.int64)
+        raids: list[tuple[int, int, int]] = []
+        self.last_raids = raids
+        if sc.enabled:
+            store_actions = ((actions == DEPOSIT_FOOD) | (actions == DEPOSIT_MATERIAL)
+                             | (actions == WITHDRAW_FOOD) | (actions == WITHDRAW_MATERIAL))
+            for i in (int(v) for v in np.flatnonzero(acted & store_actions)):
+                h = int(self.household[i])
+                d2 = (self.stock_x[h] - pool.x[i]) ** 2 + (self.stock_z[h] - pool.z[i]) ** 2
+                if d2 > sc.stockpile_radius ** 2:
+                    continue
+                a = actions[i]
+                if a == DEPOSIT_FOOD:
+                    if pool.food[i] > 0 and self.stock_food[h] < sc.stockpile_food_capacity:
+                        pool.food[i] -= 1
+                        self.stock_food[h] += 1
+                        deposited[i] = 1
+                elif a == DEPOSIT_MATERIAL:
+                    if (pool.wood[i] + pool.stone[i] > 0
+                            and self.stock_material[h] < sc.stockpile_material_capacity):
+                        # Wood first, mirroring the fungible build rule, so the
+                        # store holds one undifferentiated material count. Which
+                        # material a unit was is not recoverable from a stockpile
+                        # -- that is what a stockpile IS -- and the sites in a
+                        # stage-4 world take either.
+                        if pool.wood[i] > 0:
+                            pool.wood[i] -= 1
+                        else:
+                            pool.stone[i] -= 1
+                        self.stock_material[h] += 1
+                        deposited[i] = 1
+                elif a == WITHDRAW_FOOD:
+                    if self.stock_food[h] > 0 and pool.food[i] < cfg.food.capacity:
+                        self.stock_food[h] -= 1
+                        pool.food[i] += 1
+                        withdrew[i] = 1
+                else:
+                    room = (cc.enabled
+                            and pool.wood[i] + pool.stone[i] < cc.material_capacity)
+                    if self.stock_material[h] > 0 and room:
+                        self.stock_material[h] -= 1
+                        pool.wood[i] += 1     # a withdrawn unit is wood by convention
+                        withdrew[i] = 1
+
+            for i in (int(v) for v in np.flatnonzero(acted & (actions == RAID))):
+                d2 = (self.stock_x - pool.x[i]) ** 2 + (self.stock_z - pool.z[i]) ** 2
+                d2[self.household[i]] = np.inf
+                cand = np.flatnonzero(d2 <= sc.stockpile_radius ** 2)
+                if cand.size == 0:
+                    continue
+                room_m = cc.enabled and pool.wood[i] + pool.stone[i] < cc.material_capacity
+                took = False
+                for h in cand[np.argsort(d2[cand])]:
+                    h = int(h)
+                    # Food first: a raider takes what keeps it alive.
+                    if self.stock_food[h] > 0 and pool.food[i] < cfg.food.capacity:
+                        self.stock_food[h] -= 1
+                        pool.food[i] += 1
+                        item = ITEM_FOOD
+                    elif self.stock_material[h] > 0 and room_m:
+                        self.stock_material[h] -= 1
+                        pool.wood[i] += 1
+                        item = ITEM_WOOD
+                    else:
+                        continue
+                    raided[i] = 1
+                    raids.append((i, h, item))
+                    self.raid_ledger.append((self.tick, int(self.household[i]), h, item))
+                    took = True
+                    break
+                if took and sc.reputation:
+                    # THE GRUDGE IS HELD BY THE HOUSEHOLD, NOT THE PANTRY. Every
+                    # living member of the victim household remembers the raider,
+                    # which is what lets retaliation be collective without any
+                    # scripted "war" logic -- the design doc's minimal reputation.
+                    victims = (self.household == raids[-1][1]) & pool.alive
+                    self.grudge[victims, i] = np.minimum(
+                        self.grudge[victims, i] + sc.grudge_per_theft, 1.0)
+
+        if sc.enabled and sc.reputation:
+            # A theft is remembered by its individual victim, where a raid is
+            # remembered by the whole household -- the difference between being
+            # robbed and being invaded. The decay is what lets a feud end rather
+            # than accumulate monotonically for 600 ticks.
+            for thief, victim in theft_pairs:
+                self.grudge[victim, thief] = min(
+                    self.grudge[victim, thief] + sc.grudge_per_theft, 1.0)
+            self.grudge *= sc.grudge_decay
+
         # 2. hunger drain -- multiplied at night for anyone not near a completed
         #    shelter. This is the hazard that makes shelter worth its materials.
         drain = np.full(n, cfg.hunger.drain_per_tick)
@@ -587,16 +814,52 @@ class World:
         self._gave += gave
         self._received += received
 
-        # 6. bush regrowth: a depleted bush ticks back up one berry at a time
-        below = self.bush_berries < cfg.bushes.capacity
-        self.bush_timer = np.where(below, self.bush_timer + 1, 0)
-        ready = below & (self.bush_timer >= cfg.bushes.regrow_ticks)
+        # 6. bush regrowth: a depleted bush ticks back up one berry at a time.
+        #    A BLIGHT SUSPENDS IT -- the timer stops too, rather than continuing to
+        #    accumulate, so a blight costs the island its full duration of income
+        #    instead of being repaid in a burst the moment it lifts. A shock that
+        #    the world silently makes up afterwards is not a shock.
+        if sc.enabled and self.blight_active:
+            self._blight_ticks += 1
+            ready = np.zeros_like(self.bush_berries, dtype=bool)
+        else:
+            below = self.bush_berries < cfg.bushes.capacity
+            self.bush_timer = np.where(below, self.bush_timer + 1, 0)
+            ready = below & (self.bush_timer >= cfg.bushes.regrow_ticks)
         if ready.any():
             self.bush_berries = np.where(ready, self.bush_berries + 1, self.bush_berries)
             self.bush_timer = np.where(ready, 0, self.bush_timer)
 
+        self._deposits += deposited
+        self._withdrawals += withdrew
+        self._raids += raided
+
         # 7. clock and termination
         self.tick += 1
+
+        # 7b. shocks (Island 2.0 stage 4). Fired on the clock, deterministically
+        #     from the seed like everything else -- a "storyteller" whose script is
+        #     reproducible. They exist because stage 2 measured a population that
+        #     was never stressed: construction was over by the first nightfall (20
+        #     sites x 4 units against 100 agents carrying one each), so
+        #     `shelter_stock` sat at zero and there was nothing left to cooperate
+        #     about. A storm restores the demand and a blight restores the scarcity.
+        if sc.enabled and sc.shock_interval > 0 and self.tick % sc.shock_interval == 0:
+            kind = int(self.shock_rng.integers(0, 2))
+            self._shocks_fired += 1
+            if kind == 0:
+                self.blight_until = self.tick + sc.blight_ticks
+            elif cc.enabled and self.site_x.size:
+                done = np.flatnonzero((self.site_wood_needed == 0)
+                                      & (self.site_stone_needed == 0))
+                if done.size:
+                    # Damage lands on the WOOD counter, so (wood_needed +
+                    # stone_needed) still sums to the units outstanding -- every
+                    # protection and progress calculation reads that sum, and a
+                    # storm must not be the one place the invariant breaks.
+                    self.site_wood_needed[done] += sc.storm_damage
+                    self._damaged += int(done.size)
+                self._storms += 1
         truncated = self.tick >= cfg.world.max_ticks
         all_dead = not bool(pool.alive.any())
         return StepResult(
@@ -616,6 +879,10 @@ class World:
             gave=gave,
             received=received,
             transfers=transfers,
+            deposited=deposited,
+            withdrew=withdrew,
+            raided=raided,
+            raids=raids,
         )
 
     # --- reporting --------------------------------------------------------
@@ -647,6 +914,15 @@ class World:
             food_given=int(self._given_by_item[ITEM_FOOD]),
             materials_given=int(self._given_by_item[ITEM_WOOD] + self._given_by_item[ITEM_STONE]),
             transfers=list(self.transfers),
+            deposits=int(self._deposits.sum()),
+            withdrawals=int(self._withdrawals.sum()),
+            raids=int(self._raids.sum()),
+            blight_ticks=self._blight_ticks,
+            storms=self._storms,
+            shelters_damaged=self._damaged,
+            stock_food_final=self.stock_food.copy(),
+            stock_material_final=self.stock_material.copy(),
+            raid_ledger=list(self.raid_ledger),
         )
 
 

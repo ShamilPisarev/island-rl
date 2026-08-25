@@ -39,6 +39,11 @@ class Economy:
     demand_exposed: float
     supply: float
     bushes: int
+    # Island 2.0 stage 4: regrowth the island loses to blights. Reported
+    # separately because `supply` is already net of it and a reader who wants to
+    # know why a world got poorer cannot recover it from one number.
+    blight_ticks: float = 0.0
+    blight_loss: float = 0.0
 
     @property
     def ratio_sheltered(self) -> float:
@@ -58,6 +63,13 @@ class Economy:
             f"demand, everyone exposed    {self.demand_exposed:8.1f} berries"
             f"   ({self.meals_exposed:.1f} meals/agent)",
             f"supply ({self.bushes} bushes)        {self.supply:8.1f} berries",
+        ]
+        if self.blight_loss > 0.0:
+            lines += [
+                f"  ...after {self.blight_ticks:.0f} blighted ticks cost it "
+                f"{self.blight_loss:.1f}",
+            ]
+        lines += [
             "",
             f"supply / sheltered demand   {self.ratio_sheltered:8.2f}x",
             f"supply / exposed demand     {self.ratio_exposed:8.2f}x",
@@ -102,11 +114,27 @@ def subsistence(cfg: Config) -> Economy:
     meals_exposed = ticks / (h.eat_restore / exposed_drain)
 
     bushes = w.num_agents and b.count
-    regrowths = ticks // max(b.regrow_ticks, 1)
+    # A BLIGHT IS A CUT IN SUPPLY, so the sizing has to know about it -- CLAUDE.md
+    # rule 5, applied to the mechanic that most obviously invalidates a previous
+    # sizing. Shocks alternate blight/storm from the seed, so in expectation half
+    # of them are blights, and each suspends regrowth (and its timer) for
+    # `blight_ticks`. Overlapping blights are not modelled: at the shipped
+    # interval they cannot overlap, and if they could this would read as an upper
+    # bound on the loss, which is the safe direction.
+    sc = cfg.society
+    blight_ticks = 0.0
+    if sc.enabled and sc.shock_interval > 0:
+        shocks = ticks // sc.shock_interval
+        blight_ticks = min(0.5 * shocks * sc.blight_ticks, float(ticks))
+    growing = max(ticks - blight_ticks, 0.0)
+    regrowths = growing // max(b.regrow_ticks, 1)
+    lost = (ticks // max(b.regrow_ticks, 1)) - regrowths
     # A bush cannot hold more than `capacity`, so its initial load is capped too.
     supply = bushes * (min(b.initial_berries, b.capacity) + regrowths)
 
     return Economy(
+        blight_ticks=blight_ticks,
+        blight_loss=float(bushes * lost),
         ticks=ticks,
         num_agents=w.num_agents,
         ticks_per_meal=ticks_per_meal,

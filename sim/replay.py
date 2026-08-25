@@ -63,6 +63,14 @@ Tick::
     a : [[x, z, hunger, food, alive, action], ...]   -- one row per agent, in id order
     b : [berries, ...]                               -- one entry per bush
 
+v4 (Island 2.0 stage 4) additionally carries, per tick::
+
+    p : [[stock_food, stock_material], ...]   -- one pair per household
+    k : [[raider, victim household, item], ...]  -- raids resolved this tick
+
+and, at top level, a ``households`` array (id, x, z, colour -- static for the
+episode, index-aligned with ``p``) plus a ``household`` key on every agent.
+
 Positions are rounded to 2dp and hunger to 1dp. On a 40-unit island that is far
 below what the eye can resolve, and it roughly halves the file size.
 
@@ -87,7 +95,14 @@ from .world import World
 SCHEMA_VERSION = 1
 SCHEMA_VERSION_CONSTRUCTION = 2
 SCHEMA_VERSION_EXCHANGE = 3
-SUPPORTED_VERSIONS = frozenset({1, 2, 3})
+# Island 2.0 stage 4. Bumped because the tick encoding genuinely changed: a tick
+# now carries the household stockpiles (`p`) and the raids that happened (`k`).
+# Stage 3 deliberately did NOT bump -- the design doc asked whether animation
+# state needed a schema change and the action column already carried it -- and the
+# rule that made that the right call is the same one that makes this the wrong
+# place to economise: bump on any change to the tick encoding.
+SCHEMA_VERSION_SOCIETY = 4
+SUPPORTED_VERSIONS = frozenset({1, 2, 3, 4})
 
 AGENT_FIELDS = ["x", "z", "hunger", "food", "alive", "action"]
 AGENT_FIELDS_V2 = AGENT_FIELDS + ["wood", "stone"]
@@ -171,6 +186,16 @@ class ReplayRecorder:
         # transfers even if the world object still holds some from a previous
         # episode -- `self.ticks` being empty is the same "before anything
         # happened" test the action column uses.
+        if self.cfg.society.enabled:
+            # Stockpiles as a pair per household, so one array covers both
+            # economies and the viewer needs no second key. Raids are events, like
+            # transfers: nothing in the post-step state records that a pile was
+            # robbed rather than drawn down by its owners.
+            tick["p"] = [[int(f), int(m)] for f, m in
+                         zip(self.world.stock_food, self.world.stock_material)]
+            if self.ticks and self.world.last_raids:
+                tick["k"] = [[int(a), int(h), int(item)]
+                             for a, h, item in self.world.last_raids]
         if self.cfg.exchange.enabled and self.ticks and self.world.last_transfers:
             tick["g"] = [[int(g), int(r), int(item)] for g, r, item in self.world.last_transfers]
         self.ticks.append(tick)
@@ -181,8 +206,11 @@ class ReplayRecorder:
         n = cfg.world.num_agents
         construction = cfg.construction.enabled
         exchange = cfg.exchange.enabled
+        society = cfg.society.enabled
         version = SCHEMA_VERSION
-        if exchange:
+        if society:
+            version = SCHEMA_VERSION_SOCIETY
+        elif exchange:
             version = SCHEMA_VERSION_EXCHANGE
         elif construction:
             version = SCHEMA_VERSION_CONSTRUCTION
@@ -252,6 +280,34 @@ class ReplayRecorder:
                 "gifts": stats.gifts,
                 "food_given": stats.food_given,
                 "materials_given": stats.materials_given,
+            })
+        if society:
+            sc = cfg.society
+            blob["world"].update({
+                "num_households": sc.num_households,
+                "stockpile_radius": sc.stockpile_radius,
+                "stockpile_food_capacity": sc.stockpile_food_capacity,
+                "stockpile_material_capacity": sc.stockpile_material_capacity,
+            })
+            # Household membership and home position are static for an episode, so
+            # they belong here and not on every tick. `home` is index-aligned with
+            # the tick's `p`.
+            blob["households"] = [
+                {"id": h,
+                 "x": round(float(self.world.stock_x[h]), 2),
+                 "z": round(float(self.world.stock_z[h]), 2),
+                 "color": agent_color(h * 7 + 3, sc.num_households)}
+                for h in range(sc.num_households)
+            ]
+            for agent, h in zip(blob["agents"], self.world.household):
+                agent["household"] = int(h)
+            blob["summary"].update({
+                "deposits": stats.deposits,
+                "withdrawals": stats.withdrawals,
+                "raids": stats.raids,
+                "blight_ticks": stats.blight_ticks,
+                "storms": stats.storms,
+                "shelters_damaged": stats.shelters_damaged,
             })
         return blob
 
