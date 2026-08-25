@@ -257,46 +257,31 @@ def compute_needs(view: ObsView, cfg: Config) -> np.ndarray:
     return needs
 
 
-def score_goals(view: ObsView, cfg: Config, needs: np.ndarray, traits: np.ndarray,
-                acfg: ArbiterConfig) -> np.ndarray:
-    """Utility of every goal for every agent, shape (agents, goals).
+def goal_availability(view: ObsView, cfg: Config, needs: np.ndarray,
+                      acfg: ArbiterConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(available, discount, bonus), each (agents, goals).
 
-    The Sims-style scorer, with a Maslow gate on top:
+    THE OPTION MENU, factored out of the scripted scorer so the stage-5 learned
+    chooser and the utility arbiter face the IDENTICAL set of options and differ
+    only in how they choose among them -- otherwise the headline comparison is
+    two different games wearing one name. `available` is the goal-level analogue
+    of the M3 action mask (a goal whose target does not exist cannot be wanted);
+    `discount` and `bonus` are scripted-scorer inputs that a learned chooser
+    ignores, returned from here only because they are computed in the same pass
+    over the same targets.
 
-        score(g) = trait[g] * gate(tier(g)) * discount(distance to g)
-                   * sum_n deficit(n)^p * restore(g, n)
-
-    plus a base appeal so `explore` and `rest` are always choosable. Goals whose
-    target does not exist score exactly zero and are never chosen -- that is the
-    "advertised action" half of a utility system: the world offers what it can
-    support, and an agent that can see no bush cannot want to forage at one.
+    Note what this means for the comparison's honesty, stated rather than hidden:
+    some availability tests encode corrections, not just possibility -- the raid
+    motive gate, the store/draw surplus rules, opportunistic-only theft. Those
+    corrections were made at the MECHANIC level precisely because a needs scorer
+    cannot learn its way out of a degenerate loop; a learned chooser inherits
+    them as shared constraints. What it gets to learn is everything the scorer
+    decides with weights: which available option, when, for whom.
     """
     n = view.n
-    weighted = needs ** acfg.deficit_power              # (n, needs)
-    base = weighted @ RESTORE.T                          # (n, goals)
-    base = base + BASE_APPEAL[None, :]
-
-    # --- Maslow gate. urgency[t] is the worst deficit in tier t; a goal in tier
-    # T is scaled by the product over every LOWER tier of how satisfied that tier
-    # is. A starving agent's construction score goes to zero, which is the whole
-    # point of the hierarchy.
-    tiers = int(GOAL_TIER.max()) + 1
-    urgency = np.zeros((n, tiers))
-    for t in range(tiers):
-        cols = np.flatnonzero(NEED_TIER == t)
-        if cols.size:
-            urgency[:, t] = needs[:, cols].max(axis=1)
-    satisfied = np.clip(1.0 - urgency / max(acfg.critical, 1e-9), 0.0, 1.0)
-    gate = np.ones((n, N_GOALS))
-    for g in range(N_GOALS):
-        lower = GOAL_TIER[g]
-        if lower > 0:
-            gate[:, g] = np.prod(satisfied[:, :lower], axis=1)
-
-    # --- distance discount and target existence, per goal
     discount = np.ones((n, N_GOALS))
     available = np.ones((n, N_GOALS), dtype=bool)
-
+    bonus = np.zeros((n, N_GOALS))
     def set_target(goal: int, distance: np.ndarray) -> None:
         ok = np.isfinite(distance)
         available[:, goal] = ok
@@ -382,7 +367,7 @@ def score_goals(view: ObsView, cfg: Config, needs: np.ndarray, traits: np.ndarra
                     & (view.neighbour_food[rows, slot] <= 0.0))
         fed = view.hunger > threshold
         available[:, GOAL_GIVE_FOOD] = starving & fed & (view.food > 0.0)
-        base[:, GOAL_GIVE_FOOD] += acfg.generosity_scale
+        bonus[:, GOAL_GIVE_FOOD] = acfg.generosity_scale
 
         if cfg.construction.enabled:
             room_m = view.neighbour_material < 1.0 - 1e-6
@@ -401,7 +386,7 @@ def score_goals(view: ObsView, cfg: Config, needs: np.ndarray, traits: np.ndarra
                 & (d_site > cfg.construction.build_radius)
                 & (view.material_carried > 0.0)
             )
-            base[:, GOAL_GIVE_MATERIAL] += acfg.generosity_scale
+            bonus[:, GOAL_GIVE_MATERIAL] = acfg.generosity_scale
         else:
             available[:, GOAL_GIVE_MATERIAL] = False
     else:
@@ -479,6 +464,48 @@ def score_goals(view: ObsView, cfg: Config, needs: np.ndarray, traits: np.ndarra
     else:
         available[:, [STORE_FOOD, STORE_MATERIAL, DRAW_FOOD, DRAW_MATERIAL,
                       GOAL_RAID]] = False
+
+    return available, discount, bonus
+
+
+def score_goals(view: ObsView, cfg: Config, needs: np.ndarray, traits: np.ndarray,
+                acfg: ArbiterConfig) -> np.ndarray:
+    """Utility of every goal for every agent, shape (agents, goals).
+
+    The Sims-style scorer, with a Maslow gate on top:
+
+        score(g) = trait[g] * gate(tier(g)) * discount(distance to g)
+                   * sum_n deficit(n)^p * restore(g, n)
+
+    plus a base appeal so `explore` and `rest` are always choosable. Goals whose
+    target does not exist score exactly zero and are never chosen -- that is the
+    "advertised action" half of a utility system: the world offers what it can
+    support, and an agent that can see no bush cannot want to forage at one.
+    """
+    n = view.n
+    weighted = needs ** acfg.deficit_power              # (n, needs)
+    base = weighted @ RESTORE.T                          # (n, goals)
+    base = base + BASE_APPEAL[None, :]
+
+    # --- Maslow gate. urgency[t] is the worst deficit in tier t; a goal in tier
+    # T is scaled by the product over every LOWER tier of how satisfied that tier
+    # is. A starving agent's construction score goes to zero, which is the whole
+    # point of the hierarchy.
+    tiers = int(GOAL_TIER.max()) + 1
+    urgency = np.zeros((n, tiers))
+    for t in range(tiers):
+        cols = np.flatnonzero(NEED_TIER == t)
+        if cols.size:
+            urgency[:, t] = needs[:, cols].max(axis=1)
+    satisfied = np.clip(1.0 - urgency / max(acfg.critical, 1e-9), 0.0, 1.0)
+    gate = np.ones((n, N_GOALS))
+    for g in range(N_GOALS):
+        lower = GOAL_TIER[g]
+        if lower > 0:
+            gate[:, g] = np.prod(satisfied[:, :lower], axis=1)
+
+    available, discount, bonus = goal_availability(view, cfg, needs, acfg)
+    base = base + bonus
 
     scores = base * gate * discount * traits
     return np.where(available, scores, 0.0)

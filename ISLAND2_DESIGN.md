@@ -668,6 +668,9 @@ in yet another disguise (pinned in `tests/test_society.py` and the utility tests
    draw needs the store to hold a kind some visible site wants. Withdrawals
    4678 -> 93 against 1028 deposits -- the store finally banks.
 
+*(The treadmill gates apply to the fungible world too and move society4's
+headline 578.3 -> 574.5 -- inside island noise, noted so nobody chases the 3.8.)*
+
 **What the fixed world shows.** The non-fungible island is genuinely harder
 (559.2 against 578.3, deaths 2x), which is the demand existing. And the
 cross-region flow is real but it moves by RAID, not by gift: raids rose to 774

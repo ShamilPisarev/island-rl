@@ -171,13 +171,41 @@ def _nanmean(values: list[float]) -> float:
     return float(arr.mean()) if arr.size else float("nan")
 
 
+def make_runner(cfg: Config, policy: str, seed: int,
+                acfg: ArbiterConfig | None = None,
+                checkpoint: str | None = None) -> "OptionRunner | None":
+    """The arbiter zoo, one place. `None` means raw random actions (the floor).
+
+    Every non-random entry is an `OptionRunner` over the SAME controllers and the
+    same option menu; they differ only in the chooser. That is the stage-5
+    contract, and building them all here is what keeps a comparison between two
+    of them a comparison of choosers rather than of programs.
+    """
+    from .utility import OptionRunner, UtilityArbiter
+    if policy == "random":
+        return None
+    if policy == "utility":
+        return utility_runner(cfg, seed=seed, acfg=acfg)
+    if policy == "randomgoal":
+        from .arbiter import RandomGoalArbiter
+        return OptionRunner(RandomGoalArbiter(cfg, acfg, seed=seed), cfg, seed=seed)
+    if policy == "learned":
+        from .arbiter import load_arbiter
+        if not checkpoint:
+            raise ValueError("--arbiter learned needs --checkpoint")
+        arb = load_arbiter(checkpoint, cfg)
+        arb.acfg = acfg or arb.acfg
+        return OptionRunner(arb, cfg, seed=seed)
+    raise ValueError(f"unknown arbiter {policy!r}")
+
+
 def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | None = None,
-                 policy: str = "utility") -> SocietyReport:
+                 policy: str = "utility", checkpoint: str | None = None) -> SocietyReport:
     rep = SocietyReport(episodes=episodes)
     n_act = num_actions(cfg)
     for e in range(episodes):
         world = World(cfg, seed=seed + e)
-        runner = utility_runner(cfg, seed=seed + e, acfg=acfg) if policy == "utility" else None
+        runner = make_runner(cfg, policy, seed + e, acfg, checkpoint)
         rng = np.random.default_rng(seed + e + 99991)
         obs = world.observations()
         day_r: list[float] = []
@@ -447,10 +475,12 @@ def _household_section(cfg: Config, rep: SocietyReport) -> str:
 
 
 def record_replay(cfg: Config, seed: int, path: str, label: str,
-                  acfg: ArbiterConfig | None = None) -> str:
+                  acfg: ArbiterConfig | None = None, policy: str = "utility",
+                  checkpoint: str | None = None) -> str:
     """One episode, written as a replay the viewer can load."""
     world = World(cfg, seed=seed)
-    runner = utility_runner(cfg, seed=seed, acfg=acfg)
+    runner = make_runner(cfg, policy, seed, acfg, checkpoint)
+    assert runner is not None, "record_replay drives an arbiter, not raw random"
     rec = ReplayRecorder(world, cfg, label=label, source="sim.society", seed=seed)
     rec.snapshot()
     obs = world.observations()
@@ -473,6 +503,14 @@ def main() -> None:
     ap.add_argument("--commit", type=int, default=None, help="option commitment in ticks")
     ap.add_argument("--softmax", type=float, default=None, help="goal sampling temperature")
     ap.add_argument("--random", action="store_true", help="also run the random-action floor")
+    ap.add_argument("--arbiter", default="utility",
+                    choices=["utility", "learned", "randomgoal"],
+                    help="which chooser drives the population")
+    ap.add_argument("--checkpoint", default=None, help="for --arbiter learned")
+    ap.add_argument("--vs", default=None, choices=["utility", "learned", "randomgoal"],
+                    help="also run this arbiter on the SAME seeds and print the "
+                         "paired per-island differences (rule 7)")
+    ap.add_argument("--vs-checkpoint", default=None)
     ap.add_argument("--replay", action="store_true", help="write a replay for the viewer")
     ap.add_argument("--replay-path", default=None)
     args = ap.parse_args()
@@ -485,8 +523,23 @@ def main() -> None:
         overrides["softmax_temp"] = args.softmax
     acfg = ArbiterConfig(**overrides)
 
-    rep = run_episodes(cfg, args.episodes, args.seed, acfg)
-    print(format_report(cfg, rep, "utility agents"))
+    rep = run_episodes(cfg, args.episodes, args.seed, acfg,
+                       policy=args.arbiter, checkpoint=args.checkpoint)
+    print(format_report(cfg, rep, f"{args.arbiter} arbiter"))
+
+    if args.vs:
+        other = run_episodes(cfg, args.episodes, args.seed, acfg,
+                             policy=args.vs, checkpoint=args.vs_checkpoint)
+        print()
+        print(format_report(cfg, other, f"{args.vs} arbiter"))
+        # Paired per-island differences: same seed block, so island noise
+        # cancels -- the same discipline sim.evaluate applies (rule 7).
+        a = np.array([float(np.mean(l)) for l in rep.lifespans])
+        b = np.array([float(np.mean(l)) for l in other.lifespans])
+        d = a - b
+        se = d.std(ddof=1) / np.sqrt(len(d)) if len(d) > 1 else float("nan")
+        print(f"\npaired, {args.arbiter} - {args.vs}: {d.mean():+.1f} +- {se:.1f} "
+              f"ticks (better on {int((d > 0).sum())}/{len(d)} islands)")
 
     if args.random:
         floor = run_episodes(cfg, args.episodes, args.seed, acfg, policy="random")
@@ -503,7 +556,8 @@ def main() -> None:
         stem = Path(args.config).stem
         path = args.replay_path or f"{cfg.logging.replay_dir}/{stem}.json"
         written = record_replay(cfg, args.seed, path,
-                                f"island2 utility agents ({stem})", acfg)
+                                f"island2 {args.arbiter} arbiter ({stem})", acfg,
+                                policy=args.arbiter, checkpoint=args.checkpoint)
         print(f"\nreplay written: {written}")
         print(f"open viewer/index.html?replay={written.split('/')[-1]}")
 
