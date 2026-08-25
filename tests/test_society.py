@@ -512,3 +512,78 @@ def test_a_short_run_stays_alive_and_fills_its_stores(cfg4):
     assert np.concatenate(rep.lifespans).mean() > np.concatenate(floor.lifespans).mean()
     assert np.mean(rep.stock_trace) > 1.0
     assert np.mean(rep.deposits) > np.mean(rep.raids)
+
+
+# --- the shock ramp (the seasons world) ---------------------------------------
+
+class _FixedKind:
+    """Stands in for shock_rng so a test can order a blight (0) or a storm (1)."""
+
+    def __init__(self, kind: int) -> None:
+        self.kind = kind
+
+    def integers(self, *_args, **_kw) -> int:
+        return self.kind
+
+
+def _fire_shock(world, cfg, kind: int, at_tick: int) -> None:
+    world.tick = at_tick - 1
+    world.shock_rng = _FixedKind(kind)
+    world.step(np.full(cfg.world.num_agents, IDLE, dtype=np.int64))
+
+
+def test_ramp_zero_leaves_shock_severity_exactly_as_before(cfg4):
+    """The clamp rewrite must not change the un-ramped world: a storm still
+    costs exactly storm_damage and a blight exactly blight_ticks."""
+    cfg = small(cfg4)
+    world = World(cfg, seed=7)
+    world.site_wood_needed[:] = 0
+    world.site_stone_needed[:] = 0
+    _fire_shock(world, cfg, kind=1, at_tick=cfg.society.shock_interval)
+    assert (world.site_wood_needed == cfg.society.storm_damage).all()
+    world2 = World(cfg, seed=7)
+    _fire_shock(world2, cfg, kind=0, at_tick=cfg.society.shock_interval)
+    assert world2.blight_until == cfg.society.shock_interval + cfg.society.blight_ticks
+
+
+def test_ramp_scales_a_late_blight_longer_than_an_early_one(cfg4):
+    cfg = small(cfg4, **{"society.shock_ramp": 1.0, "world.max_ticks": 600})
+    world = World(cfg, seed=7)
+    _fire_shock(world, cfg, kind=0, at_tick=100)
+    early = world.blight_until - 100
+    world2 = World(cfg, seed=7)
+    _fire_shock(world2, cfg, kind=0, at_tick=600)
+    late = world2.blight_until - 600
+    # 1 + t/T: x7/6 at tick 100, x2 at tick 600
+    assert early == round(cfg.society.blight_ticks * 7 / 6)
+    assert late == 2 * cfg.society.blight_ticks
+    assert late > early
+
+
+def test_ramped_storm_damage_is_clamped_at_the_site_cost(cfg4):
+    """A monster storm must level a shelter, never push `needed` past the
+    site's total cost -- build progress would go negative and night protection
+    with it."""
+    cfg = small(cfg4, **{"society.shock_ramp": 5.0, "world.max_ticks": 600})
+    total = cfg.construction.site_wood_cost + cfg.construction.site_stone_cost
+    world = World(cfg, seed=7)
+    world.site_wood_needed[:] = 0
+    world.site_stone_needed[:] = 0
+    _fire_shock(world, cfg, kind=1, at_tick=600)   # damage would be 12 of 4
+    assert (world.site_wood_needed == total).all()
+    assert (world.site_wood_needed + world.site_stone_needed <= total).all()
+
+
+def test_economy_models_the_ramp(cfg4):
+    """rule 5: the sizing tool learns a mechanic before any world uses it. At
+    ramp 0 the expectation must reduce to the old formula (society4: 180
+    blighted ticks); at ramp 1.0 the shipped ramp world expects 285."""
+    assert subsistence(cfg4).blight_ticks == pytest.approx(180.0)
+    ramp = load_config(ROOT / "config" / "island2" / "society4_ramp.yaml")
+    assert ramp.society.shock_ramp == 1.0
+    econ = subsistence(ramp)
+    assert econ.blight_ticks == pytest.approx(285.0)
+    # ...and the shipped sizing stays in the watchable band with shelter
+    # load-bearing, which is what the 11-bushes re-size was for.
+    assert 1.1 < econ.ratio_sheltered < 1.5
+    assert econ.ratio_exposed < 1.0

@@ -124,8 +124,13 @@ def subsistence(cfg: Config) -> Economy:
     sc = cfg.society
     blight_ticks = 0.0
     if sc.enabled and sc.shock_interval > 0:
-        shocks = ticks // sc.shock_interval
-        blight_ticks = min(0.5 * shocks * sc.blight_ticks, float(ticks))
+        # With the ramp, a shock at tick t lasts blight_ticks * (1 + ramp*t/T),
+        # so the expectation is summed shock by shock rather than multiplied
+        # once -- at ramp 2.0 the late blights dominate the loss.
+        expected = sum(
+            0.5 * sc.blight_ticks * (1.0 + sc.shock_ramp * t / ticks)
+            for t in range(sc.shock_interval, ticks + 1, sc.shock_interval))
+        blight_ticks = min(expected, float(ticks))
     growing = max(ticks - blight_ticks, 0.0)
     regrowths = growing // max(b.regrow_ticks, 1)
     lost = (ticks // max(b.regrow_ticks, 1)) - regrowths

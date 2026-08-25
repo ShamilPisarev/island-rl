@@ -225,7 +225,8 @@ class ArbiterTrainer:
 
     def __init__(self, cfg: Config, tcfg: TrainConfig, seed: int = 0,
                  acfg: ArbiterConfig | None = None,
-                 learn_agents: np.ndarray | None = None) -> None:
+                 learn_agents: np.ndarray | None = None,
+                 household_reward: bool = False) -> None:
         self.cfg = cfg
         self.tcfg = tcfg
         self.acfg = acfg or ArbiterConfig()
@@ -252,6 +253,22 @@ class ArbiterTrainer:
             # Same seed and construction as self.traits, so the scripted agents
             # behave exactly as an all-scripted population's would.
             self.teacher = UtilityArbiter(cfg, self.acfg, seed=seed)
+        # The household-level baseline (design doc section 10, the second
+        # lever): a learned agent trains on its HOUSEHOLD's mean per-tick
+        # reward instead of its own. Construction is a household good -- the
+        # night bill a build decision avoids lands on housemates 100-300 ticks
+        # later -- so under an individual return "my unit completed our
+        # shelter" is noise and free-riding is optimal (measured: arb5-mix
+        # contributes 0.0% of harvest/deliver ticks). The honest cost, stated
+        # up front: this changes what "unpaid" means. No goal is paid for, the
+        # rewards are still the world's own, but they are REDISTRIBUTED --
+        # each learned agent is paid for the group outcome, its own death
+        # penalty diluted to a fifth. Whatever emerges here emerged from
+        # kin-shared survival pressure, not from individual survival pressure.
+        self.household_reward = household_reward
+        if household_reward and not cfg.society.enabled:
+            raise ValueError("--household-reward needs a society world "
+                             "(society.enabled) -- there is no household to share with")
         self.in_dim = observation_dim(cfg) + N_GOALS
         torch.manual_seed(seed)
         self.policy = ActorCritic(self.in_dim, n_actions=N_GOALS,
@@ -269,6 +286,26 @@ class ArbiterTrainer:
         traits = self.traits if rows is None else self.traits[rows]
         return torch.as_tensor(np.concatenate([obs, traits], axis=1),
                                dtype=torch.float32)
+
+    def _train_rewards(self, env: _EnvState, rewards: np.ndarray) -> np.ndarray:
+        """The per-tick reward each agent's open transition accumulates.
+
+        Default: the world's own per-agent rewards, untouched. Under
+        --household-reward, a LEARNED agent gets its household's mean instead
+        (fixed denominator of household size, so a dead housemate is a
+        persistent drag rather than vanishing from the average -- that lasting
+        cost IS the signal a night death is supposed to carry). Scripted
+        agents' rewards are never read, but they are left untouched anyway so
+        the array means one thing.
+        """
+        if not self.household_reward:
+            return rewards
+        hh = env.world.household
+        n_house = max(self.cfg.society.num_households, 1)
+        sums = np.bincount(hh, weights=rewards, minlength=n_house)
+        counts = np.bincount(hh, minlength=n_house)
+        shared = sums[hh] / np.maximum(counts[hh], 1)
+        return np.where(self.learn_mask, shared, rewards)
 
     def _redecide_mask(self, env: _EnvState, view: ObsView) -> np.ndarray:
         from .utility import (FORAGE, GOAL_STEAL, DRAW_FOOD, GOAL_RAID,
@@ -330,7 +367,7 @@ class ArbiterTrainer:
                 actions = execute_goals(env.goals, ObsView(env.obs, cfg), cfg,
                                         mask, env.explore_heading)
                 res = env.world.step(actions)
-                env.reward_acc += env.disc * res.rewards
+                env.reward_acc += env.disc * self._train_rewards(env, res.rewards)
                 env.disc *= gamma
                 env.obs = res.obs
 
@@ -567,6 +604,7 @@ def save_checkpoint(path: Path, trainer: ArbiterTrainer, update: int) -> None:
         # subset, so evaluation can rebuild the same split without being told.
         "learn_agents": (None if trainer.learn_mask.all()
                          else trainer.learn_agents.tolist()),
+        "household_reward": trainer.household_reward,   # provenance only
     }, path)
 
 
@@ -615,6 +653,11 @@ def main() -> None:
                          "worlds. Households are round-robin (agent i -> "
                          "household i%%H), so N=num_households puts one learned "
                          "agent in every household. 0 = all learned.")
+    ap.add_argument("--household-reward", action="store_true",
+                    help="learned agents train on their HOUSEHOLD's mean reward "
+                         "instead of their own -- the household-level baseline. "
+                         "Changes what 'unpaid' means (kin-shared survival "
+                         "pressure); the world's rewards themselves are untouched.")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -629,7 +672,8 @@ def main() -> None:
     torch.set_num_threads(cfg.ppo.threads or 4)
 
     learn = np.arange(args.learn_agents) if args.learn_agents else None
-    trainer = ArbiterTrainer(cfg, tcfg, seed=args.seed, learn_agents=learn)
+    trainer = ArbiterTrainer(cfg, tcfg, seed=args.seed, learn_agents=learn,
+                             household_reward=args.household_reward)
     if learn is not None:
         print(f"mixed population: agents 0..{args.learn_agents - 1} learn, "
               f"{cfg.world.num_agents - args.learn_agents} run the scripted arbiter")

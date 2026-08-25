@@ -306,6 +306,39 @@ def test_mixed_checkpoint_carries_the_split_into_society(cfg, tmp_path):
         run_episodes(cfg, 1, 10000, policy="mixed", checkpoint=str(path2))
 
 
+def test_household_reward_is_the_household_mean_for_learned_agents_only(cfg):
+    """12 agents in 4 round-robin households of 3. A learned agent's training
+    reward must be its household's mean over the FIXED household size (a dead
+    housemate drags the mean, never vanishes from it); a scripted agent's must
+    pass through untouched."""
+    tcfg = TrainConfig(num_envs=1, rollout_ticks=1)
+    trainer = ArbiterTrainer(cfg, tcfg, seed=0, learn_agents=np.arange(4),
+                             household_reward=True)
+    env = trainer.envs[0]
+    rewards = np.arange(12, dtype=np.float64)          # agent i earns i
+    got = trainer._train_rewards(env, rewards)
+    # household h = {h, h+4, h+8}, mean = h + 4
+    for a in range(4):                                  # learned: shared
+        assert got[a] == pytest.approx(a + 4.0)
+    for a in range(4, 12):                              # scripted: untouched
+        assert got[a] == rewards[a]
+
+
+def test_household_reward_off_is_bit_identical(cfg):
+    tcfg = TrainConfig(num_envs=1, rollout_ticks=1)
+    trainer = ArbiterTrainer(cfg, tcfg, seed=0, learn_agents=np.arange(4))
+    env = trainer.envs[0]
+    rewards = np.arange(12, dtype=np.float64)
+    assert trainer._train_rewards(env, rewards) is rewards
+
+
+def test_household_reward_refuses_a_world_without_households(cfg):
+    plain = cfg.replace(**{"society.enabled": False})
+    with pytest.raises(ValueError, match="household-reward needs a society"):
+        ArbiterTrainer(plain, TrainConfig(num_envs=1), seed=0,
+                       learn_agents=np.arange(4), household_reward=True)
+
+
 def test_mixedrandom_is_runnable_and_reports_the_split(cfg):
     rep = run_episodes(cfg, 1, 10000, policy="mixedrandom")
     assert rep.learn_mask is not None

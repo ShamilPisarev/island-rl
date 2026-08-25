@@ -893,8 +893,12 @@ class World:
         if sc.enabled and sc.shock_interval > 0 and self.tick % sc.shock_interval == 0:
             kind = int(self.shock_rng.integers(0, 2))
             self._shocks_fired += 1
+            # The ramp scales severity with episode progress, never cadence --
+            # the shock clock and its rng stream are untouched, so ramp 0.0 is
+            # bit-identical to the pre-ramp world.
+            ramp = 1.0 + sc.shock_ramp * self.tick / cfg.world.max_ticks
             if kind == 0:
-                self.blight_until = self.tick + sc.blight_ticks
+                self.blight_until = self.tick + int(round(sc.blight_ticks * ramp))
             elif cc.enabled and self.site_x.size:
                 done = np.flatnonzero((self.site_wood_needed == 0)
                                       & (self.site_stone_needed == 0))
@@ -903,7 +907,13 @@ class World:
                     # stone_needed) still sums to the units outstanding -- every
                     # protection and progress calculation reads that sum, and a
                     # storm must not be the one place the invariant breaks.
-                    self.site_wood_needed[done] += sc.storm_damage
+                    # Clamped at the site's total cost: a ramped storm must not
+                    # push `needed` past it, or build progress goes NEGATIVE and
+                    # night protection with it.
+                    total = cc.site_wood_cost + cc.site_stone_cost
+                    damage = int(round(sc.storm_damage * ramp))
+                    self.site_wood_needed[done] = np.minimum(
+                        self.site_wood_needed[done] + damage, total)
                     self._damaged += int(done.size)
                 self._storms += 1
         truncated = self.tick >= cfg.world.max_ticks

@@ -255,6 +255,14 @@ class SocietyConfig:
     blight_ticks: int = 60            # how long a blight suspends regrowth
     storm_damage: int = 2             # units knocked out of each finished site
     observe_shock: bool = False       # one channel: is a blight running
+    # Escalation: shock SEVERITY grows linearly with episode progress. A shock
+    # at tick t is scaled by 1 + shock_ramp * t/max_ticks, so at ramp 2.0 the
+    # last shock of an episode is ~3x the first (blights ~3x longer, storms
+    # ~3x the damage, clamped so a site never needs more than it costs). The
+    # cadence is untouched -- same clock, same seed stream -- so 0.0 reproduces
+    # every earlier world bit-identically. sim.economy models the ramp; re-size
+    # before reading anything behavioural off a ramped world (rule 5).
+    shock_ramp: float = 0.0
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,47 @@
+# Island 2.0: society4 with ESCALATING shocks -- the seasons world.
+#
+# shock_ramp 1.0 scales every shock's severity by 1 + tick/max_ticks, cadence
+# untouched: the first blight lasts ~70 ticks and the last ~120, the first
+# storm knocks 2 units off every finished shelter and the last levels them
+# (damage 4 of a 4-unit site, clamped there so build progress can never go
+# negative). Same shock clock, same seed stream -- ramp 0.0 is bit-identical
+# to society4.
+#
+# THE ECONOMY IS RE-SIZED FOR THE RAMP (rule 5, and sim.economy was taught the
+# ramp before this file was written). At society4's 9 bushes per cluster the
+# ramped blights cost 285 of 600 growing ticks and the island lands at 0.84x
+# sheltered subsistence -- everybody starves and nothing behavioural can be
+# read. (First sizing attempt was 13 per cluster, off by one berry per bush:
+# 1.52x sheltered and 1.01x EXPOSED, i.e. shelter no longer load-bearing --
+# caught by the tool's own NOTE before a single run.) 11 per cluster:
+#
+#   supply 1100 berries (220 bushes, ramped blights already deducted)
+#   supply / sheltered demand   1.28x
+#   supply / exposed demand     0.86x   <- shelter still load-bearing
+#
+# Note what the re-size does to the SHAPE of the year, because it is the point
+# of this world rather than a side effect: a cluster now earns 11 berries per
+# 100 ticks against its residents' 7.1 early on (a fat summer, 1.5x), and the
+# late, long blights zero that income for 100+ ticks at a stretch (a hard
+# winter). Total supply is watchable-band; its TIMING is not. The stockpile
+# stops being one bad night's insurance and becomes the bridge across a season
+# -- the first world where banking early is arithmetically load-bearing.
+#
+# Pre-registered reads, before any run:
+#   * stockpile food level should RISE early and DRAIN late (stock_trace by
+#     tick, not just the episode mean) -- the harvest/winter rhythm.
+#   * deaths should concentrate in the last third of the episode. Uniform
+#     deaths mean the ramp is not what is killing anyone.
+#   * late storms level whole settlements: rebuild-or-relocate under blight is
+#     the drama this world exists to stage. Watch completions per episode rise
+#     vs society4's 52 (more rebuilding), nights indoors fall.
+#   * failure mode to watch: if the fat summer makes the early world so easy
+#     that stores saturate at capacity 12, raise capacity before reading
+#     "hoarding emerged" off a full pile (a capped pile always looks full).
+extends: society4.yaml
+
+bushes:
+  bushes_per_cluster: 11
+
+society:
+  shock_ramp: 1.0

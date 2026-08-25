@@ -925,6 +925,33 @@ mix-anneal question and would say where free-riding stops scaling -- at 100%
 it must collapse back into `arb4c`, so somewhere in between the shelters stop
 getting built.
 
+### The household-level baseline (the second lever), pre-registered
+
+Written 2026-08-25, before the results. `--household-reward` makes a learned
+agent train on its HOUSEHOLD's mean per-tick reward instead of its own (fixed
+denominator, so a dead housemate is a persistent drag on the mean rather than
+vanishing from it). Same mixed setup as `arb5-mix` -- 20 learned, one per
+household, gamma 0.997, 150 updates from scratch -- so the ONLY change is whose
+outcome the gradient prices, and `arb5-mix` is the exact control.
+
+The honest cost, stated before the run: this changes what "unpaid" means. No
+goal is shaped and the rewards are the world's own, but they are redistributed
+-- whatever emerges emerged from kin-shared survival pressure, not individual
+survival pressure. That is a different (and biologically respectable) claim.
+
+What settles it, against `arb5-mix`'s numbers on the same seed block:
+
+* **contribution**: harvest_wood / deliver / store_material shares of the
+  learned 20's goal-ticks. arb5-mix: all 0.0%. Any sustained nonzero share is
+  the lever working; still-zero means option-level PPO cannot hold the
+  compound programme even when the group return is handed to it, and the wall
+  is the optimisation, not the credit assignment.
+* **the learned slots' paired lifespan vs all-scripted** (arb5-mix: +19.1 +-
+  7.4) -- contribution that costs the contributor everything is not a win.
+* **nights indoors** (arb5-mix: 84.0%) -- sheltering must survive the reward
+  change, or the diluted death penalty (a fifth of -10) broke the one thing
+  the mixed run fixed.
+
 ### The stage-5 verdict, one paragraph
 
 The option level did exactly what the design doc promised and no more: it
