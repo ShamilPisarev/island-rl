@@ -1,0 +1,50 @@
+# Island 2.0, stage 2: 100 agents, every mechanic on, economy SIZED.
+#
+# engine100_full.yaml was an engine testbed and said so -- its economy was
+# inherited from a six-agent world and ran at 0.75x subsistence, i.e. everyone
+# starves and nothing behavioural can be read off it. This is the same world
+# with the food economy computed rather than guessed (`python -m sim.economy
+# --config config/island2/society100.yaml`), per the M3 postmortem rule.
+#
+# THE SIZING, from sim.economy:
+#
+#   one meal buys 70 ticks, so 600 ticks = 8.57 meals per agent
+#   sheltered demand   857 berries   (100 agents)
+#   exposed demand    1286 berries   (night drain 3x for a quarter of each cycle)
+#   supply            1120 berries   (140 bushes x (2 initial + 6 regrowths))
+#
+#   supply / sheltered demand   1.31x   <- the design doc's 1.2-1.5x watchable band
+#   supply / exposed demand     0.87x   <- shelter stays load-bearing by arithmetic
+#
+# Supply sitting BETWEEN the two is the M4 economy pattern deliberately repeated:
+# a population that shelters can afford the ticks construction costs, and one
+# that sleeps rough starves. 1.0's knife-edge 1.00x sizing was for measurement;
+# this is for watchability, which is what stage 2 is exiting on.
+#
+# Region count follows the design doc's rule of 1 cluster per 4-6 agents: 20
+# clusters for 100 agents, so there is no single mega-camp to collapse into.
+# One site per cluster, and material nodes on the clusters (materials_at_clusters
+# is inherited from the m4f lineage) so no leg of the build chain is an
+# uncreditable walk.
+extends: engine100_full.yaml
+
+bushes:
+  # 20 clusters x 7 = 140 bushes. Capacity/regrowth stay at the m4h lineage's
+  # values (2 berries, 100-tick regrowth), so a single bush still cannot feed a
+  # camper -- travel remains necessary, which is the nav-spread lesson kept.
+  bushes_per_cluster: 7
+
+observation:
+  # THE ISLAND GREW AND THIS HAD TO GROW WITH IT. 1.0 set distance_scale to 20 on
+  # a radius-40 island -- half the radius, chosen so the near field keeps full
+  # resolution and only genuinely distant things saturate the +-1 clip. Island 2.0
+  # is radius 100, so leaving it at 20 clips everything past a fifth of the way to
+  # the shore: measured, agents could not tell a shelter 25 units off from one 90
+  # units off, and got caught outside at dusk because the observation said they
+  # were already close. 50 restores the same scale-to-radius ratio 1.0 used.
+  #
+  # The documented cost (CLAUDE.md's distance_scale note) is halved near-field
+  # resolution. It does not bite here: every threshold the arbiter compares
+  # against -- gather 2.0, build 2.5, steal 2.5 -- is read back in world units by
+  # ObsView, and 2.0/50 is still far above float32 noise.
+  distance_scale: 50.0

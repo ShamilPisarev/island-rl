@@ -101,9 +101,23 @@ class ReplaySchemaError(ValueError):
 
 
 def agent_color(index: int, total: int) -> str:
-    """Evenly spaced hues so six agents stay distinguishable at a glance."""
-    h = (index / max(total, 1)) % 1.0
-    r, g, b = colorsys.hsv_to_rgb(h, 0.62, 0.98)
+    """A distinguishable colour per agent, at six agents and at a hundred.
+
+    Evenly spaced hues were fine for six and fail for a hundred: adjacent ids
+    land 3.6 degrees apart, which is the same colour. Two changes fix it.
+
+    The golden-angle step (0.381966..., i.e. 1 - 1/phi) walks the hue wheel so
+    that *consecutive* indices are always far apart -- the standard trick for
+    "I do not know how many I will need". And saturation/value cycle through a
+    few levels on a different period from the hue, so two agents that do land on
+    a similar hue differ in weight instead. Six-agent replays stay well spread
+    (hues ~137 degrees apart) and their colours simply differ from those written
+    before this change, which is cosmetic: nothing keys off an agent's colour.
+    """
+    h = (index * 0.381966011250105) % 1.0
+    sat = (0.72, 0.52, 0.88)[index % 3]
+    val = (0.98, 0.80, 0.90, 0.68)[index % 4]
+    r, g, b = colorsys.hsv_to_rgb(h, sat, val)
     return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
 
 

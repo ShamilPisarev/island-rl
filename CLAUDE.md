@@ -35,7 +35,34 @@ society (utility/"Maslow" arbiter + scripted controllers first, then a learned
 option-level policy on the same interface). The plan below remains the 1.0
 research thread and is unaffected.
 
-**Stage 1 (engine scale pass) is DONE, same day.** The design doc's forecast
+**Stages 1, 2 and 3 are DONE, same day.** Stage 4 (regions, households,
+stockpiles, reputation, shocks) is next. Stage 2/3 in one line each:
+
+* **Stage 2, utility agents.** A needs arbiter over goal-level options
+  (`sim/utility.py`), with the interface stage 5 swaps a learned chooser into:
+  `arbiter.choose(view, mask, rng) -> goals` and `execute_goals(...) -> actions`.
+  100 agents reach **2.80× the random floor** (563.2 of 600 ticks against
+  201.0), 20/20 shelters, **96.3% of nights indoors**, and a visible commute
+  (11.1 units from shelter by day, 3.7 at night). All three pre-registered
+  failure modes clear — one of them (permanent war) fired first and was fixed at
+  the mechanic, not the weight. New: `sim/obsview.py`, `sim/society.py`,
+  `sim/economy.py` (size a world's subsistence in code, per rule 5),
+  `config/island2/society100.yaml`.
+  **Four corrections are written up in ISLAND2_DESIGN.md §8 and pinned by tests
+  named after the symptom** — read them before touching the scorer; three are
+  the same confusion (what a need IS vs what it costs to satisfy).
+* **Stage 3, graphics.** Instanced procedural bipeds (`viewer/biped.js`):
+  **8 draw calls for 100 agents** where the old per-agent groups were ~1300
+  meshes. **No schema bump was needed** — the design doc asked that this be
+  checked, and the action column plus the night cycle already in the replay
+  drive every animation state. Also: golden-angle agent colours (evenly spaced
+  hues put agents 3.6° apart at n=100), a population panel above 24 agents
+  (aggregates + action histogram + swatch grid) with 1.0's roster kept below it,
+  hover labels, single-pass death ticks, gift-line cap 32 → 256. Verified in a
+  browser on v1/v2/v3 replays, no console errors; six-agent 1.0 replays render
+  unchanged in roster mode.
+
+**Stage 1 (engine scale pass) detail.** The design doc's forecast
 that O(n²) neighbour queries would need a spatial hash was refuted by the
 profile: 100 agents with every mechanic on already ran at 98k agent-steps/s
 (~20× the exit bar) because the queries were vectorised all along. The one

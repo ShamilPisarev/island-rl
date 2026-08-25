@@ -160,6 +160,28 @@ def test_agent_colors_are_distinct(cfg):
     assert all(c.startswith("#") and len(c) == 7 for c in colors)
 
 
+def test_agent_colors_stay_distinct_at_a_hundred_agents():
+    """Island 2.0 populations need colours that survive a crowd.
+
+    Evenly spaced hues put agent 41 and agent 42 3.6 degrees apart, i.e. the
+    same colour. The golden-angle walk keeps CONSECUTIVE ids far apart, and the
+    saturation/value cycles run on different periods from the hue so a hue
+    collision still differs in weight.
+    """
+    n = 100
+    colors = [agent_color(i, n) for i in range(n)]
+    assert len(set(colors)) == n, "duplicate colours in a 100-agent population"
+
+    def rgb(c):
+        return tuple(int(c[k:k + 2], 16) for k in (1, 3, 5))
+
+    # Neighbouring ids are what a viewer sees side by side in the swatch grid.
+    for i in range(n - 1):
+        a, b = rgb(colors[i]), rgb(colors[i + 1])
+        gap = sum(abs(x - y) for x, y in zip(a, b))
+        assert gap > 90, f"agents {i} and {i + 1} are near-identical ({gap})"
+
+
 def test_scripted_forager_beats_random_survival(cfg):
     """Not a replay test as such, but this is where the greedy forager first runs:
     if it cannot outlive a random walk, the observation is not sufficient and

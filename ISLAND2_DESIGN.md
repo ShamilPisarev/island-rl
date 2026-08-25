@@ -1,10 +1,26 @@
-# Island 2.0 — design document (no code yet)
+# Island 2.0 — design document, and the log of building it
 
 Written 2026-08-25, after the session that found the viewer was auto-loading a
 stripped-down probe replay (fixed: `?replay=` deep link in `viewer/main.js`).
-Status: DESIGN ONLY. Nothing in here is implemented. Island 1.0 (milestones
-1-5, all verified) stays intact whatever happens; 2.0 is a new code path, new
-configs, and must not touch the existing results.
+Island 1.0 (milestones 1-5, all verified) stays intact whatever happens; 2.0 is
+a new code path, new configs, and must not touch the existing results.
+
+**STATUS: stages 1, 2 and 3 are built (all 2026-08-25). Stage 4 is next.** The
+sections below are the original design as written; where a stage has since been
+run, an inline note says what actually happened, and **section 8 carries the
+stage 2/3 results and the four corrections the build forced**. Two of the
+design's own forecasts were refuted by measurement -- the spatial hash
+(section 4) and the schema bump for animation state (section 5) -- so read the
+notes before trusting a prediction here.
+
+Run it:
+
+```bash
+python -m sim.economy  --config config/island2/society100.yaml   # size the world
+python -m sim.society  --config config/island2/society100.yaml --episodes 5 --random
+python -m sim.society  --config config/island2/society100.yaml --replay
+python -m sim.profile_engine --config config/island2/engine100_full.yaml --profile
+```
 
 ## 0. The goal has changed, and it is worth saying plainly
 
@@ -285,8 +301,23 @@ the per-agent list (6 fit; 100 do not).
 2. UTILITY AGENTS (option A). Needs + goal scoring + controller reuse +
    trait vectors. Exit: a 100-agent replay a stranger finds watchable;
    day/night rhythm visible; the pre-registered failure modes checked.
+   **DONE 2026-08-25.** `sim/utility.py` (needs, goal scoring, option
+   commitment), `sim/obsview.py`, `sim/society.py` (runner + the failure-mode
+   report), `sim/economy.py`, `config/island2/society100.yaml`. Result: 2.80x
+   the random floor, 94% of the tick limit, 20/20 shelters, 96% of nights
+   indoors, and a visible commute (11.1 units from shelter by day, 3.7 at
+   night). All three pre-registered failure modes clear -- see section 8 for
+   what had to be corrected to get there, including the one that fired.
 3. GRAPHICS. Procedural biped + animation mapping + follow-cam + population
    sidebar. Parallel with 2.
+   **DONE 2026-08-25.** `viewer/biped.js`: route 1, instanced. NO SCHEMA BUMP
+   was needed -- section 5 asked that this be checked, and the action column
+   plus the night cycle already in the file are enough to drive every animation
+   state. The viewer's 6-agent assumptions are addressed: instanced bodies (8
+   draw calls for the population, against ~1300 meshes), a golden-angle colour
+   ramp that survives a crowd, a population panel (aggregates + action
+   histogram + swatch grid) above 24 agents with the old roster kept below it,
+   hover labels, single-pass death ticks, and the gift-line cap raised from 32.
 4. SOCIETY MECHANICS. Regions, households, stockpiles, reputation, shocks.
    Iterate on utility agents (fast loop, no training). Exit: raids and
    deliveries between households visible in a replay; an exchange-ledger
@@ -315,3 +346,105 @@ design; 5 is one to build + the usual 6-minute-x-many experiment loop.
   become option-executors, or 2.0's agents are quietly psychic. The scripted
   forager already proves observation-only is enough for foraging; do the
   same audit for builder/thief/trader.
+
+## 8. Stage 2/3 results, and the four corrections the build forced
+
+Written 2026-08-25, right after the runs. Numbers are 5 episodes of
+`config/island2/society100.yaml` unless stated.
+
+### Where it landed
+
+| | utility agents | random floor |
+|---|---|---|
+| mean lifespan | **563.2** of 600 (94%) | 201.0 (34%) |
+| deaths / episode | **16.8** of 100 | 98.0 |
+| berries / episode | 782 of the 1120 the island makes | 82 |
+| shelters / episode | **20.0** of 20 | 2.8 |
+| nights indoors | **96.3%** | 6.0% |
+
+**2.80x the random floor.** The economy was sized with `sim.economy` rather
+than by hand (the M3 postmortem rule): supply 1120 berries against 857
+sheltered demand (1.31x, the doc's watchable band) and 1286 exposed demand
+(0.87x), so shelter stays load-bearing by arithmetic exactly as it is in M4.
+
+The three pre-registered failure modes, each against a control:
+
+* **inequality snowball** -- lifespan Gini **0.058**. Not degenerate, and
+  honestly not much drama either; households and stockpiles (stage 4) are
+  what would give inequality something to accumulate in.
+* **permanent war** -- steal 5.8% of goal-ticks against forage 13.5%. **This
+  one fired on the first run** and is written up below.
+* **mega-camp** -- daytime nearest-neighbour 5.81 against 8.86 for uniform
+  placement on the same island (0.66x). Clustered, not collapsed. Measured by
+  DAY only: at night the population is deliberately packed into shelters, and
+  including those ticks made the intended behaviour read as the failure.
+
+Watchability, which is the actual exit condition: by day the population is
+spread over the whole island foraging; at night it is gathered into ~14 lit
+settlements. Verified in a browser at 100 agents, v1/v2/v3 replays all
+rendering, no console errors. The CPU side of a tick is 0.246 ms at 100 agents
+(pose composition plus the panel). Rendered frame rate was NOT measured -- the
+automation pane reports `document.hidden`, which throttles rAF -- so the
+draw-call claim rests on construction (8 instanced meshes) rather than on a
+timing.
+
+### The four corrections, because each looked right in code
+
+Three of these are the same mistake in different clothes: **confusing what a
+need IS with what it costs to satisfy.** They are pinned by tests named after
+the symptom in `tests/test_utility.py`.
+
+1. **Theft as a travelling goal produced the pre-registered war.** 6932 steals
+   an episode, foraging down to 10.9% of intentions, the population harvesting
+   685 berries against a demand of 857. Cause, measured: a loaded victim sits
+   at a median 2.8 units against a loaded bush at 4.2, so with 100 agents
+   packed together the distance discount handed theft every contest. The fix is
+   1.0's own measurement, not a weight: theft is available only when a victim
+   is ALREADY in reach, never as somewhere to walk to -- the scripted thief
+   never chases, and forcing every legal steal on the learned policy measured
+   -8.3 +- 4.1 ticks. Theft redistributes and never creates; a utility scorer
+   over selfish needs cannot see that, so the mechanic is where the correction
+   belongs.
+2. **The Maslow gate suppressed `explore`, the goal that SERVES the unmet
+   need.** An agent with an empty inventory had tier-2 urgency at 1.0, which
+   zeroed every tier above it -- including the search that was the only way to
+   fix the shortage. 39.6% of all intentions went to `rest`: hungry agents
+   standing still because wanting food had suppressed looking for it. Searching
+   is never a luxury, so `explore` sits at tier 0.
+3. **`distance_scale` did not grow with the island.** 1.0 set it to 20 on a
+   radius-40 island; Island 2.0 is radius 100, so everything past a fifth of
+   the way to the shore clipped to the same value and agents could not tell a
+   shelter 25 units off from one 90 units off. 50 restores the ratio. This is
+   the "perception beyond 20 units" problem from CLAUDE.md arriving on a bigger
+   map, and it is worth checking on every future world resize.
+4. **The safety need was wrong twice.** First it was scaled by
+   distance-to-shelter, which made an agent 9.7 units from cover at night only
+   19% unsafe -- it is 100% exposed, the drain is 3x whatever the distance is.
+   Then, once corrected, zeroing it on arrival emptied the shelter halfway
+   through the night: satisfied need, shelter scores 0, agent wanders back out.
+   Being under cover is not a state that discharges the need, it is how the
+   need goes on being met. Nights indoors: 22.7% -> 28.2% -> **96.3%**.
+   The dusk lead time is now derived from `distance_scale / move_step` rather
+   than hardcoded, so it is always long enough to actually walk home.
+
+### What stage 2 says about stage 4, before anyone builds it
+
+* **Construction is over by the first nightfall.** 20 sites x 4 units = 80
+  units against 100 agents who each carry one, so `deliver` is 0.6% of
+  goal-ticks and `shelter_stock` sits at 0 for the rest of the episode. The
+  building economy has no *sustained* demand. Stockpiles, shelter decay, or
+  storm damage (the doc's shocks) are what would give it one -- more sites is
+  capacity, not depth, which is exactly the `m4g` lesson.
+* **The `social` need is still not modelled, deliberately.** Nothing in the
+  world satisfies one, so it would score goals against an appetite the world
+  cannot feed. Households are what give it teeth.
+* **Giving is trait-driven, not need-driven**, and it barely fires (11.8
+  transfers an episode). That is the honest encoding -- handing a berry away
+  restores nothing of the giver's own -- and it is the same wall M5 hit. A
+  household stockpile changes the arithmetic rather than the weight.
+* **The option interface is ready for stage 5.** `arbiter.choose(view, mask,
+  rng) -> goal ids` and `execute_goals(...) -> actions` are the only seam; a
+  learned chooser reuses `execute_goals`, `goal_viable` and `OptionRunner`
+  untouched, which is what keeps the headline comparison honest. `OptionRunner`
+  already tracks decisions per agent for the one-transition-per-option
+  bookkeeping.

@@ -7,6 +7,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { createPopulation } from './biped.js';
 
 // --- replay schema this build can read (see sim/replay.py) ------------------
 const SUPPORTED_SCHEMA = [1, 2, 3];   // v2 = M4 materials/shelters/night, v3 = M5 transfers
@@ -21,7 +22,13 @@ const GATHER_COLOR = 0x6ec46e;
 const STEAL_COLOR = 0xe0563c;
 const GIFT_COLORS = [0x8ce08c, 0xe0b83c, 0xbfcbd8];   // food, wood, stone (v3)
 const GIFT_FADE_TICKS = 10;   // how long a transfer line lingers after the tick
-const MAX_GIFT_LINES = 32;
+// Sized for 6 agents this was 32, which silently truncated once a 100-agent
+// island started moving hundreds of units a tick -- and a picture that drops
+// half the transfers without saying so is worse than one that says "+N more".
+const MAX_GIFT_LINES = 256;
+// Above this population the per-agent list stops being glanceable and the panel
+// switches to a swatch grid plus aggregates. 6 agents fit; 100 do not.
+const ROSTER_LIMIT = 24;
 const BASE_TICKS_PER_SECOND = 12;   // playback rate at 1x
 const SPEEDS = [0.5, 1, 4, 16];
 const DEATH_FADE_TICKS = 14;        // ticks over which a corpse settles
@@ -109,7 +116,11 @@ const state = {
   playing: true,
   speed: 1,
   follow: -1,
-  agents: [],         // { group, body, material, barFill, berries[], deathTick }
+  population: null,   // instanced biped rig (viewer/biped.js)
+  agentCount: 0,
+  deathTicks: null,   // Float64Array, one entry per agent
+  headings: null,     // last known facing, held while an agent stands still
+  agentPos: null,     // interpolated x,z pairs, for the follow camera and picking
   bushes: [],         // { mesh, base }
   trees: [],
   rocks: [],
@@ -118,6 +129,9 @@ const state = {
   construction: false,
   exchange: false,
   giftLines: [],      // pooled line segments, reused every frame
+  hover: -1,          // agent under the cursor, or -1
+  rows: [],           // cached panel elements, per agent
+  rosterMode: true,   // per-agent list (few agents) vs population view (many)
 };
 
 function fatal(title, message) {
@@ -310,66 +324,13 @@ function buildSite(x, z, shelterRadius) {
   return { group, walls, roof, halo, lamp };
 }
 
-function buildAgent(color) {
-  const group = new THREE.Group();
-
-  const material = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(color), roughness: 0.55, metalness: 0.05,
-    flatShading: true, transparent: true,
-  });
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(1.0, 2.0, 3, 10), material);
-  body.position.y = 2.0;
-  body.castShadow = true;
-  group.add(body);
-
-  // A blunt nose so the direction of travel is readable from a high camera.
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1.3, 5), material);
-  nose.position.set(0, 2.2, 1.15);
-  nose.rotation.x = Math.PI / 2;
-  nose.castShadow = true;
-  group.add(nose);
-
-  // Hunger bar: two unlit planes, billboarded at the head each frame.
-  const bar = new THREE.Group();
-  bar.position.y = 5.0;
-  const track = new THREE.Mesh(
-    new THREE.PlaneGeometry(2.8, 0.5),
-    new THREE.MeshBasicMaterial({ color: 0x10161d, transparent: true, opacity: 0.85 }),
-  );
-  bar.add(track);
-  const fillMat = new THREE.MeshBasicMaterial({ color: 0x6ec46e });
-  const barFill = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.3), fillMat);
-  barFill.position.z = 0.01;
-  bar.add(barFill);
-  group.add(bar);
-
-  // Action marker: a disc at the agent's feet, lit while it is gathering or
-  // stealing. Reading the side panel tells you what one agent is doing; this
-  // tells you what all six are doing at once, which is the thing you actually
-  // want when watching for competition.
-  const marker = new THREE.Mesh(
-    new THREE.RingGeometry(1.15, 1.65, 20),
-    new THREE.MeshBasicMaterial({ color: 0x6ec46e, transparent: true, opacity: 0.85,
-                                  side: THREE.DoubleSide }),
-  );
-  marker.rotation.x = -Math.PI / 2;
-  marker.position.y = 0.06;
-  marker.visible = false;
-  group.add(marker);
-
-  // Carried berries, shown as little pips under the bar.
-  const berries = [];
-  const berryGeo = new THREE.SphereGeometry(0.16, 6, 5);
-  const berryMat = new THREE.MeshBasicMaterial({ color: 0xd0466a });
-  for (let i = 0; i < 8; i++) {
-    const pip = new THREE.Mesh(berryGeo, berryMat);
-    pip.visible = false;
-    bar.add(pip);
-    berries.push(pip);
-  }
-
-  return { group, body, nose, material, bar, barFill, fillMat, berries, marker };
-}
+// Which colour the head pip takes for each action, so what a crowd is DOING is
+// readable without selecting anybody. Built once, not per agent per frame.
+const ACTION_PIP = {
+  gather: GATHER_COLOR, steal: STEAL_COLOR,
+  chop: 0x8a5a2b, mine: 0x9aa7b8, build: 0xe0b83c,
+  give_food: 0x8ce08c, give_material: 0xe0b83c,
+};
 
 function loadReplay(replay, origin) {
   validate(replay, origin);
@@ -427,20 +388,16 @@ function loadReplay(replay, origin) {
     });
   }
 
-  const capacity = replay.world.food_capacity;
-  state.agents = replay.agents.map((a, i) => {
-    const built = buildAgent(a.color);
-    // Lay out the berry pips for this replay's carrying capacity.
-    built.berries.forEach((pip, k) => {
-      const shown = Math.min(capacity, built.berries.length);
-      pip.position.set((k - (shown - 1) / 2) * 0.44, -0.42, 0);
-      pip.userData.slot = k;
-    });
-    worldGroup.add(built.group);
-    built.deathTick = deathTickOf(replay, i);
-    built.index = i;
-    return built;
-  });
+  // One instanced rig for the whole population. Replaces ~13 meshes per agent.
+  state.population = createPopulation(
+    replay.agents.length,
+    replay.agents.map((a) => a.color),
+  );
+  worldGroup.add(state.population.group);
+  state.deathTicks = deathTicks(replay);
+  state.agentCount = replay.agents.length;
+  state.headings = new Float64Array(state.agentCount);
+  state.agentPos = new Float64Array(state.agentCount * 2);
 
   camera.position.set(0, radius * 1.55, radius * 2.3);
   controls.target.set(0, 0, 0);
@@ -457,11 +414,22 @@ function loadReplay(replay, origin) {
   applyTick(0);
 }
 
-function deathTickOf(replay, agentIndex) {
-  for (let t = 0; t < replay.ticks.length; t++) {
-    if (replay.ticks[t].a[agentIndex][A_ALIVE] === 0) return t;
+// Every agent's death tick in ONE pass over the replay. The old version scanned
+// all ticks once per agent, which is fine at 6 and a visible load stall at 100.
+function deathTicks(replay) {
+  const n = replay.agents.length;
+  const out = new Float64Array(n).fill(Infinity);
+  let remaining = n;
+  for (let t = 0; t < replay.ticks.length && remaining > 0; t++) {
+    const rows = replay.ticks[t].a;
+    for (let i = 0; i < n; i++) {
+      if (out[i] === Infinity && rows[i][A_ALIVE] === 0) {
+        out[i] = t;
+        remaining--;
+      }
+    }
   }
-  return Infinity;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -478,52 +446,46 @@ function applyTick(t) {
   const cur = state.ticks[i0], nxt = state.ticks[i1];
   const world = state.replay.world;
 
-  for (let i = 0; i < state.agents.length; i++) {
-    const A = state.agents[i];
+  // Night, needed below to decide whether a still agent is sitting out the dark
+  // rather than merely standing about. Derived from the clock the replay already
+  // carries, so no schema change was needed for animation state (design doc
+  // section 5 asked that this be checked before bumping SCHEMA_VERSION -- the
+  // action column plus the cycle is enough, so it was not bumped).
+  const nightNow = state.construction && nightFactor(i0) > 0.5;
+  const pop = state.population;
+  for (let i = 0; i < state.agentCount; i++) {
     const a0 = cur.a[i], a1 = nxt.a[i];
     const alive = a0[A_ALIVE] === 1;
 
     const x = a0[A_X] + (a1[A_X] - a0[A_X]) * f;
     const z = a0[A_Z] + (a1[A_Z] - a0[A_Z]) * f;
-    const hunger = (a0[A_HUNGER] + (a1[A_HUNGER] - a0[A_HUNGER]) * f) / world.max_hunger;
 
     // Corpses settle over a few ticks and then stay put, computed from the tick
     // index rather than accumulated over frames, so scrubbing stays consistent.
-    const dead = Math.min(Math.max((t - A.deathTick) / DEATH_FADE_TICKS, 0), 1);
+    const dead = Math.min(Math.max((t - state.deathTicks[i]) / DEATH_FADE_TICKS, 0), 1);
 
-    A.group.position.set(x, ISLAND_TOP, z);
-    A.group.visible = true;
-    A.material.opacity = 1 - dead * 0.62;
-    A.body.rotation.z = dead * Math.PI * 0.5;
-    A.body.position.y = 2.0 - dead * 1.0;
-    A.nose.visible = dead < 1;
-    A.nose.rotation.z = dead * Math.PI * 0.5;
-    A.bar.visible = dead === 0;
+    const dx = a1[A_X] - a0[A_X], dz = a1[A_Z] - a0[A_Z];
+    const speed = Math.hypot(dx, dz);
+    if (speed > 1e-3) state.headings[i] = Math.atan2(dx, dz);
+    state.agentPos[i * 2] = x;
+    state.agentPos[i * 2 + 1] = z;
+    const action = alive ? state.actionNames[a0[A_ACTION]] : undefined;
 
-    if (alive) {
-      const dx = a1[A_X] - a0[A_X], dz = a1[A_Z] - a0[A_Z];
-      if (dx * dx + dz * dz > 1e-6) {
-        A.group.rotation.y = Math.atan2(dx, dz);
-      }
-      A.fillMat.color.setHex(hunger > 0.55 ? 0x6ec46e : hunger > 0.28 ? 0xe0b83c : 0xe0563c);
-      // Anchor the fill to the left edge rather than the centre.
-      A.barFill.scale.x = Math.max(hunger, 0.001);
-      A.barFill.position.x = -(1 - Math.max(hunger, 0)) * 1.3;
-
-      const food = a0[A_FOOD];
-      A.berries.forEach((pip, k) => { pip.visible = k < food; });
-
-      const action = state.actionNames[a0[A_ACTION]];
-      const MARKERS = { gather: GATHER_COLOR, steal: STEAL_COLOR,
-                        chop: 0x8a5a2b, mine: 0x9aa7b8, build: 0xe0b83c,
-                        give_food: 0x8ce08c, give_material: 0xe0b83c };
-      const color = MARKERS[action];
-      A.marker.visible = color !== undefined;
-      if (color !== undefined) A.marker.material.color.setHex(color);
-    } else {
-      A.marker.visible = false;
-    }
+    pop.setPose(i, {
+      x, z,
+      heading: state.headings[i],
+      speed: alive ? speed : 0,
+      // The fractional tick is the only clock, so a scrubbed pose is stable.
+      // Offset per agent so a crowd does not march in lockstep.
+      phase: t + i * 0.7,
+      action,
+      pipColor: ACTION_PIP[action],
+      food: alive ? a0[A_FOOD] : 0,
+      dead,
+      resting: nightNow && (action === 'idle' || speed <= 1e-3),
+    });
   }
+  pop.commit();
 
   for (let b = 0; b < state.bushes.length; b++) {
     const frac = cur.b[b] / world.bush_capacity;
@@ -706,41 +668,137 @@ function applyNight(f) {
 // Side panel
 // ---------------------------------------------------------------------------
 
+// The side panel has two modes, because one design cannot serve both ends of the
+// population range. Up to ROSTER_LIMIT agents it is the per-agent list the 1.0
+// viewer had -- at six agents, reading every row IS watching the island. Beyond
+// that it becomes a population view: aggregates, an action histogram, and a grid
+// of clickable swatches, with a detail card for whoever is followed or hovered.
+//
+// The old list also re-ran four querySelector calls per row per frame. At 100
+// agents that is ~400 DOM queries and ~700 style writes every frame, for rows
+// nobody can read. Element references are cached at build time now.
 function buildAgentPanel() {
   const host = $('agents');
   host.innerHTML = '';
+  state.rows = [];
+  state.rosterMode = state.replay.agents.length <= ROSTER_LIMIT;
+
+  if (state.rosterMode) {
+    state.replay.agents.forEach((a, i) => {
+      const row = document.createElement('div');
+      row.className = 'agent';
+      row.dataset.i = String(i);
+      row.innerHTML =
+        `<div class="swatch" style="background:${a.color}"></div>` +
+        `<div><div class="name">agent ${a.id}</div>` +
+        `<div class="meta"></div><div class="bar"><i></i></div></div>` +
+        `<div class="act"></div>`;
+      row.addEventListener('click', () => setFollow(state.follow === i ? -1 : i));
+      host.appendChild(row);
+      state.rows.push({
+        row,
+        meta: row.querySelector('.meta'),
+        fill: row.querySelector('.bar > i'),
+        act: row.querySelector('.act'),
+      });
+    });
+    return;
+  }
+
+  const stats = document.createElement('div');
+  stats.className = 'popstats';
+  stats.innerHTML = '<div class="popline"></div><div class="acts"></div>';
+  host.appendChild(stats);
+  const detail = document.createElement('div');
+  detail.className = 'popdetail';
+  detail.textContent = 'click or hover an agent';
+  host.appendChild(detail);
+
+  const grid = document.createElement('div');
+  grid.className = 'swatchgrid';
   state.replay.agents.forEach((a, i) => {
-    const row = document.createElement('div');
-    row.className = 'agent';
-    row.dataset.i = String(i);
-    row.innerHTML =
-      `<div class="swatch" style="background:${a.color}"></div>` +
-      `<div><div class="name">agent ${a.id}</div>` +
-      `<div class="meta"></div><div class="bar"><i></i></div></div>` +
-      `<div class="act"></div>`;
-    row.addEventListener('click', () => setFollow(state.follow === i ? -1 : i));
-    host.appendChild(row);
+    const cell = document.createElement('button');
+    cell.className = 'cell';
+    cell.style.background = a.color;
+    cell.title = `agent ${a.id}`;
+    cell.addEventListener('click', () => setFollow(state.follow === i ? -1 : i));
+    grid.appendChild(cell);
+    state.rows.push({ cell });
   });
+  host.appendChild(grid);
+  state.popLine = stats.querySelector('.popline');
+  state.popActs = stats.querySelector('.acts');
+  state.popDetail = detail;
+}
+
+/** One-line description of an agent at the current tick, for hover and follow. */
+function describeAgent(i) {
+  const tick = state.ticks[Math.min(Math.floor(state.t), state.lastTick)];
+  const a = tick.a[i];
+  const world = state.replay.world;
+  if (a[A_ALIVE] !== 1) return `agent ${i} · dead`;
+  const act = state.actionNames[a[A_ACTION]] ?? '?';
+  let s = `agent ${i} · ${act} · hunger ${a[A_HUNGER].toFixed(0)}`
+        + ` · food ${a[A_FOOD]}/${world.food_capacity}`;
+  if (state.construction) s += ` · w${a[A_WOOD]} s${a[A_STONE]}`;
+  return s;
 }
 
 function updateAgentPanel(tick) {
-  const rows = $('agents').children;
   const world = state.replay.world;
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i], a = tick.a[i];
-    const alive = a[A_ALIVE] === 1;
-    const hunger = a[A_HUNGER] / world.max_hunger;
-    row.classList.toggle('dead', !alive);
-    row.classList.toggle('followed', state.follow === i);
-    row.querySelector('.meta').textContent = alive
-      ? `hunger ${a[A_HUNGER].toFixed(0)} · food ${a[A_FOOD]}/${world.food_capacity}`
-        + (state.construction ? ` · w${a[A_WOOD]} s${a[A_STONE]}` : '')
-      : 'dead';
-    const fill = row.querySelector('.bar > i');
-    fill.style.width = `${Math.max(alive ? hunger : 0, 0) * 100}%`;
-    fill.style.background = hunger > 0.55 ? 'var(--good)' : hunger > 0.28 ? 'var(--warn)' : 'var(--bad)';
-    row.querySelector('.act').textContent = alive ? (state.actionNames[a[A_ACTION]] ?? '?') : '—';
+  if (state.rosterMode) {
+    for (let i = 0; i < state.rows.length; i++) {
+      const r = state.rows[i], a = tick.a[i];
+      const alive = a[A_ALIVE] === 1;
+      const hunger = a[A_HUNGER] / world.max_hunger;
+      r.row.classList.toggle('dead', !alive);
+      r.row.classList.toggle('followed', state.follow === i);
+      r.meta.textContent = alive
+        ? `hunger ${a[A_HUNGER].toFixed(0)} · food ${a[A_FOOD]}/${world.food_capacity}`
+          + (state.construction ? ` · w${a[A_WOOD]} s${a[A_STONE]}` : '')
+        : 'dead';
+      r.fill.style.width = `${Math.max(alive ? hunger : 0, 0) * 100}%`;
+      r.fill.style.background = hunger > 0.55 ? 'var(--good)'
+        : hunger > 0.28 ? 'var(--warn)' : 'var(--bad)';
+      r.act.textContent = alive ? (state.actionNames[a[A_ACTION]] ?? '?') : '—';
+    }
+    return;
   }
+
+  // Population mode: one pass over the tick for aggregates, then style-only
+  // writes on the swatch grid.
+  let alive = 0, hungerSum = 0, food = 0;
+  const counts = new Map();
+  for (let i = 0; i < state.agentCount; i++) {
+    const a = tick.a[i];
+    const isAlive = a[A_ALIVE] === 1;
+    const cell = state.rows[i].cell;
+    cell.classList.toggle('dead', !isAlive);
+    cell.classList.toggle('followed', state.follow === i);
+    if (!isAlive) continue;
+    alive++;
+    hungerSum += a[A_HUNGER];
+    food += a[A_FOOD];
+    const name = state.actionNames[a[A_ACTION]] ?? '?';
+    counts.set(name, (counts.get(name) || 0) + 1);
+  }
+  const meanHunger = alive ? hungerSum / alive : 0;
+  state.popLine.innerHTML =
+    `<b>${alive}</b>/${state.agentCount} alive · mean hunger <b>${meanHunger.toFixed(0)}</b>`
+    + ` · carrying <b>${food}</b> berries`;
+
+  // Action histogram: what the population is doing, as bars. This is the
+  // 100-agent replacement for reading a hundred rows.
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  state.popActs.innerHTML = top.map(([name, n]) => {
+    const pct = Math.round(100 * n / Math.max(alive, 1));
+    return `<div class="actrow"><span>${name}</span>`
+         + `<div class="actbar"><i style="width:${pct}%"></i></div><b>${n}</b></div>`;
+  }).join('');
+
+  const focus = state.follow >= 0 ? state.follow : state.hover;
+  state.popDetail.textContent = focus >= 0 ? describeAgent(focus)
+    : 'click or hover an agent';
 }
 
 function renderSummary() {
@@ -815,11 +873,41 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
     -((e.clientY - rect.top) / rect.height) * 2 + 1,
   );
   raycaster.setFromCamera(ndc, camera);
-  const hits = raycaster.intersectObjects(state.agents.map((a) => a.body), false);
-  if (hits.length) {
-    const idx = state.agents.findIndex((a) => a.body === hits[0].object);
+  if (!state.population) return;
+  // One instanced torso mesh for the whole population: a hit reports which
+  // instance it was, so picking needs no per-agent object list.
+  const hits = raycaster.intersectObject(state.population.pickTarget, false);
+  if (hits.length && hits[0].instanceId !== undefined) {
+    const idx = hits[0].instanceId;
     setFollow(state.follow === idx ? -1 : idx);
   }
+});
+
+// Hovering names an agent without selecting it -- the only way to tell who is
+// who once the population outgrows the roster list.
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!state.replay || !state.population) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1,
+  );
+  raycaster.setFromCamera(ndc, camera);
+  const hits = raycaster.intersectObject(state.population.pickTarget, false);
+  const idx = hits.length && hits[0].instanceId !== undefined ? hits[0].instanceId : -1;
+  if (idx === state.hover) return;
+  state.hover = idx;
+  const label = $('hoverLabel');
+  if (!label) return;
+  if (idx < 0) {
+    label.style.display = 'none';
+  } else {
+    label.style.display = 'block';
+    label.textContent = describeAgent(idx);
+    label.style.borderColor = state.replay.agents[idx].color;
+  }
+  label.style.left = `${e.clientX - rect.left + 14}px`;
+  label.style.top = `${e.clientY - rect.top + 12}px`;
 });
 
 // ---------------------------------------------------------------------------
@@ -924,19 +1012,18 @@ function animate() {
       applyTick(state.t);
     }
 
-    // Billboard the hunger bars. The bar hangs off the agent group, which is
-    // rotated to the direction of travel, so copying the camera quaternion
-    // straight onto it would leave the parent's heading baked in and the bar
-    // would swing edge-on. Cancel the parent first: local = parentWorld^-1 * camera.
-    for (const A of state.agents) {
-      A.group.getWorldQuaternion(_tmpQuat).invert();
-      A.bar.quaternion.copy(_tmpQuat).multiply(camera.quaternion);
-    }
+    // No per-agent billboarding any more: the always-on hunger bar is gone, so
+    // there is nothing to keep facing the camera. It cost a world-quaternion
+    // decomposition and an inversion per agent per frame, and at 100 agents a
+    // hundred floating bars were unreadable anyway -- hunger now lives in the
+    // panel, and on the followed agent's card.
+    //
     // If following, glide the orbit pivot along with the agent while preserving
     // whatever orbit offset the user has dialled in.
-    if (state.follow >= 0) {
-      const A = state.agents[state.follow];
-      _tmpVec.copy(A.group.position).sub(controls.target).multiplyScalar(0.12);
+    if (state.follow >= 0 && state.agentPos) {
+      _tmpVec.set(state.agentPos[state.follow * 2], ISLAND_TOP,
+                  state.agentPos[state.follow * 2 + 1])
+        .sub(controls.target).multiplyScalar(0.12);
       controls.target.add(_tmpVec);
       camera.position.add(_tmpVec);
     }
