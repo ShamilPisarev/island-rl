@@ -147,6 +147,35 @@ each:
   one untried move against the construction wall is persist-until-goal
   options. Both write-ups: ISLAND2_DESIGN.md §10.
 
+  **The third lever is RUN (`arb5-persist`, `--persist`): with the whole build
+  programme collapsed into ONE decision, construction is still exactly zero --
+  and this time it is priced per OPPORTUNITY, so it is a refusal, not an
+  absence.** `ArbiterConfig.persist_until_goal` lets a goal run to its goal
+  state (site fed, inventory full, night over) instead of a 25-tick budget,
+  with a 150-tick backstop; off by default and pinned bit-identical by a golden
+  trajectory checksum and a trainer-buffer checksum taken against the previous
+  commit. Same mixed recipe as arb5-mix plus the flag: learned slots
+  **+18.2 +- 6.5 (7/10)**, level with arb5-mix's +19.1 +- 7.4, 55 ticks clear
+  of the random-goal floor (-37.4 +- 11.1). Over 10 episodes the learned 20
+  spent **0 of 120,000 goal-ticks** on deliver/harvest_wood/harvest_stone while
+  `deliver` sat on their menu at 3.9% of their own decision points and
+  `harvest_wood` at 20.5% -- **zero taken of ~2,700 chances**, against the
+  scripted arbiter's 33%/27% in the same slots, and against a RANDOM minority
+  that does contribute 2-3% and dies 37 ticks sooner. Nights indoors 80.5%, a
+  small regression from 84.0%. Two corrections the lever forced: a **curfew**
+  (safety is tier 1, so dusk now interrupts a running option once, exactly as
+  tier-0 hunger does -- without it the scripted population fell 585.8 -> 525.3
+  and nights indoors to 60.9%), and **`explore`/`raid` may not persist** (a
+  goal state must be REACHABLE: a full-handed explorer can never see "a bush I
+  have room for", so it wandered 150 ticks). Mechanism check: 28.8% of
+  persisted deliver options contain a harvest leg against 0.0% without, shelter
+  options run 73.8 ticks against 22.4 -- but society4's programmes are SHORT
+  (eighty scripted builders finish 60 sites an episode), so the decision on
+  offer is mostly join-a-build, not build-from-scratch. Honest cost, unchanged:
+  what can emerge is when-to-build, never building. Do not re-run. All three
+  §10 levers against the construction wall are now spent. Write-up:
+  ISLAND2_DESIGN.md §10.
+
 * **The seasons world (`config/island2/society4_ramp.yaml`, design doc §11).**
   `society.shock_ramp` scales shock SEVERITY with episode progress (cadence
   and rng untouched; ramp 0 bit-identical, pinned; storm damage clamped at
@@ -588,7 +617,7 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   original verdict was reached where nothing was worth trading: giving stops being
   selected against and the flow turns directional, but it still buys no survival.
   Best checkpoint: `checkpoints/m5b` (497.5 lifespan).
-- `pytest` passes (281 tests).
+- `pytest` passes (363 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -757,6 +786,16 @@ python -m sim.navigation --checkpoint checkpoints/spread-mix/latest.pt --baselin
 # the control that says the probe leg still teaches navigation on its own (99.3%)
 python -m sim.train --config config/nav_probe_mix.yaml --run-name probe-mix-solo --updates 200 \
     --policy-mode individual --init-from checkpoints/m2/latest.pt
+
+# Island 2.0 stage 5, the third lever: persist-until-goal options. --persist has
+# to be passed to BOTH the training and every runner in the evaluation, or the
+# same weights are playing a different game (sim.society warns if they disagree).
+python -m sim.arbiter --config config/island2/society4.yaml --run-name arb5-persist \
+    --learn-agents 20 --gamma 0.997 --updates 150 --persist
+python -m sim.society --config config/island2/society4.yaml --episodes 10 --persist \
+    --arbiter mixed --checkpoint checkpoints/arb5-persist/latest.pt --vs utility
+python -m sim.society --config config/island2/society4.yaml --episodes 10 --persist \
+    --arbiter mixedrandom --vs utility          # the floor, in the same world
 ```
 
 ## Compute budget — runs are longer than they need to be

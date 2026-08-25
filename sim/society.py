@@ -181,6 +181,23 @@ def _nanmean(values: list[float]) -> float:
     return float(arr.mean()) if arr.size else float("nan")
 
 
+def _warn_option_mismatch(arb, checkpoint: str) -> None:
+    """Shout if a policy is being evaluated under a different option contract.
+
+    Persist-until-goal changes what a decision IS, so running a persist-trained
+    arbiter at commit_ticks (or the reverse) is the same weights playing a
+    different game. Silent would be the worst outcome -- that is how a
+    comparison quietly stops being one -- so it is a loud line rather than a
+    raise, since a deliberate transfer test is a legitimate thing to want.
+    """
+    trained = bool(getattr(arb, "trained_persist", False))
+    now = bool(getattr(arb.acfg, "persist_until_goal", False))
+    if trained != now:
+        print(f"WARNING: {checkpoint} was trained with persist_until_goal="
+              f"{trained} and is being evaluated with persist_until_goal={now}. "
+              f"This is a transfer test, not the training contract.")
+
+
 def make_runner(cfg: Config, policy: str, seed: int,
                 acfg: ArbiterConfig | None = None,
                 checkpoint: str | None = None) -> "OptionRunner | None":
@@ -205,6 +222,7 @@ def make_runner(cfg: Config, policy: str, seed: int,
             raise ValueError("--arbiter learned needs --checkpoint")
         arb = load_arbiter(checkpoint, cfg)
         arb.acfg = acfg or arb.acfg
+        _warn_option_mismatch(arb, checkpoint)
         return OptionRunner(arb, cfg, seed=seed)
     if policy == "mixed":
         from .arbiter import MixedArbiter, load_arbiter
@@ -212,6 +230,7 @@ def make_runner(cfg: Config, policy: str, seed: int,
             raise ValueError("--arbiter mixed needs --checkpoint")
         arb = load_arbiter(checkpoint, cfg)
         arb.acfg = acfg or arb.acfg
+        _warn_option_mismatch(arb, checkpoint)
         ids = getattr(arb, "learn_agents", None)
         if ids is None:
             raise ValueError(f"{checkpoint} was not trained mixed (no "
@@ -587,6 +606,12 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=10000)
     ap.add_argument("--commit", type=int, default=None, help="option commitment in ticks")
     ap.add_argument("--softmax", type=float, default=None, help="goal sampling temperature")
+    ap.add_argument("--persist", action="store_true",
+                    help="persist-until-goal options (a goal runs to its goal "
+                         "state, not to a 25-tick budget). Applies to EVERY "
+                         "runner in the comparison, including --vs, so a paired "
+                         "read stays a comparison of choosers.")
+    ap.add_argument("--persist-timeout", type=int, default=None)
     ap.add_argument("--random", action="store_true", help="also run the random-action floor")
     ap.add_argument("--arbiter", default="utility",
                     choices=["utility", "learned", "randomgoal", "mixed", "mixedrandom"],
@@ -610,6 +635,10 @@ def main() -> None:
         overrides["commit_ticks"] = args.commit
     if args.softmax is not None:
         overrides["softmax_temp"] = args.softmax
+    if args.persist:
+        overrides["persist_until_goal"] = True
+    if args.persist_timeout is not None:
+        overrides["persist_timeout"] = args.persist_timeout
     acfg = ArbiterConfig(**overrides)
 
     rep = run_episodes(cfg, args.episodes, args.seed, acfg,

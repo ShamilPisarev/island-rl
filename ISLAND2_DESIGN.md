@@ -985,6 +985,132 @@ compound prize becomes a single-trip prize, which is the shape PPO takes) is
 now the only untried move against the construction wall, and the honest cost
 is unchanged (what emerges is when-to-build, never building).
 
+### Persist-until-goal options (the third lever), pre-registered
+
+Written 2026-08-25, reads registered before the run. `ArbiterConfig.persist_until_goal`
+lets a goal run until its GOAL STATE instead of a 25-tick budget, with
+`persist_timeout` (150 ticks) as a backstop: a `deliver` becomes a whole build
+programme -- walk, harvest, carry, build, harvest again -- taken as ONE
+semi-MDP decision, which is the lever's whole claim. It turns the compound
+prize into a single-trip prize, and single-trip prizes are the one shape this
+project has repeatedly shown PPO will take. Off by default; a golden
+trajectory checksum and a trainer-buffer checksum, both taken against the
+previous commit's code, pin that every stage 2-5 number is untouched.
+
+**The honest cost, unchanged and stated first:** the programme is scripted
+muscle, exactly as `execute_goals` scripts the walk. What can emerge here is
+WHEN to build, never building.
+
+Recipe: `arb5-persist` = `arb5-mix` plus the flag. 20 learned (one per
+household), gamma 0.997, 150 updates, from scratch, individual reward, on
+`society4.yaml`. Pre-registered: any sustained nonzero deliver/harvest share
+from the learned 20 (arb5-mix and arb5-hh: exactly 0.0%); learned-slot paired
+lifespan against arb5-mix's +19.1 +- 7.4; nights indoors not regressing from
+84.0%; the random-goal minority floor in the same world.
+
+**The world control, run before the training.** The flag changes the world for
+the scripted population too, so it was priced first: scripted arbiter, persist
+vs plain, 10 paired islands, **-4.5 +- 4.2 ticks (4/10)** -- nil. Nights
+indoors 85.4% vs 85.7%, completions 60.3 vs 59.3. So the cross-run read against
+arb5-mix is fair to within that.
+
+**Two corrections the lever forced before it could be read at all**, both found
+by running it rather than by thinking about it, and both now written into the
+code they belong in:
+
+* **The curfew.** A 25-tick budget re-opened every agent's choice at least
+  twice inside the dusk lead for free. A 150-tick one does not, so a raid
+  decided at noon runs straight through the night: the scripted population
+  fell 585.8 -> 525.3 ticks, nights indoors 86.4% -> 60.9%, and the commute
+  flattened (day 9.5 / night 5.3 became 12.0 / 11.9). Safety is tier 1 -- the
+  second thing in this world that can kill -- so it now interrupts a running
+  option the way tier-0 hunger already did, ONCE per option, at the start of
+  the dusk ramp (`option_interrupted`, shared by the runner and the trainer).
+  Once, not every tick: re-testing every tick would hand every agent a
+  decision per tick for a third of the day, and a night owl that looks at the
+  sky and forages on keeps its commitment. That is the difference between a
+  curfew and a veto.
+* **`explore` and `raid` do not get to persist.** A goal qualifies only if its
+  viability test encodes a state the world reaches AND that state is
+  REACHABLE while the option runs. `explore` fails the second test and is the
+  sharpest counterexample: its goal state is a perception -- "a loaded bush is
+  in view and I have room for it" -- which an agent with a full inventory can
+  never reach, so a persisted explore is a 150-tick wander (share 27% -> 36%
+  of all intentions). That is stage 2's own "serving out a commitment whose
+  reason had expired", rebuilt by the lever meant to fix a different one.
+  `raid` fails differently: persisting it took raids from 8.3% to 13.4% of
+  intentions, re-opening at the option level the permanent-war mechanic stage
+  2 and stage 4 both closed at the world level. With those two excluded the
+  scripted population is level with plain (the -4.5 above); with them included
+  it was 60 ticks worse.
+
+**The mechanism is live, and its reach in this world is limited -- say both.**
+Scripted arbiter, one episode, deliver options with and without the flag:
+
+| | options | mean len | max len | with a harvest leg | shelter option len |
+|---|---|---|---|---|---|
+| plain | 172 | 6.3 | 25 | **0.0%** | 22.4 |
+| **persist** | 156 | 7.1 | 39 | **28.8%** | **73.8** |
+
+So a persisted `deliver` really does harvest and come back inside one decision
+(0.54 harvests per option, 0 before), and a shelter option really does hold the
+whole night. But in `society4` the programme is SHORT: eighty scripted builders
+finish 60 sites an episode, so "the site is complete" arrives in a few ticks and
+the decision on offer is mostly *join a build in progress*, not *build a shelter
+from scratch*. A world where the programme is long is not this one.
+
+**The result, 10 paired islands: the learned 20 refuse construction with the
+compound prize collapsed into one decision, and the refusal is now measured as
+a refusal rather than as an absence.**
+
+| the learned slots (20 agents) | lifespan | nights in | vs same slots all-scripted |
+|---|---|---|---|
+| **persist options (`arb5-persist`)** | **594.4** | 80.5% | **+18.2 +- 6.5 (7/10)** |
+| individual reward, 25-tick options (`arb5-mix`) | 594.5 | 84.0% | +19.1 +- 7.4 (7/10) |
+| household reward (`arb5-hh`) | 598.0 | 91.7% | +22.6 +- 7.0 (9/10) |
+| random-goal minority, persist world (floor) | 538.8 | 73.3% | **-37.4 +- 11.1 (1/10)** |
+
+* **Construction contribution is exactly zero, and this time it is priced per
+  OPPORTUNITY (rule 6).** Over 10 episodes the learned 20 spent **0 of 120,000
+  goal-ticks** on `deliver`, `harvest_wood` and `harvest_stone` (store_material
+  182 ticks, 0.15%). The menu was open: at their own decision points `deliver`
+  was available on **3.9%** and `harvest_wood` on **20.5%**, and across ~2,700
+  such chances they took **zero**. The scripted arbiter in the same slots took
+  33.3% / 27.0% of its chances. This is the strongest form of the finding in the
+  file: not "the option never came up", not "the credit never arrived" -- the
+  option was on the menu, the programme was one decision, and the policy said no
+  every single time.
+* **The floor says the refusal is a choice, not the menu.** A random-goal
+  minority in the same slots contributes construction (harvest_wood 2.2%,
+  store_material 2.4%, deliver 0.7%) -- and dies 37 ticks sooner. So the goals
+  are reachable by a chooser that is not optimising, and the learned chooser
+  optimises them away.
+* **Survival is level with arb5-mix**: +18.2 +- 6.5 against +19.1 +- 7.4, well
+  inside one SE, and 55 ticks clear of the floor. Population paired +4.6 +- 3.5;
+  spillover to the scripted 80 +1.2 +- 3.3, nil at this ratio, as before.
+* **Nights indoors 80.5%, a small regression** from arb5-mix's 84.0% and below
+  the scripted 80's own 83.8% in the same run. It comes with the learned 20
+  WANTING shelter far more (56.5% of their goal-ticks against the scripted
+  33.0%), which is what a persisted night option looks like from the tick side.
+  Read it as level-to-slightly-worse, not as a gain.
+* The learned 20 re-decide ~4x as often as scripted agents in the same slots
+  (184 decisions per agent per episode against 47): they choose goals whose goal
+  state arrives quickly, which is the same preference the construction zero
+  expresses, seen from the cadence.
+
+Do not re-run this configuration. **What it closes:** the three levers section
+10 listed against the construction wall -- mixed population, household-level
+baseline, persist-until-goal options -- are now all run, and all three leave
+construction contribution at zero. The wall is not the state distribution
+(arb5-mix), not credit assignment (arb5-hh), and -- with the caveat above that
+this world's programmes are short -- not the compound structure of the prize
+either (this run). What is left is the plainest reading: **an option-level
+policy trained on survival will take every good the society already provides
+and contribute to none of it, as long as declining is individually free.** The
+untried moves are all mechanic-level -- make the good excludable (only
+contributors sleep inside), or make the contribution a single one-decision act
+with an immediate personal return -- and both change what the question is.
+
 ### The stage-5 verdict, one paragraph
 
 The option level did exactly what the design doc promised and no more: it
@@ -1010,6 +1136,13 @@ slots by shedding its feuds -- while still refusing the compound good
 entirely. So the standing verdict narrows to construction: PPO at the option
 level can learn WHEN to use what a society provides, and still never helps
 provide it.
+
+A second amendment, from `arb5-persist`: that sentence is now measured at the
+level rule 6 demands. The construction goals were on the learned agents' menu
+at their own decision points (`deliver` 3.9%, `harvest_wood` 20.5%), the whole
+build programme was available as ONE decision, and across ~2,700 chances they
+took zero -- while a random chooser in the same slots contributed 2-3% and paid
+37 ticks for it. The refusal is a decision, repeatedly and cheaply made.
 
 ## 11. The seasons world: escalating shocks (`society4_ramp.yaml`)
 

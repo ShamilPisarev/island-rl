@@ -62,8 +62,9 @@ from .agents import IDLE, num_actions, observation_dim
 from .config import Config, load_config
 from .obsview import ObsView
 from .policy import ActorCritic
-from .utility import (GOAL_NAMES, N_GOALS, REST, ArbiterConfig, agent_traits,
-                      compute_needs, goal_availability)
+from .utility import (GOAL_NAMES, N_GOALS, NEED_SAFETY, REST, ArbiterConfig,
+                      agent_traits, commit_budget, compute_needs,
+                      goal_availability, option_interrupted)
 from .world import World
 
 
@@ -218,6 +219,8 @@ class _EnvState:
         # opens a transition, so keying first-decision off has_open would make
         # it redecide every tick and turn its commitment decorative.
         self.started = np.zeros(n, dtype=bool)
+        # curfew bookkeeping, mirroring OptionRunner.decided_safe
+        self.decided_safe = np.ones(n, dtype=bool)
 
 
 class ArbiterTrainer:
@@ -308,14 +311,12 @@ class ArbiterTrainer:
         return np.where(self.learn_mask, shared, rewards)
 
     def _redecide_mask(self, env: _EnvState, view: ObsView) -> np.ndarray:
-        from .utility import (FORAGE, GOAL_STEAL, DRAW_FOOD, GOAL_RAID,
-                              NEED_HUNGER, goal_viable)
+        from .utility import goal_viable
         needs = compute_needs(view, self.cfg)
-        viable = goal_viable(view, self.cfg, env.goals)
-        emergency = needs[:, NEED_HUNGER] >= self.acfg.critical
-        pursuing_food = np.isin(env.goals, (FORAGE, GOAL_STEAL, DRAW_FOOD, GOAL_RAID))
-        return (~viable) | (env.ticks_left <= 0) | (emergency & ~pursuing_food) \
-            | (~env.started)
+        viable = goal_viable(view, self.cfg, env.goals, self.acfg)
+        interrupted = option_interrupted(needs, env.goals, self.acfg,
+                                         env.decided_safe)
+        return (~viable) | (env.ticks_left <= 0) | interrupted | (~env.started)
 
     def collect(self, buffers: dict) -> None:
         """Advance every env `rollout_ticks`, appending completed transitions."""
@@ -352,7 +353,9 @@ class ArbiterTrainer:
                         env.dec_mask[lrows] = available[lrows]
                         env.goals[lrows] = g.numpy()
                         env.has_open[lrows] = True
-                    env.ticks_left[rows] = acfg.commit_ticks
+                    env.ticks_left[rows] = commit_budget(acfg, env.goals[rows])
+                    env.decided_safe[rows] = (
+                        compute_needs(view, cfg)[rows, NEED_SAFETY] <= 0.0)
                     env.reward_acc[rows] = 0.0
                     env.disc[rows] = 1.0
                     env.started[rows] = True
@@ -365,7 +368,7 @@ class ArbiterTrainer:
 
                 mask = env.world.action_mask()
                 actions = execute_goals(env.goals, ObsView(env.obs, cfg), cfg,
-                                        mask, env.explore_heading)
+                                        mask, env.explore_heading, acfg)
                 res = env.world.step(actions)
                 env.reward_acc += env.disc * self._train_rewards(env, res.rewards)
                 env.disc *= gamma
@@ -390,6 +393,7 @@ class ArbiterTrainer:
                     env.ticks_left[:] = 0
                     env.has_open[:] = False
                     env.started[:] = False
+                    env.decided_safe[:] = True
 
     def _close(self, buffers: dict, e: int, env: _EnvState, rows: np.ndarray,
                next_obs: np.ndarray, done: bool) -> None:
@@ -458,7 +462,9 @@ class ArbiterTrainer:
                         batch_mask.append(available[rows])
                         batch_agent.append(rows)
                         env.goals[rows] = choice[rows]
-                        env.ticks_left[rows] = self.acfg.commit_ticks
+                        env.ticks_left[rows] = commit_budget(self.acfg, env.goals[rows])
+                        env.decided_safe[rows] = (
+                            compute_needs(view, self.cfg)[rows, NEED_SAFETY] <= 0.0)
                         env.started[rows] = True   # bookkeeping only; no PPO buffer
                         fresh = redecide & (env.goals == EXPLORE)
                         if fresh.any():
@@ -468,7 +474,8 @@ class ArbiterTrainer:
                     env.ticks_left -= 1
                     mask = env.world.action_mask()
                     actions = execute_goals(env.goals, ObsView(env.obs, self.cfg),
-                                            self.cfg, mask, env.explore_heading)
+                                            self.cfg, mask, env.explore_heading,
+                                            self.acfg)
                     res = env.world.step(actions)
                     env.obs = res.obs
                     if res.episode_done:
@@ -477,6 +484,7 @@ class ArbiterTrainer:
                         env.ticks_left[:] = 0
                         env.has_open[:] = False
                         env.started[:] = False
+                        env.decided_safe[:] = True
             obs = np.concatenate(batch_obs)
             goals = torch.as_tensor(np.concatenate(batch_goal))
             masks = torch.as_tensor(np.concatenate(batch_mask))
@@ -605,6 +613,12 @@ def save_checkpoint(path: Path, trainer: ArbiterTrainer, update: int) -> None:
         "learn_agents": (None if trainer.learn_mask.all()
                          else trainer.learn_agents.tolist()),
         "household_reward": trainer.household_reward,   # provenance only
+        # The option contract this policy was trained under. Evaluating a
+        # persist-trained arbiter at commit_ticks (or the reverse) is a
+        # different game with the same weights, so the checkpoint carries it and
+        # sim.society warns when the two disagree.
+        "persist_until_goal": trainer.acfg.persist_until_goal,
+        "persist_timeout": trainer.acfg.persist_timeout,
     }, path)
 
 
@@ -624,6 +638,7 @@ def load_arbiter(path: str | Path, cfg: Config | None = None,
     arb = LearnedArbiter(policy, cfg, seed=blob.get("seed", 0),
                          deterministic=deterministic)
     arb.learn_agents = blob.get("learn_agents")   # None unless mixed-trained
+    arb.trained_persist = bool(blob.get("persist_until_goal", False))
     return arb
 
 
@@ -653,6 +668,15 @@ def main() -> None:
                          "worlds. Households are round-robin (agent i -> "
                          "household i%%H), so N=num_households puts one learned "
                          "agent in every household. 0 = all learned.")
+    ap.add_argument("--persist", action="store_true",
+                    help="persist-until-goal options: a goal whose viability "
+                         "test encodes a real goal state runs until it reaches "
+                         "it (site fed, inventory full, night over) instead of "
+                         "commit_ticks, so a whole build programme is ONE "
+                         "semi-MDP decision. What can emerge is when-to-build, "
+                         "never building.")
+    ap.add_argument("--persist-timeout", type=int, default=None,
+                    help="backstop for --persist (default 150 ticks)")
     ap.add_argument("--household-reward", action="store_true",
                     help="learned agents train on their HOUSEHOLD's mean reward "
                          "instead of their own -- the household-level baseline. "
@@ -671,8 +695,19 @@ def main() -> None:
     tcfg = TrainConfig(**kw)
     torch.set_num_threads(cfg.ppo.threads or 4)
 
+    akw = {}
+    if args.persist:
+        akw["persist_until_goal"] = True
+    if args.persist_timeout is not None:
+        akw["persist_timeout"] = args.persist_timeout
+    acfg = ArbiterConfig(**akw)
+    if args.persist:
+        print(f"persist-until-goal options on (backstop "
+              f"{acfg.persist_timeout} ticks)")
+
     learn = np.arange(args.learn_agents) if args.learn_agents else None
-    trainer = ArbiterTrainer(cfg, tcfg, seed=args.seed, learn_agents=learn,
+    trainer = ArbiterTrainer(cfg, tcfg, seed=args.seed, acfg=acfg,
+                             learn_agents=learn,
                              household_reward=args.household_reward)
     if learn is not None:
         print(f"mixed population: agents 0..{args.learn_agents - 1} learn, "

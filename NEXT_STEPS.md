@@ -47,7 +47,21 @@ any nonzero is news).
     8.8%, nights 91.7%, +22.6 +- 7.0), write it up in ISLAND2_DESIGN.md and
     CLAUDE.md, and commit. Pre-register the reads before the run.
 
-## 2. Persist-until-goal options (the one untried move against the building wall, ~1 session)
+## 2. Persist-until-goal options — DONE 2026-08-25 (`arb5-persist`)
+
+Result: the wall stands with the whole programme collapsed into one decision.
+Learned 20 spent 0 of 120,000 goal-ticks on deliver/harvest, with `deliver` on
+their menu at 3.9% of their own decision points and `harvest_wood` at 20.5% —
+zero taken of ~2,700 chances (scripted: 33%/27%; a RANDOM minority contributes
+2-3% and dies 37 ticks sooner). Learned-slot edge +18.2 +- 6.5 (7/10), level
+with arb5-mix. Nights indoors 80.5% (small regression from 84.0%). Two
+corrections the lever forced: the dusk curfew, and excluding explore/raid from
+persistence. Do not re-run. Write-up: ISLAND2_DESIGN.md §10. All three levers
+against the construction wall are now spent; what is left is mechanic-level
+(make shelter excludable, or make contributing a single act with an immediate
+personal return). Original item kept below for the record.
+
+## 2-orig. Persist-until-goal options (the one untried move against the building wall, ~1 session)
 
 **What**: an option that runs until its GOAL STATE (site complete, delivery
 made) instead of a 25-tick budget, so a whole build programme is ONE semi-MDP

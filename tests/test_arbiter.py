@@ -343,3 +343,118 @@ def test_mixedrandom_is_runnable_and_reports_the_split(cfg):
     rep = run_episodes(cfg, 1, 10000, policy="mixedrandom")
     assert rep.learn_mask is not None
     assert rep.learn_mask.sum() == cfg.society.num_households
+
+
+# --- persist-until-goal options ----------------------------------------------
+
+def persist_acfg(timeout=150):
+    return ArbiterConfig(persist_until_goal=True, persist_timeout=timeout)
+
+
+def test_persist_trainer_redecide_matches_option_runner(cfg):
+    """The parity test again, under the new contract. The trainer duplicates
+    OptionRunner's redecide rule, and persistence changes both the budget and
+    `deliver`'s termination -- so the duplication is re-pinned rather than
+    assumed to have survived."""
+    acfg = persist_acfg()
+    runner = OptionRunner(UtilityArbiter(cfg, acfg), cfg, seed=5)
+    world = World(cfg, seed=5)
+    obs = world.observations()
+    for _ in range(40):
+        obs = world.step(runner.act(obs, world.action_mask())).obs
+
+    trainer = ArbiterTrainer(cfg, TrainConfig(num_envs=1), seed=5, acfg=acfg)
+    env = trainer.envs[0]
+    env.goals = runner.goals.copy()
+    env.ticks_left = runner.ticks_left.copy()
+    env.started[:] = True
+    view = ObsView(obs, cfg)
+    got = trainer._redecide_mask(env, view)
+
+    from sim.utility import (DRAW_FOOD, FORAGE, GOAL_RAID, GOAL_STEAL,
+                             NEED_HUNGER, goal_viable)
+    needs = compute_needs(view, cfg)
+    viable = goal_viable(view, cfg, runner.goals, acfg)
+    emergency = needs[:, NEED_HUNGER] >= acfg.critical
+    pursuing = np.isin(runner.goals, (FORAGE, GOAL_STEAL, DRAW_FOOD, GOAL_RAID))
+    want = (~viable) | (runner.ticks_left <= 0) | (emergency & ~pursuing)
+    assert np.array_equal(got, want)
+
+
+def test_one_transition_per_decision_survives_persistence(cfg):
+    """The SMDP contract under the longer options: gamma^k is still an exact
+    power of gamma for the k ticks the option ran, k >= 1, and now bounded by the
+    BACKSTOP rather than by commit_ticks. An option that ran past 25 ticks is the
+    thing the lever is for, so its presence is asserted too."""
+    acfg = persist_acfg()
+    tcfg = TrainConfig(num_envs=2, rollout_ticks=200)
+    trainer = ArbiterTrainer(cfg, tcfg, seed=0, acfg=acfg)
+    buffers = {k: [] for k in ("stream", "obs", "goal", "logprob", "value",
+                               "mask", "reward", "discount", "next_obs",
+                               "done", "agent")}
+    trainer.collect(buffers)
+    d = np.asarray(buffers["discount"])
+    ks = np.log(d) / np.log(tcfg.gamma)
+    assert np.allclose(ks, np.round(ks), atol=1e-6)
+    assert (np.round(ks) >= 1).all()
+    assert (np.round(ks) <= acfg.persist_timeout + 1).all()
+    assert (np.round(ks) > acfg.commit_ticks).any(), "no option outlived 25 ticks"
+
+
+def test_persisted_menu_is_the_same_for_every_chooser(cfg):
+    """Menu parity has to hold under the flag too: persistence widens `deliver`
+    (an empty-handed agent may start a programme), and it must widen it for the
+    scripted scorer and the learned chooser identically or the headline
+    comparison is two different games."""
+    acfg = persist_acfg()
+    world = World(cfg, seed=3)
+    view = ObsView(world.observations(), cfg)
+    menu = goal_mask(view, cfg, acfg)
+    plain = goal_mask(view, cfg, ArbiterConfig())
+    from sim.utility import DELIVER
+    assert (menu[:, DELIVER] >= plain[:, DELIVER]).all()
+    rng = np.random.default_rng(0)
+    mask = world.action_mask()
+    for chooser in (UtilityArbiter(cfg, acfg), RandomGoalArbiter(cfg, acfg),
+                    fresh_arbiter(cfg, deterministic=False)):
+        chooser.acfg = acfg
+        goals = chooser.choose(view, mask, rng)
+        assert menu[np.arange(view.n), goals].all(), type(chooser).__name__
+
+
+def test_checkpoint_carries_the_option_contract(cfg, tmp_path):
+    """Evaluating a persist-trained arbiter at commit_ticks is the same weights
+    playing a different game, so the contract is provenance the checkpoint
+    carries rather than something the caller has to remember."""
+    tcfg = TrainConfig(num_envs=1, rollout_ticks=30)
+    trainer = ArbiterTrainer(cfg, tcfg, seed=3, acfg=persist_acfg(),
+                             learn_agents=np.arange(4))
+    path = tmp_path / "latest.pt"
+    save_checkpoint(path, trainer, update=1)
+    assert load_arbiter(path, cfg).trained_persist is True
+
+    plain = ArbiterTrainer(cfg, tcfg, seed=3, learn_agents=np.arange(4))
+    path2 = tmp_path / "plain.pt"
+    save_checkpoint(path2, plain, update=1)
+    assert load_arbiter(path2, cfg).trained_persist is False
+
+
+def test_persist_off_leaves_the_trainer_bit_identical(cfg):
+    """Companion to tests/test_utility.py's golden checksum, on the gradient
+    side: with the flag off the buffers a rollout produces are byte-for-byte what
+    they were before the lever existed."""
+    import hashlib
+    def digest(acfg):
+        tcfg = TrainConfig(num_envs=2, rollout_ticks=130)
+        trainer = ArbiterTrainer(cfg, tcfg, seed=0, acfg=acfg,
+                                 learn_agents=np.arange(4), household_reward=True)
+        buffers = {k: [] for k in ("stream", "obs", "goal", "logprob", "value",
+                                   "mask", "reward", "discount", "next_obs",
+                                   "done", "agent")}
+        trainer.collect(buffers)
+        h = hashlib.sha256()
+        for k in sorted(buffers):
+            h.update(np.asarray(buffers[k]).tobytes())
+        return len(buffers["goal"]), h.hexdigest()
+    assert digest(None) == digest(ArbiterConfig(persist_timeout=999))
+    assert digest(None) == (118, digest(ArbiterConfig())[1])

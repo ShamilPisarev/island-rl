@@ -359,3 +359,173 @@ def test_goal_names_and_tables_agree():
     assert len(GOAL_NAMES) == N_GOALS
     assert RESTORE.shape[0] == N_GOALS
     assert GOAL_TIER.shape[0] == N_GOALS
+
+
+# --- persist-until-goal options (stage 5, lever 3) ---------------------------
+#
+# The flag turns a 25-tick budget into "run until the goal state", so a whole
+# build programme is one semi-MDP decision. Two things have to be pinned hard:
+# that it changes NOTHING when off (every result in this project was measured
+# under commit_ticks), and that the pieces the design doc warns about -- the
+# tier-0 interruption and the goal-state termination -- still hold when it is on.
+
+PERSIST_OFF_CHECKSUM = "60d41e718002d8f854175d65cb454fad09951e54b83a90991d87be550d587497"
+
+
+def _persist_cfg(cfg2):
+    return cfg2.replace(**{"world.num_agents": 12, "world.max_ticks": 240,
+                           "society.num_households": 4, "bushes.num_clusters": 4})
+
+
+def _trajectory_checksum(cfg, acfg=None, ticks=240):
+    import hashlib
+    w = World(cfg, seed=5)
+    runner = utility_runner(cfg, seed=5, acfg=acfg)
+    obs = w.observations()
+    h = hashlib.sha256()
+    for _ in range(ticks):
+        actions = runner.act(obs, w.action_mask())
+        res = w.step(actions)
+        obs = res.obs
+        h.update(actions.tobytes())
+        h.update(w.pool.x.tobytes())
+        h.update(w.pool.hunger.tobytes())
+        if res.episode_done:
+            break
+    return h.hexdigest()
+
+
+def test_persist_off_is_bit_identical(cfg2):
+    """The golden constant was taken from the code as it stood BEFORE this lever
+    existed (checksummed side by side against the previous commit), so a future
+    edit to the persist paths that leaks into the default world fails here rather
+    than silently invalidating every stage 2-5 number."""
+    from sim.config import load_config as _load
+    cfg = _persist_cfg(cfg2)
+    ROOT = Path(__file__).resolve().parent.parent
+    cfg4 = _load(ROOT / "config" / "island2" / "society4.yaml").replace(
+        **{"world.num_agents": 12, "world.max_ticks": 240,
+           "society.num_households": 4, "bushes.num_clusters": 4})
+    assert _trajectory_checksum(cfg4) == PERSIST_OFF_CHECKSUM
+    # ...and the persist knobs are inert while the flag is off
+    assert _trajectory_checksum(
+        cfg4, ArbiterConfig(persist_timeout=999)) == PERSIST_OFF_CHECKSUM
+    del cfg
+
+
+def test_persist_extends_only_the_goals_with_a_reachable_goal_state():
+    """Five goals are excluded and each exclusion is a measured symptom, not a
+    taste call: `rest` never fails its viability test (paralysis, not
+    persistence), the gifts are single-tick, `steal`/`raid` are opportunistic by
+    construction (stage 2's permanent-war correction -- persisting raid took it
+    from 8.3% to 13.4% of intentions), and `explore`'s goal state is a
+    PERCEPTION a full-handed agent can never reach, so persisting it produced a
+    150-tick wander (27% -> 36% of intentions)."""
+    from sim.utility import (DELIVER, GOAL_GIVE_MATERIAL, GOAL_RAID,
+                             commit_budget)
+    acfg = ArbiterConfig(persist_until_goal=True, persist_timeout=150)
+    goals = np.array([DELIVER, FORAGE, SHELTER, REST, GOAL_STEAL,
+                      GOAL_GIVE_FOOD, GOAL_GIVE_MATERIAL, EXPLORE, GOAL_RAID])
+    got = commit_budget(acfg, goals)
+    want = np.array([150, 150, 150, 25, 25, 25, 25, 25, 25])
+    assert np.array_equal(got, want)
+    # off: everything is commit_ticks, whatever the timeout says
+    assert (commit_budget(ArbiterConfig(persist_timeout=999), goals) == 25).all()
+
+
+def test_the_curfew_fires_once_and_only_under_persistence(cfg2):
+    """A 150-tick option decided at noon must not run through the night -- the
+    scripted population lost 60 ticks of life and a quarter of its sheltered
+    nights to exactly that. But it fires ONCE per option: re-testing every tick
+    would hand every agent a decision per tick for a third of the day, and a
+    night owl that looks at the sky and forages on keeps its commitment."""
+    from sim.utility import NEED_SAFETY, option_interrupted
+    n = 3
+    needs = np.zeros((n, 7))
+    needs[:, NEED_SAFETY] = 0.4                       # the dusk ramp has begun
+    goals = np.array([FORAGE, SHELTER, FORAGE])
+    decided_safe = np.array([True, True, False])      # the third looked already
+    off = option_interrupted(needs, goals, ArbiterConfig(), decided_safe)
+    on = option_interrupted(needs, goals,
+                            ArbiterConfig(persist_until_goal=True), decided_safe)
+    assert not off.any(), "the curfew must not touch the 25-tick world"
+    assert list(on) == [True, False, False]
+
+
+def test_persisted_deliver_survives_running_out_of_material(cfg2):
+    """The goal state is 'the site is fed', not 'my hands are empty'. Cutting the
+    option when the carried unit is spent is precisely the compound-prize wall
+    this lever exists to remove -- six units at a capacity of two is three
+    separate decisions otherwise."""
+    from sim.utility import DELIVER
+    cfg = _persist_cfg(cfg2)
+    w = World(cfg, seed=11)
+    w.pool.wood[:] = 0.0
+    w.pool.stone[:] = 0.0
+    view = ObsView(w.observations(), cfg)
+    goals = np.full(cfg.world.num_agents, DELIVER, dtype=np.int64)
+    plain = goal_viable(view, cfg, goals, ArbiterConfig())
+    persist = goal_viable(view, cfg, goals,
+                          ArbiterConfig(persist_until_goal=True))
+    assert not plain.any(), "empty-handed deliver should die without the flag"
+    assert persist.any(), "the programme must outlive the carried unit"
+
+
+def test_persisted_deliver_goes_and_fetches_instead_of_idling(cfg2):
+    """The supply leg: an agent that chose 'build that shelter' and is holding
+    nothing walks at a node and harvests. This is the honest cost of the lever --
+    the programme is scripted muscle, so what can emerge is when-to-build."""
+    from sim.utility import CHOP, DELIVER, MINE
+    cfg = _persist_cfg(cfg2)
+    w = World(cfg, seed=11)
+    w.pool.wood[:] = 0.0
+    w.pool.stone[:] = 0.0
+    view = ObsView(w.observations(), cfg)
+    mask = w.action_mask()
+    goals = np.full(cfg.world.num_agents, DELIVER, dtype=np.int64)
+    off = execute_goals(goals, view, cfg, mask, np.zeros(cfg.world.num_agents,
+                                                         dtype=np.int64))
+    on = execute_goals(goals, view, cfg, mask,
+                       np.zeros(cfg.world.num_agents, dtype=np.int64),
+                       ArbiterConfig(persist_until_goal=True))
+    # Without the flag an empty-handed deliverer can only trudge to the site and
+    # stand there -- it is not a state the arbiter can reach (deliver is masked
+    # out when you carry nothing), which is exactly why the programme needed the
+    # widening.
+    assert not np.isin(off, (CHOP, MINE)).any()
+    fetching = np.isin(on, (CHOP, MINE)) | (on != off)
+    assert fetching.any(), "the supply leg never fired"
+    assert set(np.unique(on)).issubset(set(range(8)) | {CHOP, MINE, IDLE})
+
+
+def test_tier0_interruption_still_ends_a_persisted_option(cfg2):
+    """utility.py's own warning: the semi-MDP bookkeeping is the one place this
+    can silently rot. A 150-tick commitment must not let a committed builder walk
+    past its own death."""
+    from sim.utility import DELIVER
+    cfg = _persist_cfg(cfg2)
+    w = World(cfg, seed=9)
+    acfg = ArbiterConfig(persist_until_goal=True)
+    runner = OptionRunner(UtilityArbiter(cfg, acfg, seed=0), cfg, seed=0)
+    runner.goals[:] = DELIVER
+    runner.ticks_left[:] = acfg.persist_timeout
+    w.pool.hunger[:] = cfg.hunger.max * 0.05
+    runner.act(w.observations(), w.action_mask())
+    assert runner.last_decided.all(), "a starving agent kept building"
+
+
+def test_persist_actually_lengthens_options_in_a_real_episode(cfg2):
+    """The population-level read: fewer decisions per agent over the same ticks,
+    with the commitment holding rather than the agents dying earlier."""
+    cfg = _persist_cfg(cfg2)
+    def decisions(acfg):
+        w = World(cfg, seed=7)
+        runner = utility_runner(cfg, seed=7, acfg=acfg)
+        obs = w.observations()
+        for _ in range(240):
+            res = w.step(runner.act(obs, w.action_mask()))
+            obs = res.obs
+            if res.episode_done:
+                break
+        return float(runner.decisions.mean())
+    assert decisions(ArbiterConfig(persist_until_goal=True)) < decisions(ArbiterConfig())

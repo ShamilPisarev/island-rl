@@ -140,6 +140,44 @@ BASE_APPEAL = np.zeros(N_GOALS)
 BASE_APPEAL[EXPLORE] = 0.05
 BASE_APPEAL[REST] = 0.02
 
+# Which goals may run to their goal state under `persist_until_goal`. A goal
+# qualifies on two counts, and the second one was learned by running it: its
+# `goal_viable` test must encode something the WORLD reaches (inventory full,
+# site fed, night over, pile emptied) AND that state must be REACHABLE while the
+# option runs. Five goals fail one test or the other, and all five keep
+# `commit_ticks` even when the flag is on:
+#
+#   * `rest` never fails its test at all -- an unbounded rest is paralysis, not
+#     persistence.
+#   * the two gifts are single-tick by nature.
+#   * `steal` is opportunistic by construction, never something you follow
+#     somebody around for (stage 2's permanent-war correction). `raid` is the
+#     same correction on a fatter prize, and persisting it measured raids rising
+#     from 8.3% to 13.4% of all intentions -- re-opening at the option level the
+#     mechanic that correction closed at the world level.
+#   * `explore` looked like the clearest case and is the sharpest counterexample.
+#     Its goal state is a PERCEPTION -- "a loaded bush is in view and I have room
+#     for it" -- and an agent with a full inventory can never reach it, so a
+#     persisted explore is a 150-tick wander. Measured, its share went 27% ->
+#     36% of all intentions: stage 2's own "serving out a commitment whose reason
+#     had expired" finding, rebuilt by the lever meant to fix a different one.
+PERSIST_GOALS = np.zeros(N_GOALS, dtype=bool)
+PERSIST_GOALS[[FORAGE, HARVEST_WOOD, HARVEST_STONE, DELIVER, SHELTER,
+               STORE_FOOD, STORE_MATERIAL, DRAW_FOOD, DRAW_MATERIAL]] = True
+
+
+def commit_budget(acfg: ArbiterConfig, goals: np.ndarray) -> np.ndarray:
+    """Ticks each freshly-decided goal is committed for.
+
+    One function, used by `OptionRunner`, the trainer and the imitation loop, so
+    the three cannot drift on what a commitment is worth -- the same reason
+    `goal_viable` is one function.
+    """
+    if not acfg.persist_until_goal:
+        return np.full(np.shape(goals), acfg.commit_ticks, dtype=np.int64)
+    return np.where(PERSIST_GOALS[goals], acfg.persist_timeout,
+                    acfg.commit_ticks).astype(np.int64)
+
 
 @dataclass(frozen=True)
 class ArbiterConfig:
@@ -164,6 +202,24 @@ class ArbiterConfig:
     # permanent war, so the correction belongs at availability, not in the number.
     raid_hunger: float = 0.5        # hunger deficit at which desperation qualifies
     raid_grudge: float = 0.5        # remembered theft at which revenge qualifies
+    # --- stage 5 lever 3: persist-until-goal options. OFF by default, so every
+    # result in this project stays bit-identical (pinned by a test).
+    #
+    # WHAT IT CHANGES. With it off, an option runs `commit_ticks` (25) and is
+    # then re-decided whether or not it achieved anything -- so a build
+    # programme, which costs six carried units at a capacity of two, is at least
+    # three separate decisions with two uncreditable harvest legs between them.
+    # That is 1.0's compound-prize wall rebuilt one level up, and it is the one
+    # thing the measured 0.0% construction share of every learned population is
+    # consistent with. With it on, a goal whose viability test encodes a real
+    # GOAL STATE runs until that state is reached, with `persist_timeout` as a
+    # backstop -- so a whole shelter is one semi-MDP decision.
+    #
+    # THE HONEST COST, and it goes in every write-up: what can emerge at this
+    # level is WHEN to build, never building. The programme itself is scripted,
+    # exactly as `execute_goals` scripts the walk. See design doc section 7.
+    persist_until_goal: bool = False
+    persist_timeout: int = 150      # backstop only; ~2 shelters' worth of ticks
 
 
 def agent_traits(num_agents: int, seed: int, cfg: ArbiterConfig) -> np.ndarray:
@@ -330,9 +386,17 @@ def goal_availability(view: ObsView, cfg: Config, needs: np.ndarray,
         set_target(HARVEST_STONE, d_rock)
         available[:, HARVEST_STONE] &= room_for_material
 
-        d_site, _, _, _ = view.sites.nearest(deliverable_sites(view, cfg))
+        d_site, _, _, _ = view.sites.nearest(programme_sites(view, cfg, acfg))
         set_target(DELIVER, d_site)
-        available[:, DELIVER] &= view.material_carried > 0.0
+        if acfg.persist_until_goal:
+            # A persisted `deliver` is the whole programme, so it is available to
+            # an agent with empty hands PROVIDED it can restock: the option only
+            # means something if the harvest leg has somewhere to go.
+            d_supply, _, _, _ = resupply_leg(view, cfg, acfg)
+            available[:, DELIVER] &= ((view.material_carried > 0.0)
+                                      | np.isfinite(d_supply))
+        else:
+            available[:, DELIVER] &= view.material_carried > 0.0
 
         d_home, _, _ = shelter_target(view, cfg)
         set_target(SHELTER, d_home)
@@ -533,6 +597,49 @@ def deliverable_sites(view: ObsView, cfg: Config) -> np.ndarray:
     return incomplete & wants_mine
 
 
+def programme_sites(view: ObsView, cfg: Config, acfg: ArbiterConfig) -> np.ndarray:
+    """`deliverable_sites`, widened for an empty-handed agent under persistence.
+
+    With `persist_until_goal` off this IS `deliverable_sites` and nothing
+    changes. With it on, `deliver` is a whole build programme rather than a
+    single drop-off, so an agent carrying nothing is still pursuing a site --
+    it just has a harvest leg to do first. Without this widening the programme
+    could never START empty-handed, which is the entire point of the lever:
+    `deliverable_sites` asks "can my CURRENT load advance this site", and in a
+    non-fungible world an empty pocket advances nothing.
+    """
+    sites = deliverable_sites(view, cfg)
+    if not acfg.persist_until_goal:
+        return sites
+    incomplete = view.sites.present & ~view.site_complete
+    return np.where((view.material_carried <= 0.0)[:, None], incomplete, sites)
+
+
+def resupply_leg(view: ObsView, cfg: Config,
+                 acfg: ArbiterConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(distance, dx, dz, action) of the harvest an empty-handed builder needs.
+
+    The supply half of a persisted build programme: walk to the nearer of the
+    nearest tree and the nearest rock and take a unit. In a NON-FUNGIBLE world
+    the choice is narrowed to a kind some visible incomplete site actually
+    wants, which is `deliverable_sites`' own lesson (m4h's one-stone-short
+    deadlock) applied to the harvest rather than to the drop-off.
+    """
+    d_tree, tx, tz, _ = view.trees.nearest(view.trees.present)
+    d_rock, rx, rz, _ = view.rocks.nearest(view.rocks.present)
+    if not cfg.construction.fungible_materials:
+        incomplete = view.sites.present & ~view.site_complete
+        want_w = (incomplete & (view.sites.extra[0] > 0.0)).any(axis=1)
+        want_s = (incomplete & (view.sites.extra[1] > 0.0)).any(axis=1)
+        d_tree = np.where(want_w, d_tree, np.inf)
+        d_rock = np.where(want_s, d_rock, np.inf)
+    take_wood = d_tree <= d_rock
+    return (np.where(take_wood, d_tree, d_rock),
+            np.where(take_wood, tx, rx),
+            np.where(take_wood, tz, rz),
+            np.where(take_wood, CHOP, MINE).astype(np.int64))
+
+
 def shelter_target(view: ObsView, cfg: Config) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(distance, dx, dz) of the shelter this agent should sleep in.
 
@@ -562,7 +669,8 @@ def _heading(dx: np.ndarray, dz: np.ndarray) -> np.ndarray:
     return (np.round(np.arctan2(dx, dz) / (np.pi / 4.0)) % N_MOVE_ACTIONS).astype(np.int64)
 
 
-def goal_viable(view: ObsView, cfg: Config, goals: np.ndarray) -> np.ndarray:
+def goal_viable(view: ObsView, cfg: Config, goals: np.ndarray,
+                acfg: ArbiterConfig | None = None) -> np.ndarray:
     """Can each agent still pursue the goal it currently holds?
 
     An option terminates when its target vanishes (the bush was emptied, the site
@@ -572,6 +680,7 @@ def goal_viable(view: ObsView, cfg: Config, goals: np.ndarray) -> np.ndarray:
     scripted and (in stage 5) the learned path.
     """
     n = view.n
+    acfg = acfg or ArbiterConfig()
     ok = np.ones(n, dtype=bool)
     d_bush, _, _, _ = view.bushes.nearest(view.loaded_bushes)
     room_food = view.food < 1.0 - 1e-6
@@ -597,8 +706,19 @@ def goal_viable(view: ObsView, cfg: Config, goals: np.ndarray) -> np.ndarray:
         d_rock, _, _, _ = view.rocks.nearest(view.rocks.present)
         when(HARVEST_WOOD, np.isfinite(d_tree) & room_material)
         when(HARVEST_STONE, np.isfinite(d_rock) & room_material)
-        d_site, _, _, _ = view.sites.nearest(deliverable_sites(view, cfg))
-        when(DELIVER, np.isfinite(d_site) & (view.material_carried > 0.0))
+        d_site, _, _, _ = view.sites.nearest(programme_sites(view, cfg, acfg))
+        if acfg.persist_until_goal:
+            # THE GOAL STATE, stated once: a persisted `deliver` ends when there
+            # is no site left in view that wants material, or when the agent can
+            # neither carry nor fetch one. Running out of carried material is
+            # NOT the end of it any more -- that is the harvest leg, and cutting
+            # the option there is exactly the compound-prize wall this lever
+            # exists to remove.
+            d_supply, _, _, _ = resupply_leg(view, cfg, acfg)
+            when(DELIVER, np.isfinite(d_site)
+                 & ((view.material_carried > 0.0) | np.isfinite(d_supply)))
+        else:
+            when(DELIVER, np.isfinite(d_site) & (view.material_carried > 0.0))
         d_home, _, _ = shelter_target(view, cfg)
         # Shelter is only worth holding while the night lasts.
         when(SHELTER, np.isfinite(d_home) & (view.is_night | (view.phase > 0.5)))
@@ -642,7 +762,8 @@ def goal_viable(view: ObsView, cfg: Config, goals: np.ndarray) -> np.ndarray:
 
 
 def execute_goals(goals: np.ndarray, view: ObsView, cfg: Config,
-                  mask: np.ndarray, explore_heading: np.ndarray) -> np.ndarray:
+                  mask: np.ndarray, explore_heading: np.ndarray,
+                  acfg: ArbiterConfig | None = None) -> np.ndarray:
     """Turn goal ids into primitive actions. The scripted "muscles".
 
     Every branch is walk-there-then-act: head for the target while out of range,
@@ -651,6 +772,7 @@ def execute_goals(goals: np.ndarray, view: ObsView, cfg: Config,
     policy receives it too, so nothing is being smuggled in.
     """
     n = view.n
+    acfg = acfg or ArbiterConfig()
     actions = np.full(n, IDLE, dtype=np.int64)
 
     def walk_then(goal: int, distance, dx, dz, action: int, radius: float) -> None:
@@ -688,13 +810,28 @@ def execute_goals(goals: np.ndarray, view: ObsView, cfg: Config,
         # material lands in one place -- the 1.0 builder's hardest-won lesson
         # (six agents each feeding their own nearest site completed 0.4 shelters
         # an episode; a focal site completes before the first nightfall).
-        remaining = np.where(deliverable_sites(view, cfg), view.site_remaining, np.inf)
+        remaining = np.where(programme_sites(view, cfg, acfg), view.site_remaining, np.inf)
         j = np.argmin(remaining, axis=1)
         rows = np.arange(n)
         has_site = np.isfinite(remaining[rows, j])
         sx, sz = view.sites.dx[rows, j], view.sites.dz[rows, j]
         d_site = np.where(has_site, np.hypot(sx, sz), np.inf)
         walk_then(DELIVER, d_site, sx, sz, BUILD, cc.build_radius)
+
+        if acfg.persist_until_goal:
+            # The programme's supply leg. Same walk-there-then-act shape as every
+            # other controller -- it is one more scripted muscle, not a decision:
+            # an agent that chose "build that shelter" and is holding nothing
+            # goes and gets something. This is where the honest cost of the lever
+            # lives, and every write-up says so.
+            restock = (goals == DELIVER) & (view.material_carried <= 0.0)
+            if restock.any():
+                d_sup, ux, uz, act = resupply_leg(view, cfg, acfg)
+                legal = np.take_along_axis(mask, act[:, None], axis=1).ravel()
+                arrived = (d_sup <= cc.harvest_radius) & legal
+                chosen = np.where(arrived, act, _heading(ux, uz))
+                chosen = np.where(np.isfinite(d_sup), chosen, IDLE)
+                actions = np.where(restock, chosen, actions)
 
         d_home, hx, hz = shelter_target(view, cfg)
         shelter_rows = goals == SHELTER
@@ -779,6 +916,44 @@ class UtilityArbiter:
         return np.where(scores.max(axis=1) > 0.0, best, REST)
 
 
+def option_interrupted(needs: np.ndarray, goals: np.ndarray, acfg: ArbiterConfig,
+                       decided_safe: np.ndarray | None = None) -> np.ndarray:
+    """Which running options a lower-tier emergency drops. One function, because
+    `OptionRunner` and the stage-5 trainer both need it and a drift between them
+    would change what a decision IS without changing any output shape.
+
+    TIER 0, always: hunger past `critical`, unless the option already serves
+    hunger. Without it a committed forager walks past its own death; with too
+    loose a rule every tick becomes a decision and the commitment is decorative.
+
+    THE CURFEW, only under `persist_until_goal`, and it is a correction the first
+    run of this lever forced. A 25-tick budget re-opened every agent's choice at
+    least twice per dusk lead for free; a 150-tick one does not, so a raid or an
+    explore decided at noon runs straight through the night. Measured on the
+    scripted population, that cost 585.8 -> 525.3 ticks of life, took nights
+    indoors from 86.4% to 60.9% and flattened the commute (day 9.5/night 5.3
+    became 12.0/11.9). Safety is tier 1 -- the second thing in this world that
+    can kill -- so it gets the same treatment hunger already had.
+
+    It fires ONCE per option, on `decided_safe`: an option chosen before the dusk
+    ramp began is re-opened when it begins, and whatever is chosen then stands.
+    A night owl that looks at the sky and forages on keeps its commitment, which
+    is the difference between a curfew and a veto -- re-testing every tick would
+    hand every agent a decision per tick for a third of the day.
+    """
+    emergency = needs[:, NEED_HUNGER] >= acfg.critical
+    pursuing_food = np.isin(goals, (FORAGE, GOAL_STEAL, DRAW_FOOD, GOAL_RAID))
+    interrupted = emergency & ~pursuing_food
+    if acfg.persist_until_goal and decided_safe is not None:
+        # `> 0` is the START of the ramp, not `critical`: the ramp's lead is
+        # derived from how long crossing the observable range takes (see
+        # compute_needs), so it is already the moment "you would have to set off
+        # now" -- where `critical` lands ~15 ticks before dark on this island.
+        curfew = (needs[:, NEED_SAFETY] > 0.0) & (goals != SHELTER)
+        interrupted = interrupted | (curfew & decided_safe)
+    return interrupted
+
+
 class OptionRunner:
     """Runs an arbiter's goals as committed multi-tick options.
 
@@ -809,32 +984,34 @@ class OptionRunner:
         self.decisions = np.zeros(n, dtype=np.int64)
         self.goal_ticks = np.zeros(N_GOALS, dtype=np.int64)
         self.last_decided = np.zeros(n, dtype=bool)
+        # "this option was chosen before the dusk ramp began", so the curfew
+        # fires once per option rather than every tick of every evening.
+        self.decided_safe = np.ones(n, dtype=bool)
 
     def reset(self) -> None:
         self.goals[:] = REST
         self.ticks_left[:] = 0
         self.decisions[:] = 0
         self.goal_ticks[:] = 0
+        self.decided_safe[:] = True
 
     def act(self, obs: np.ndarray, mask: np.ndarray) -> np.ndarray:
         """One tick: keep or re-decide each agent's goal, then execute it."""
         view = ObsView(obs, self.cfg)
         needs = compute_needs(view, self.cfg)
-        viable = goal_viable(view, self.cfg, self.goals)
+        viable = goal_viable(view, self.cfg, self.goals, self.acfg)
 
-        emergency = needs[:, NEED_HUNGER] >= self.acfg.critical
-        # A stage-4 agent that is already walking to its own larder, or to
-        # somebody else's, is pursuing food as surely as a forager is -- and
-        # interrupting it would restart the same decision every tick, which is
-        # how a commitment becomes decorative.
-        pursuing_food = np.isin(self.goals, (FORAGE, GOAL_STEAL, DRAW_FOOD, GOAL_RAID))
-        interrupted = emergency & ~pursuing_food
+        interrupted = option_interrupted(needs, self.goals, self.acfg,
+                                         self.decided_safe)
 
         redecide = (~viable) | (self.ticks_left <= 0) | interrupted
         if redecide.any():
             fresh = self.arbiter.choose(view, mask, self.rng)
             self.goals = np.where(redecide, fresh, self.goals)
-            self.ticks_left = np.where(redecide, self.acfg.commit_ticks, self.ticks_left)
+            self.ticks_left = np.where(redecide, commit_budget(self.acfg, self.goals),
+                                       self.ticks_left)
+            self.decided_safe = np.where(redecide, needs[:, NEED_SAFETY] <= 0.0,
+                                         self.decided_safe)
             self.decisions += redecide
             # A new explore option gets a new heading; re-rolling it every tick
             # would turn ballistic travel back into a random walk.
@@ -846,7 +1023,8 @@ class OptionRunner:
 
         self.ticks_left -= 1
         np.add.at(self.goal_ticks, self.goals, 1)
-        return execute_goals(self.goals, view, self.cfg, mask, self.explore_heading)
+        return execute_goals(self.goals, view, self.cfg, mask, self.explore_heading,
+                             self.acfg)
 
 
 def utility_runner(cfg: Config, seed: int = 0,
