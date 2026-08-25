@@ -372,6 +372,12 @@ Written 2026-08-25, right after the runs. Numbers are 5 episodes of
 
 ### Where it landed
 
+*(Numbers below are as measured on 2026-08-25 with the stage-2 code. Stage 4's
+correction 5 -- `explore` now terminates when the search succeeds -- was a
+stage-2 bug and moves this same world to **569.0** lifespan, 13.4 deaths, 98.1%
+nights indoors on the current code, 5 episodes. The floor and every conclusion
+are unchanged; re-measure with the stage-4 run line above before quoting.)*
+
 | | utility agents | random floor |
 |---|---|---|
 | mean lifespan | **563.2** of 600 (94%) | 201.0 (34%) |
@@ -617,6 +623,70 @@ and four of them are an old lesson arriving in new clothes.
 6. **One nan poisoned a whole episode's commute figure.** A storm can leave no
    finished shelter to measure distance against, and a single such sample turned
    the day/night rhythm into `nan`. `np.mean` -> a nanmean helper.
+
+### The trade lever: `society4_trade.yaml`, and the treadmill's third disguise
+
+Run the same day, because stage 4's own write-up flagged it: `fungible_materials`
+is inherited from the m4h lineage, and in a region-split world it quietly removes
+the reason to trade -- a household can roof and re-roof its shelter with whatever
+its own region grows. `config/island2/society4_trade.yaml` is society4 plus
+`fungible_materials: false`, so a site needs its literal 3 wood + 1 stone and
+every household needs the other region, every episode (storms keep re-opening the
+bill). 5 episodes, seeds 10000+:
+
+| | society4 (fungible) | trade, first run | trade, controller fixed | trade, treadmill fixed |
+|---|---|---|---|---|
+| mean lifespan | 578.3 | **513.7** | 559.5 | **559.2** |
+| deaths / episode | 10.4 | 44.2 | 23.6 | 22.2 |
+| nights indoors | 88.6% | 36.0% | 57.7% | 65.7% |
+| completions / episode | 52.0 | 13.8 | 21.4 | 25.2 |
+| `deliver` share of intentions | 1.3% | **27.1%** | 1.3% | 1.5% |
+| deposits / withdrawals | 2795 / 2031 | 2446 / 2126 | **5377 / 4678** | **1028 / 93** |
+| raids / episode | 629 | 263 | 595 | **774 (0.75x of deposits)** |
+
+Three things had to be fixed to get an honest number, and each is an old lesson
+in yet another disguise (pinned in `tests/test_society.py` and the utility tests):
+
+1. **The stockpile could transmute stone into wood.** The store held one
+   undifferentiated count and withdrawals returned "wood by convention", so a
+   stone-region household could launder its stone into the wood it needed through
+   its own pantry and never visit the north. The store now tracks composition,
+   the observation carries `own.stock_wood` / `own.stock_stone` (channel split,
+   77 -> 78 dims), and a withdrawal returns the kind the household's OWN site is
+   short of.
+2. **The deliver controller was composition-blind** -- the m4h deadlock at the
+   goal level. An agent carrying stone walked to a site that wanted only wood,
+   the mask blocked the build, and the goal stayed viable until timeout, forever:
+   27.1% of all intentions were `deliver` while half the population died.
+   `deliverable_sites` (incomplete AND wants a kind I carry) now gates the goal's
+   availability, viability and focal-site choice.
+3. **The material store became the treadmill's third disguise** (after the M5
+   gift farm and this store's own food loop): 5377 deposits against 4678
+   withdrawals an episode, the same unit going in and out, because "store what
+   you carry" and "draw when there is building to do" could both fire at the same
+   doorstep. Now material is surplus only when NO visible site can use it, and a
+   draw needs the store to hold a kind some visible site wants. Withdrawals
+   4678 -> 93 against 1028 deposits -- the store finally banks.
+
+**What the fixed world shows.** The non-fungible island is genuinely harder
+(559.2 against 578.3, deaths 2x), which is the demand existing. And the
+cross-region flow is real but it moves by RAID, not by gift: raids rose to 774
+an episode (0.75x of deposits, the one WATCH in the report), **28% of them take
+material, and stone -- the scarce import -- is raided 2.6x more than wood**.
+Gifts stayed at ~4 an episode. So the scripted arbiter, given a world where
+trade would pay, meets the demand with journeys and larceny; directed giving
+still does not emerge from scripting, exactly as M5 found it does not emerge
+from micro-level PPO. Two honest residuals: night household cohesion degrades
+(60.5% displaced, the report's DEGENERATE -- real behaviour, not a metric
+artefact: households whose roof needs an import couch-surf at whoever's shelter
+is finished), and the raid economy sits at the WATCH boundary by design.
+
+**This is the sharpest version of the stage-5 question.** The world now pays for
+a `give_material` relay (the cheap alternative to a cross-island walk or a feud),
+the scripted arbiter provably does not find it, and the option interface makes
+"hand this stone to the northerner standing at their site" ONE decision. Whether
+a learned chooser finds what the scripted one cannot is the headline comparison,
+now with a mechanic-level prize attached.
 
 ### What stage 4 says about stage 5, before anyone builds it
 

@@ -84,7 +84,7 @@ def test_society_off_leaves_every_earlier_world_untouched():
         assert not [c for c in layout
                     if c.startswith(("home.", "raid.", "shock."))
                     or c.endswith((".same_household", ".grudge"))
-                    or c in ("own.stock_food", "own.stock_material")]
+                    or c in ("own.stock_food", "own.stock_wood", "own.stock_stone")]
         assert "deposit_food" not in action_names(cfg)
 
 
@@ -260,6 +260,28 @@ def test_housemates_cannot_be_robbed(cfg4):
     res = world.step(actions)
     assert res.stole[i] == 0
     assert world.pool.food[j] == 2
+
+
+def test_a_stockpile_cannot_transmute_stone_into_wood(cfg4):
+    """Deposit stone, withdraw wood: the loophole that would substitute for trade.
+
+    The store reports one combined material number, but it tracks composition,
+    because in a non-fungible world (`society4_trade.yaml`) a stone-region
+    household that could launder its stone into wood through its own pantry would
+    never need the north at all -- and the whole point of the region split is that
+    it does.
+    """
+    cfg = small(cfg4)
+    world = World(cfg, seed=5)
+    world.pool.x[:] = world.stock_x[world.household]
+    world.pool.z[:] = world.stock_z[world.household]
+    world.pool.stone[:] = 1
+    world.step(np.full(cfg.world.num_agents, DEPOSIT_MATERIAL, dtype=np.int64))
+    assert world.stock_stone.sum() > 0 and world.stock_wood.sum() == 0
+    res = world.step(np.full(cfg.world.num_agents, WITHDRAW_MATERIAL, dtype=np.int64))
+    assert res.withdrew.sum() > 0
+    assert world.pool.wood.sum() == 0          # stone came back out as stone
+    assert world.pool.stone.sum() > 0
 
 
 # --- shocks -----------------------------------------------------------------

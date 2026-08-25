@@ -345,8 +345,7 @@ def score_goals(view: ObsView, cfg: Config, needs: np.ndarray, traits: np.ndarra
         set_target(HARVEST_STONE, d_rock)
         available[:, HARVEST_STONE] &= room_for_material
 
-        incomplete = view.sites.present & ~view.site_complete
-        d_site, _, _, _ = view.sites.nearest(incomplete)
+        d_site, _, _, _ = view.sites.nearest(deliverable_sites(view, cfg))
         set_target(DELIVER, d_site)
         available[:, DELIVER] &= view.material_carried > 0.0
 
@@ -432,24 +431,32 @@ def score_goals(view: ObsView, cfg: Config, needs: np.ndarray, traits: np.ndarra
         available[:, STORE_FOOD] &= (surplus_food & (view.hunger > threshold)
                                      & (view.stock_food < 1.0 - 1e-6))
         set_target(STORE_MATERIAL, d_home)
-        # Material has no personal use once every site is finished, so a full load
-        # is surplus by definition -- but keeping the "not empty" test explicit
-        # keeps the two directions symmetrical and readable.
-        available[:, STORE_MATERIAL] &= ((view.material_carried > 0.0)
+        # Material is surplus only when there is nowhere to USE it: banking a unit
+        # a visible site wants, then drawing it back out, is the treadmill in its
+        # third disguise (M5's gift farm, then this store's food loop, then --
+        # measured on society4_trade -- 5377 material deposits against 4678
+        # withdrawals an episode). `deliverable_sites` is the same test `deliver`
+        # uses, so the two goals partition the carried unit's fates instead of
+        # competing for it at the same doorstep.
+        can_use = deliverable_sites(view, cfg).any(axis=1)
+        available[:, STORE_MATERIAL] &= ((view.material_carried > 0.0) & ~can_use
                                          & (view.stock_material < 1.0 - 1e-6))
 
         set_target(DRAW_FOOD, d_home)
         available[:, DRAW_FOOD] &= ((view.stock_food > 0.0) & (view.food <= 0.0)
                                     & (needs[:, NEED_HUNGER] > 0.0))
         set_target(DRAW_MATERIAL, d_home)
-        # Only worth drawing material out if there is something to build with it,
-        # otherwise the store becomes a treadmill: deposit, withdraw, repeat. That
-        # is the M5 gift farm's shape, and it is cheaper to forbid here than to
-        # discover in a ledger later.
-        wants_building = needs[:, NEED_SHELTER_STOCK] > 0.0
-        available[:, DRAW_MATERIAL] &= ((view.stock_material > 0.0)
-                                       & (view.material_carried <= 0.0)
-                                       & wants_building)
+        # Only worth drawing if the store holds a KIND some visible incomplete
+        # site actually wants -- which is why the observation carries the pantry's
+        # composition. "There is material in the store and building to do" is not
+        # enough: in a non-fungible world the store can be full of the wrong kind,
+        # and drawing it out just re-arms the deposit half of the treadmill.
+        incomplete = view.sites.present & ~view.site_complete
+        useful = ((incomplete & (view.sites.extra[0] > 0.0)).any(axis=1)
+                  & (view.stock_wood > 0.0)) | \
+                 ((incomplete & (view.sites.extra[1] > 0.0)).any(axis=1)
+                  & (view.stock_stone > 0.0))
+        available[:, DRAW_MATERIAL] &= useful & (view.material_carried <= 0.0)
 
         d_raid = view.raid_distance
         set_target(GOAL_RAID, d_raid)
@@ -475,6 +482,28 @@ def score_goals(view: ObsView, cfg: Config, needs: np.ndarray, traits: np.ndarra
 
     scores = base * gate * discount * traits
     return np.where(available, scores, 0.0)
+
+
+def deliverable_sites(view: ObsView, cfg: Config) -> np.ndarray:
+    """Per (agent, site slot): is this an incomplete site my load can advance?
+
+    With fungible sites (the m4h lineage) any material advances any site, so the
+    test is just "incomplete". Without them a site wants its literal composition,
+    and an agent carrying only stone must not walk to -- or stand refreshing a
+    commitment at -- a site that needs only wood. That is the m4h deadlock
+    ("all wood in, one stone missing, agents carrying 3.7 stone") reappearing at
+    the GOAL level: measured on `society4_trade.yaml` before this filter, 27.1%
+    of all intentions were `deliver` while completions fell 52 -> 14 and half the
+    population died -- agents camped at sites the mask would never let them feed.
+    """
+    incomplete = view.sites.present & ~view.site_complete
+    if cfg.construction.fungible_materials:
+        return incomplete
+    need_w = view.sites.extra[0] > 0.0
+    need_s = view.sites.extra[1] > 0.0
+    wants_mine = ((need_w & (view.wood[:, None] > 0.0))
+                  | (need_s & (view.stone[:, None] > 0.0)))
+    return incomplete & wants_mine
 
 
 def shelter_target(view: ObsView, cfg: Config) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -541,8 +570,7 @@ def goal_viable(view: ObsView, cfg: Config, goals: np.ndarray) -> np.ndarray:
         d_rock, _, _, _ = view.rocks.nearest(view.rocks.present)
         when(HARVEST_WOOD, np.isfinite(d_tree) & room_material)
         when(HARVEST_STONE, np.isfinite(d_rock) & room_material)
-        incomplete = view.sites.present & ~view.site_complete
-        d_site, _, _, _ = view.sites.nearest(incomplete)
+        d_site, _, _, _ = view.sites.nearest(deliverable_sites(view, cfg))
         when(DELIVER, np.isfinite(d_site) & (view.material_carried > 0.0))
         d_home, _, _ = shelter_target(view, cfg)
         # Shelter is only worth holding while the night lasts.
@@ -559,6 +587,7 @@ def goal_viable(view: ObsView, cfg: Config, goals: np.ndarray) -> np.ndarray:
         when(STORE_FOOD, (view.food * capacity >= 2.0 - 1e-6) & (view.hunger > threshold)
              & (view.stock_food < 1.0 - 1e-6))
         when(STORE_MATERIAL, (view.material_carried > 0.0)
+             & ~deliverable_sites(view, cfg).any(axis=1)
              & (view.stock_material < 1.0 - 1e-6))
         # These mirror score_goals' availability tests deliberately. A termination
         # test looser than the availability test is how a committed option outlives
@@ -632,8 +661,7 @@ def execute_goals(goals: np.ndarray, view: ObsView, cfg: Config,
         # material lands in one place -- the 1.0 builder's hardest-won lesson
         # (six agents each feeding their own nearest site completed 0.4 shelters
         # an episode; a focal site completes before the first nightfall).
-        incomplete = view.sites.present & ~view.site_complete
-        remaining = np.where(incomplete, view.site_remaining, np.inf)
+        remaining = np.where(deliverable_sites(view, cfg), view.site_remaining, np.inf)
         j = np.argmin(remaining, axis=1)
         rows = np.arange(n)
         has_site = np.isfinite(remaining[rows, j])

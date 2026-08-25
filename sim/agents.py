@@ -161,9 +161,14 @@ class SocietyView:
     stock_x: np.ndarray            # (H,)
     stock_z: np.ndarray
     stock_food: np.ndarray         # (H,)
-    stock_material: np.ndarray     # (H,)
+    stock_wood: np.ndarray         # (H,) -- the store tracks composition; see
+    stock_stone: np.ndarray        #        World.reset for why that is load-bearing
     grudge: np.ndarray             # (A, A)
     blight: bool
+
+    @property
+    def stock_material(self) -> np.ndarray:
+        return self.stock_wood + self.stock_stone
 
 
 def neighbour_society_channels(cfg: Config) -> int:
@@ -176,14 +181,14 @@ def neighbour_society_channels(cfg: Config) -> int:
 def society_channels(cfg: Config) -> int:
     """Fixed-width stage-4 block: own stockpile, home offset, nearest foreign pile.
 
-    Nine channels, plus one if blights are observed. It does NOT grow with the
+    Ten channels, plus one if blights are observed. It does NOT grow with the
     number of households -- the nearest foreign stockpile is one k-nearest slot,
     exactly as bushes and sites are, which is what keeps the observation width
     independent of population (design doc section 4).
     """
     if not cfg.society.enabled:
         return 0
-    return 9 + int(cfg.society.observe_shock)
+    return 10 + int(cfg.society.observe_shock)
 
 
 def night_phase(tick: int, cfg: Config) -> tuple[float, bool]:
@@ -439,7 +444,7 @@ def observation_layout(cfg: Config) -> tuple[str, ...]:
                 names.append(f"site{j}.finishes")
         names += ["night.phase", "night.is_night"]
     if cfg.society.enabled:
-        names += ["own.stock_food", "own.stock_material",
+        names += ["own.stock_food", "own.stock_wood", "own.stock_stone",
                   "home.dx", "home.dz", "home.complete",
                   "raid.dx", "raid.dz", "raid.food", "raid.material"]
         if cfg.society.observe_shock:
@@ -671,11 +676,19 @@ def build_observations(
         food_cap = max(sc.stockpile_food_capacity, 1)
         mat_cap_s = max(sc.stockpile_material_capacity, 1)
         out[:, col + 0] = society.stock_food[mine] / food_cap
-        out[:, col + 1] = society.stock_material[mine] / mat_cap_s
+        # Wood and stone separately, not a blended count. In a fungible world the
+        # split is redundant; in a non-fungible one an agent that cannot tell a
+        # pantry full of stone from one full of wood cannot know whether drawing
+        # will help its site -- which is exactly the deposit/draw treadmill
+        # measured on society4_trade (5377 deposits, 4678 withdrawals an episode,
+        # the same unit going in and out). Same argument as the site's own
+        # per-material need channels.
+        out[:, col + 1] = society.stock_wood[mine] / mat_cap_s
+        out[:, col + 2] = society.stock_stone[mine] / mat_cap_s
         home_dx = society.stock_x[mine] - pool.x
         home_dz = society.stock_z[mine] - pool.z
-        out[:, col + 2] = np.clip(home_dx / scale, -1.0, 1.0)
-        out[:, col + 3] = np.clip(home_dz / scale, -1.0, 1.0)
+        out[:, col + 3] = np.clip(home_dx / scale, -1.0, 1.0)
+        out[:, col + 4] = np.clip(home_dz / scale, -1.0, 1.0)
         # DOES MY OWN HOUSE HAVE A ROOF ON IT? Derivable in principle from the
         # k-nearest site block, but only when the home site happens to rank inside
         # k -- and after a storm, standing anywhere else, it may not. An agent
@@ -688,8 +701,8 @@ def build_observations(
         if construction is not None:
             home_done = ((construction.site_wood_needed[:h] == 0)
                          & (construction.site_stone_needed[:h] == 0))
-            out[:, col + 4] = home_done[mine].astype(np.float32)
-        col += 5
+            out[:, col + 5] = home_done[mine].astype(np.float32)
+        col += 6
         # The nearest stockpile that is NOT mine. One slot, so the width does not
         # grow with the number of households; a raider only ever needs the
         # closest target, and the design doc's fixed-width rule (section 4) is

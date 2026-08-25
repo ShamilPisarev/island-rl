@@ -1,0 +1,29 @@
+# Island 2.0, stage 4, the TRADE lever: non-fungible sites on a split island.
+#
+# society4.yaml inherits fungible_materials from the m4h lineage, and in a
+# region-split world that quietly removes the reason to trade: a household can
+# finish (and re-roof, after storms) its shelter with whatever material its own
+# region grows. Measured on society4, gifts across a household boundary were 5 in
+# two episodes against 1337 raids -- M5's wall, untouched.
+#
+# This config turns fungibility OFF, so a site needs its literal 3 wood + 1
+# stone. With trees in the north and rocks in the south, every household now
+# needs at least one unit from the other region, every episode (storms re-open
+# the wood bill on every finished site). The stockpile already tracks material
+# by kind, so "deposit stone, withdraw wood" cannot substitute for the journey
+# (tests/test_society.py::test_a_stockpile_cannot_transmute_stone_into_wood).
+#
+# PREDICTION, written before the first run. The scripted arbiter has three ways
+# to move material across the island: harvest trips (an agent walks to the other
+# region itself), give_material relays, and raids on a store that happens to hold
+# the right kind. Expect harvest trips to do most of the work -- `harvest_wood`
+# scores on a distance-discounted need with no concept of "my region" -- and
+# expect completions to FALL relative to society4, because the m4h composition
+# deadlock ("all wood in, one stone missing") returns by design. The question
+# this config answers is whether the demand exists and how it is met unscripted,
+# not whether the scripted arbiter meets it well; the latter is stage 5's
+# comparison.
+extends: society4.yaml
+
+construction:
+  fungible_materials: false

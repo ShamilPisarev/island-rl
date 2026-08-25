@@ -43,7 +43,8 @@ each:
   (`sim/utility.py`), with the interface stage 5 swaps a learned chooser into:
   `arbiter.choose(view, mask, rng) -> goals` and `execute_goals(...) -> actions`.
   100 agents reach **2.80× the random floor** (563.2 of 600 ticks against
-  201.0), 20/20 shelters, **96.3% of nights indoors**, and a visible commute
+  201.0; stage 4's explore-termination fix later moved this same world to 569.0
+  and 98.1% nights indoors), 20/20 shelters, **96.3% of nights indoors**, and a visible commute
   (11.1 units from shelter by day, 3.7 at night). All three pre-registered
   failure modes clear — one of them (permanent war) fired first and was fixed at
   the mechanic, not the weight. New: `sim/obsview.py`, `sim/society.py`,
@@ -86,7 +87,12 @@ each:
   control had expired (rule 5). The economy had to be resized because blights cut
   supply to 0.98x subsistence -- caught by `sim.economy`, which was taught about
   blights first. One design-doc forecast is refuted: stockpiles produced churn,
-  not runaway hoarding.
+  not runaway hoarding. **The trade lever is also run**
+  (`config/island2/society4_trade.yaml`, fungibility off on the split island):
+  the demand is real (lifespan 578 -> 559, deaths 2x) and the cross-region flow
+  happens by RAID (774/ep, 28% taking material, stone 2.6x over wood), not by
+  gift (~4/ep) -- three treadmill/deadlock corrections are in ISLAND2_DESIGN.md
+  §9 under "The trade lever". That world is stage 5's sharpest testbed.
 
 **Stage 1 (engine scale pass) detail.** The design doc's forecast
 that O(n²) neighbour queries would need a spatial hash was refuted by the

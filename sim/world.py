@@ -337,7 +337,15 @@ class World:
             self.stock_x = np.zeros(1, dtype=np.float64)
             self.stock_z = np.zeros(1, dtype=np.float64)
         self.stock_food = np.zeros(n_house, dtype=np.int64)
-        self.stock_material = np.zeros(n_house, dtype=np.int64)
+        # Material is tracked BY KIND even though the observation reports the sum.
+        # With fungible sites the split is cosmetic; without them it is
+        # load-bearing, because "deposit stone, withdraw wood" would otherwise be
+        # a transmutation loophole that substitutes for the cross-region trade the
+        # non-fungible world exists to force. A withdrawal returns wood first --
+        # the majority need (sites want 3 wood + 1 stone) -- but only wood that
+        # was actually put in.
+        self.stock_wood = np.zeros(n_house, dtype=np.int64)
+        self.stock_stone = np.zeros(n_house, dtype=np.int64)
         self.grudge = np.zeros((cfg.world.num_agents, cfg.world.num_agents))
         self.blight_until = -1
         self._shocks_fired = 0
@@ -367,6 +375,11 @@ class World:
         )
 
     @property
+    def stock_material(self) -> np.ndarray:
+        """Combined material per household -- what the observation and mask read."""
+        return self.stock_wood + self.stock_stone
+
+    @property
     def blight_active(self) -> bool:
         return self.tick < self.blight_until
 
@@ -376,7 +389,8 @@ class World:
         return SocietyView(
             household=self.household,
             stock_x=self.stock_x, stock_z=self.stock_z,
-            stock_food=self.stock_food, stock_material=self.stock_material,
+            stock_food=self.stock_food,
+            stock_wood=self.stock_wood, stock_stone=self.stock_stone,
             grudge=self.grudge, blight=self.blight_active,
         )
 
@@ -668,16 +682,15 @@ class World:
                 elif a == DEPOSIT_MATERIAL:
                     if (pool.wood[i] + pool.stone[i] > 0
                             and self.stock_material[h] < sc.stockpile_material_capacity):
-                        # Wood first, mirroring the fungible build rule, so the
-                        # store holds one undifferentiated material count. Which
-                        # material a unit was is not recoverable from a stockpile
-                        # -- that is what a stockpile IS -- and the sites in a
-                        # stage-4 world take either.
+                        # Wood is spent from the pocket first, mirroring the build
+                        # rule -- and the store records WHICH kind arrived, so a
+                        # withdrawal can only return what was really put in.
                         if pool.wood[i] > 0:
                             pool.wood[i] -= 1
+                            self.stock_wood[h] += 1
                         else:
                             pool.stone[i] -= 1
-                        self.stock_material[h] += 1
+                            self.stock_stone[h] += 1
                         deposited[i] = 1
                 elif a == WITHDRAW_FOOD:
                     if self.stock_food[h] > 0 and pool.food[i] < cfg.food.capacity:
@@ -688,8 +701,28 @@ class World:
                     room = (cc.enabled
                             and pool.wood[i] + pool.stone[i] < cc.material_capacity)
                     if self.stock_material[h] > 0 and room:
-                        self.stock_material[h] -= 1
-                        pool.wood[i] += 1     # a withdrawn unit is wood by convention
+                        # You take out what the house needs. Each household owns
+                        # the site of its own index, so "what the house needs" is
+                        # well-defined and local: prefer the kind the home site is
+                        # still short of, fall back to wood-first when it is
+                        # finished or the store lacks that kind. A blind
+                        # wood-first rule handed agents back the kind they had
+                        # just banked as useless, which is where half the
+                        # deposit/draw treadmill came from.
+                        want_wood = self.site_wood_needed[h] > 0
+                        want_stone = self.site_stone_needed[h] > 0
+                        if want_wood and self.stock_wood[h] > 0:
+                            take_wood = True
+                        elif want_stone and self.stock_stone[h] > 0:
+                            take_wood = False
+                        else:
+                            take_wood = self.stock_wood[h] > 0
+                        if take_wood:
+                            self.stock_wood[h] -= 1
+                            pool.wood[i] += 1
+                        else:
+                            self.stock_stone[h] -= 1
+                            pool.stone[i] += 1
                         withdrew[i] = 1
 
             for i in (int(v) for v in np.flatnonzero(acted & (actions == RAID))):
@@ -708,9 +741,14 @@ class World:
                         pool.food[i] += 1
                         item = ITEM_FOOD
                     elif self.stock_material[h] > 0 and room_m:
-                        self.stock_material[h] -= 1
-                        pool.wood[i] += 1
-                        item = ITEM_WOOD
+                        if self.stock_wood[h] > 0:
+                            self.stock_wood[h] -= 1
+                            pool.wood[i] += 1
+                            item = ITEM_WOOD
+                        else:
+                            self.stock_stone[h] -= 1
+                            pool.stone[i] += 1
+                            item = ITEM_STONE
                     else:
                         continue
                     raided[i] = 1

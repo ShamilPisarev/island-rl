@@ -124,7 +124,9 @@ class ObsView:
         zero = np.zeros(self.n)
         if sc.enabled:
             self.stock_food = obs[:, col["own.stock_food"]]
-            self.stock_material = obs[:, col["own.stock_material"]]
+            self.stock_wood = obs[:, col["own.stock_wood"]]
+            self.stock_stone = obs[:, col["own.stock_stone"]]
+            self.stock_material = self.stock_wood + self.stock_stone
             self.home_dx = obs[:, col["home.dx"]] * self.scale
             self.home_dz = obs[:, col["home.dz"]] * self.scale
             self.home_complete = obs[:, col["home.complete"]] > 0.5
@@ -136,6 +138,7 @@ class ObsView:
                 else np.zeros(self.n, dtype=bool)
         else:
             self.stock_food = self.stock_material = zero
+            self.stock_wood = self.stock_stone = zero
             self.home_dx = self.home_dz = zero
             self.home_complete = np.zeros(self.n, dtype=bool)
             self.raid_dx = self.raid_dz = zero
