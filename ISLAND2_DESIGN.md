@@ -952,6 +952,39 @@ What settles it, against `arb5-mix`'s numbers on the same seed block:
   change, or the diluted death penalty (a fifth of -10) broke the one thing
   the mixed run fixed.
 
+**The results (same day): the compound wall survives its own credit being
+handed over -- and a different family job emerged instead.** `arb5-hh`, 150
+updates, 10 paired islands:
+
+| the learned slots (20 agents) | lifespan | nights in | vs same slots all-scripted |
+|---|---|---|---|
+| **household reward (`arb5-hh`)** | **598.0** | **91.7%** | **+22.6 +- 7.0 (9/10)** |
+| individual reward (`arb5-mix`) | 594.5 | 84.0% | +19.1 +- 7.4 (7/10) |
+| random-goal minority (floor) | 519.5 | 63.2% | -55.9 +- 8.3 (0/10) |
+
+* **Construction contribution is still exactly 0.0%** -- harvest_wood,
+  harvest_stone, deliver and store_material all zero, same as arb5-mix. The
+  pre-registered read applies: handing the agent the household's return did
+  not make it lay one unit, so at this level THE WALL IS THE OPTIMISATION,
+  not the credit assignment. A compound multi-decision programme is refused
+  even when its payoff lands in the trainee's own reward stream.
+* **What the shared reward DID buy is the short-chain household goods.**
+  store_food doubled (4.4% -> 8.8% of goal-ticks) and the agent took up
+  stealing from strangers at 11.4% (arb5-mix: 0.0%; housemates are immune by
+  mechanic, so theft is pure import) -- it feeds the family larder by
+  one-decision chains: steal, forage, deposit. Kin-shared reward produced a
+  provisioner, not a builder. Raid stays 0.0% in both.
+* **Sheltering survived and improved** (91.7% nights in), and the paired edge
+  is +22.6 +- 7.0 (9/10) against arb5-mix's +19.1 +- 7.4 (7/10) -- read those
+  two as level, the difference is inside one SE. Spillover to the scripted 80:
+  -2.7 +- 4.1, still nothing.
+
+Do not re-run this configuration. What it leaves: the third lever
+(persist-until-goal options -- if a `deliver` programme is ONE decision, the
+compound prize becomes a single-trip prize, which is the shape PPO takes) is
+now the only untried move against the construction wall, and the honest cost
+is unchanged (what emerges is when-to-build, never building).
+
 ### The stage-5 verdict, one paragraph
 
 The option level did exactly what the design doc promised and no more: it
@@ -977,3 +1010,63 @@ slots by shedding its feuds -- while still refusing the compound good
 entirely. So the standing verdict narrows to construction: PPO at the option
 level can learn WHEN to use what a society provides, and still never helps
 provide it.
+
+## 11. The seasons world: escalating shocks (`society4_ramp.yaml`)
+
+Written 2026-08-25, mechanics and sizing first, run the same day. The design
+question behind it: watchable escalation -- a world that gets harder as the
+episode ages, so adaptation is visible -- for the price of one config knob.
+`society.shock_ramp` scales every shock's SEVERITY by `1 + ramp * tick /
+max_ticks` (cadence and rng stream untouched, so ramp 0 is bit-identical to
+every existing world). At the shipped ramp 1.0 the first blight lasts ~70
+ticks and the last ~120; the first storm dents finished shelters and the last
+LEVELS them (damage clamped at the site's total cost, or build progress goes
+negative). Four pinning tests in `tests/test_society.py`.
+
+**The sizing tool was taught the ramp before the config existed (rule 5), and
+it rejected two sizings before a single run**: society4's 9 bushes/cluster
+lands at 0.84x sheltered subsistence (everyone starves, nothing readable);
+13/cluster overshoots to 1.01x EXPOSED (shelter no longer load-bearing --
+caught by the tool's own NOTE). Shipped: 11/cluster, **1.28x sheltered /
+0.86x exposed**, and the re-size is the point rather than a side effect: a
+fat summer (cluster income 1.5x its residents' need) and a hard winter (late
+blights zero income for 100+ ticks). The first world where banking early is
+arithmetically load-bearing.
+
+**First run, 5 episodes, utility agents against the random floor in the same
+world, with the pre-registered checks from the config header:**
+
+| | utility agents | random floor |
+|---|---|---|
+| mean lifespan | **586.8** of 600 | 336.6 (1.74x) |
+| deaths / episode | 9.4 | 91.0 |
+| nights indoors | 84.0% | 23.4% |
+| stockpile food, mean level | **7.31** of 12 | 0.56 |
+| stock level by episode third | **8.19 / 7.99 / 5.64** | -- |
+| deaths by episode third (5 eps) | **9 / 9 / 29** | -- |
+
+* **The harvest/winter rhythm is real**: piles fill through the fat summer
+  and drain 2.5 units through the hard winter -- the first measured case of
+  the stockpile doing seasonal work rather than day-to-day churn (society4's
+  mean level was 5.97; here 7.31, i.e. the population banks MORE when the
+  future is worse, out of pure needs arithmetic).
+* **Deaths concentrate exactly where the ramp says they should**: 62% in the
+  last third, flat before it. The world kills with winter, not with noise.
+* **Late storms bite as designed**: nights indoors 88.6% -> 84.0% against
+  society4, completions 50/ep (rebuild flow), 37.6 shelters damaged by 2.2
+  storms.
+* The pre-registered capacity failure mode did NOT fire: the pile peaks at
+  8.2 of 12, so "full pile" readings are behaviour, not the cap.
+
+**Where this fits the technology thread.** This is the cheapest rung of the
+escalation ladder discussed for "tech emergence": the world cannot make agents
+invent anything (the action set is the physics -- the colony-sim lesson in
+section 1), but it CAN be given a ladder of authored possibilities and
+escalating pressure, and what genuinely emerges is which rungs a population
+climbs, when, and what that does to the society. Next rungs, in cost order: a
+night predator (one entity + one mechanic), shelter tiers (tier-2 hut:
+costlier, storm-proof), a craftable tool (axe -> 2x chop, the first true
+"technology" -- short creditable chain, and M2's specialisation result says
+tool-owners may become the village lumberjacks), then gated unlocks. Every
+rung must be sized with `sim.economy` before it runs, and every rung's
+adoption claim needs its random floor.

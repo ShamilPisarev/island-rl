@@ -133,6 +133,35 @@ each:
   this configuration; the open follow-ups are the household-level baseline,
   persist-until-goal options, and the learned-share sweep (20 -> 50 -> 100,
   where free-riding must collapse back into `arb4c`).
+  **The second lever is RUN too (`arb5-hh`, `--household-reward`): the
+  compound wall survives its own credit being handed over.** Same mixed
+  setup, one change -- the learned agent trains on its HOUSEHOLD's mean
+  reward. Construction contribution is **still exactly 0.0%**
+  (harvest/deliver/store_material), so the wall is the OPTIMISATION, not
+  credit assignment. What kin-shared reward did buy is a provisioner:
+  store_food doubled (4.4% -> 8.8%) and stealing from strangers appeared at
+  11.4% (arb5-mix: 0.0%; housemates are immune, so theft is pure import for
+  the larder). Nights indoors 91.7%, learned slots +22.6 +- 7.0 (9/10) --
+  level with arb5-mix's +19.1 within one SE. Honest cost, stated in the
+  write-up: household reward changes what "unpaid" means. Do not re-run; the
+  one untried move against the construction wall is persist-until-goal
+  options. Both write-ups: ISLAND2_DESIGN.md §10.
+
+* **The seasons world (`config/island2/society4_ramp.yaml`, design doc §11).**
+  `society.shock_ramp` scales shock SEVERITY with episode progress (cadence
+  and rng untouched; ramp 0 bit-identical, pinned; storm damage clamped at
+  site cost so progress cannot go negative). `sim.economy` models the ramp
+  and rejected two sizings before any run (9 bushes/cluster starves everyone
+  at 0.84x; 13 makes even exposure survivable at 1.01x); shipped at
+  11/cluster, **1.28x sheltered / 0.86x exposed**. First run confirms every
+  pre-registered read: stockpiles fill in the fat summer and drain in the
+  hard winter (**8.19 / 7.99 / 5.64** by episode third -- the first seasonal
+  banking in the project), deaths concentrate 62% in the last third, nights
+  indoors 88.6% -> 84.0% as late storms level settlements. Utility agents
+  586.8 against a 336.6 random floor (1.74x). The escalation ladder beyond it
+  (night predator, shelter tiers, craftable tool, gated unlocks) is sketched
+  at the end of §11 -- every rung gets sized with `sim.economy` before it
+  runs, and every adoption claim needs its floor.
 
 **Stage 1 (engine scale pass) detail.** The design doc's forecast
 that O(n²) neighbour queries would need a spatial hash was refuted by the
