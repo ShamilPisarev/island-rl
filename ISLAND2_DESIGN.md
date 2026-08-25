@@ -721,3 +721,148 @@ now with a mechanic-level prize attached.
   shelter protection is a radius around a site, not around a group. Adding the
   need before adding the mechanic would score goals against an appetite the world
   cannot feed, which is the same call section 8 made.
+
+## 10. Stage 5: the learned arbiter, and what the option level actually bought
+
+Written 2026-08-25, during the first training runs. The machinery: `sim/arbiter.py`
+(a shared ActorCritic over the 15 goals, reading the observation plus the same
+per-agent trait vector the scripted scorer multiplies by), a semi-MDP PPO trainer
+(one transition per decision, per-agent asynchronous, R = sum gamma^j r_j inside
+an option, gamma^k on the bootstrap), and the arbiter zoo in `sim.society`
+(`--arbiter utility|learned|randomgoal`, `--vs` for paired islands). Ten tests
+pin menu parity and the gamma bookkeeping (`tests/test_arbiter.py`).
+
+**The comparison's frame, fixed before any run.** All three choosers share
+`goal_availability` (factored out of `score_goals`, scripted behaviour verified
+unchanged), `execute_goals`, `goal_viable` and `OptionRunner`. The menu's
+mechanic-level corrections -- the raid motive gate, the surplus rules,
+opportunistic theft -- are shared constraints, stated rather than hidden. And the
+bar is DOUBLE: the scripted arbiter (579.2 on the 10-island eval block) and the
+random-over-menu floor (533.9, -45.3 +- 6.4 paired), because the menu plus the
+scripted muscles already carry most of survival and any learned claim has to
+clear both.
+
+### Three results, each one experiment, in the order they happened
+
+**1. From scratch, option-level PPO converges below the floor of its own menu.**
+`arb4` (150 updates, unshaped world rewards): **456.7 lifespan, -122.5 +- 8.3
+against the scripted arbiter, worse on 10 of 10 islands** -- and 77 ticks below
+the random-goal floor, which shelters 67% of nights *by accident* because uniform
+choice sometimes picks `shelter`. The policy is not weak; it is a hyper-competent
+PURE FORAGER: 93% of the island harvested (the scripted arbiter manages 82%),
+household food stores at 9.8 of 12, zero construction, **0.0% of nights
+indoors**. PPO actively trained away from accidental sheltering. Two structural
+reasons, both familiar: a population where nobody builds never *experiences* a
+sheltered night, so the critic cannot price one (rule 3 at the option level);
+and the `shelter` goal is masked until a finished shelter exists, so the menu
+itself has a chicken-and-egg.
+
+**2. An imitation warm start gets erased in flight.** `--imitate N` behaviour-
+clones the scripted arbiter's choices at decision points, with the teacher
+driving so the state distribution is the one competent play visits -- the
+M1 -> M2 fork with a program as the teacher. `arb4b` (25 imitation updates, then
+150 PPO): **the same forager, 464.1, 0% nights.** That is `spread-nav`'s shape
+transposed exactly: hand the policy the competence and the on-policy gradient
+trades it away.
+
+**3. The objective was measured instead of blamed, and it caught two different
+culprits.** Empirical per-agent discounted return, both policies on the same
+seeds:
+
+| gamma | scripted arbiter | learned (forager) |
+|---|---|---|
+| 0.99 (the 1.0 default) | 4.41 | **4.47 -- PPO is WINNING its own game** |
+| 0.997 | **8.24** | 7.22 |
+| 0.999 | **11.75** | 9.80 |
+| 1.0 | **14.70** | 12.04 |
+
+At gamma=0.99 the forager's return genuinely beats the shelterer's: the night
+bill lands 100-300 ticks after the build decision and 0.99^300 = 0.05, so PPO
+optimised the objective correctly and died young -- a reward-alignment finding,
+not an algorithm failure. But re-training at gamma=0.997 (`arb4c`, warm-started)
+still collapsed to the forager (476.3, 2.6% nights, -102.9 +- 6.5) **in a regime
+where its own objective now says the scripted behaviour is worth more (8.24
+against 7.22).** So above 0.99 the failure is optimisation again, and it is the
+project's oldest wall one level up: the compound prize (units -> completion ->
+cheap nights) spans many decisions and many agents, every individual build
+option is priced ~0 by a critic fitted to a drifting policy, and one-decision
+improvement never proposes the sustained programme. The 1.0 postmortem said the
+option level would ROUTE AROUND the one-step wall; for goals whose payoff is a
+single completed trip (forage, travel) it does, and for goals whose payoff is a
+multi-decision, multi-agent compound (construction) the wall simply reappears at
+the new scale.
+
+### Where this leaves the headline comparison
+
+The scripted arbiter wins stage 5's first round outright, and not by a
+technicality: the needs scorer encodes exactly the long-horizon judgements
+("be under cover tonight", "the house needs a full larder") that PPO's
+advantage estimates cannot hold onto. The honest scoreboard:
+
+| chooser | lifespan (10 eps) | nights in | vs scripted, paired |
+|---|---|---|---|
+| scripted utility | **579.2** | 85.7% | -- |
+| random over the menu | 533.9 | 67.1% | -45.3 +- 6.4 (0/10) |
+| learned, from scratch | 456.7 | 0.0% | -122.5 +- 8.3 (0/10) |
+| learned, warm-started | 464.1 | 0.0% | (not separately paired) |
+| learned, warm-started, gamma 0.997 | 476.3 | 2.6% | -102.9 +- 6.5 (0/10) |
+
+**4. Fitting the critic first does not hold it either.** The last cheap lever:
+the warm-started policy's first PPO updates run against a RANDOM critic, so
+`--value-warmup` fits the value head alone for 20 updates before any policy
+gradient flows. `arb4d` (imitate 25 + warmup 20 + PPO 150, gamma 0.997):
+**479.3, 3.3% nights indoors, -99.9 +- 8.4, worse on 10 of 10.** One detail
+worth keeping: mid-training the SAMPLED policy reads 560.5 of lifespan while the
+argmax evaluates at 479 -- the residual entropy is doing the sheltering and the
+mode is a forager, i.e. the policy never *commits* to the behaviour it was
+handed, it merely has not finished forgetting it.
+
+### Do not re-run
+
+From scratch (`arb4`), warm-started (`arb4b`), warm-started at gamma 0.997
+(`arb4c`), warm-started with a critic warm-up (`arb4d`) -- all four converge to
+the same pure forager, all four lose to the scripted arbiter on 10 of 10 paired
+islands, and the gamma sweep of the objective is measured (the table above).
+More updates are not indicated: every curve is flat by ~update 40 (rule 4).
+The trade-world training run was NOT done, deliberately -- a chooser that cannot
+hold "build before dusk" in the easy world has nothing to say about relays in
+the hard one.
+
+### What would actually be worth trying, and what it would cost
+
+* **Interleave scripted and learned agents in one population** -- the
+  `spread-mix` move transposed. If 80 of 100 agents run the scripted arbiter,
+  the learned 20 EXPERIENCE sheltered nights from tick 0 (shelters exist,
+  V can price them) without being taught to build. Whether they free-ride or
+  contribute is then a real measurement, and the mixed-population machinery is
+  a day's work in the trainer.
+* **A household-level value baseline** -- the critic currently prices an
+  individual's return, and construction is a household good. A critic that sees
+  (or a baseline that subtracts) the household's mean return turns "my unit
+  completed our shelter" from noise into signal. Half credit-assignment fix, half
+  research question; the honest cost is that it changes what "unpaid" means.
+* **Longer or persistent options** -- `commit_ticks` 25 means a `deliver`
+  programme is ~6 separate decisions, each re-evaluated by a critic that cannot
+  see the compound. An option that persists until its GOAL state (site complete)
+  rather than a tick budget makes the whole programme one decision -- the same
+  shape as the travel option 1.0's plan ranks as the most defensible fix, and
+  the same honest cost: what emerges is when-to-build, never building.
+* **Not reward shaping.** Paying for builds at the option level is rule 1 with
+  fewer steps; the M3/M5 ablations already priced that lesson.
+
+### The stage-5 verdict, one paragraph
+
+The option level did exactly what the design doc promised and no more: it
+routes around the one-step wall for SINGLE-TRIP prizes -- the learned policy
+forages across the island at 93% harvest, better than the scripted arbiter,
+with travel-to-food as one decision -- and the wall reappears intact for
+COMPOUND prizes, where the payoff spans many decisions and many agents.
+Construction is 1.0's twenty-step walk with the steps renamed to units, and PPO
+declines it at every level of abstraction tried, including from a start where
+the behaviour was already installed and its own objective priced it higher.
+The scripted needs arbiter -- ~40 lines of scoring -- beats every learned
+variant by ~100 ticks on every island, because "be under cover tonight" is a
+judgement about the future that survival-reward RL at any gamma here refuses
+to hold. That is the sharpest statement this project has produced about what
+utility AI is FOR, and it is a positive result about authored agents wearing
+the clothes of a negative one about learning.

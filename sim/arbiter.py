@@ -400,7 +400,7 @@ class ArbiterTrainer:
 
     # --- update -------------------------------------------------------------
 
-    def update(self, buffers: dict, lr: float) -> dict:
+    def update(self, buffers: dict, lr: float, value_only: bool = False) -> dict:
         t = self.tcfg
         obs = np.stack(buffers["obs"])
         goals = np.asarray(buffers["goal"])
@@ -463,7 +463,19 @@ class ArbiterTrainer:
                 pg = torch.max(-adv * ratio,
                                -adv * ratio.clamp(1 - t.clip_coef, 1 + t.clip_coef)).mean()
                 v_loss = 0.5 * ((value - b_ret[mb]) ** 2).mean()
-                loss = pg - t.ent_coef * entropy.mean() + t.vf_coef * v_loss
+                if value_only:
+                    # Critic warm-up: the imitation phase trains the goal head on
+                    # nothing but cross-entropy, so PPO would otherwise begin with
+                    # a RANDOM critic -- and its first advantage estimates wreck
+                    # the warm-started policy before the critic can price the
+                    # sheltered nights that policy produces (1.0's own learning
+                    # curves put the critic ~60 updates ahead of the policy).
+                    # Value loss only; the trunk is shared, so the policy head is
+                    # perturbed only through features, not through a gradient of
+                    # its own.
+                    loss = t.vf_coef * v_loss
+                else:
+                    loss = pg - t.ent_coef * entropy.mean() + t.vf_coef * v_loss
                 self.optim.zero_grad()
                 loss.backward()
                 self.policy.clip_grad_norm(t.max_grad_norm)
@@ -527,6 +539,9 @@ def main() -> None:
     ap.add_argument("--imitate", type=int, default=0,
                     help="behaviour-clone the scripted arbiter for this many "
                          "updates before PPO (the option-level fork)")
+    ap.add_argument("--value-warmup", type=int, default=0,
+                    help="after imitation, fit the critic alone for this many "
+                         "updates before any policy gradient flows")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -556,6 +571,18 @@ def main() -> None:
     writer.writeheader()
 
     start = time.time()
+    for w in range(args.value_warmup):
+        buffers = {k: [] for k in ("stream", "obs", "goal", "logprob", "value",
+                                   "mask", "reward", "discount", "next_obs",
+                                   "done", "agent")}
+        trainer.collect(buffers)
+        stats = trainer.update(buffers, lr=tcfg.lr, value_only=True)
+        if (w + 1) % 5 == 0:
+            print(f"[warmup {w + 1}/{args.value_warmup}] "
+                  f"ev {stats['explained_variance']:.3f} "
+                  f"v_loss {stats['value_loss']:.3f}")
+    trainer.finished = []
+
     for update in range(1, tcfg.total_updates + 1):
         buffers: dict = {k: [] for k in ("stream", "obs", "goal", "logprob",
                                          "value", "mask", "reward", "discount",

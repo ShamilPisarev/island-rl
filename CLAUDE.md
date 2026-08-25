@@ -35,8 +35,9 @@ society (utility/"Maslow" arbiter + scripted controllers first, then a learned
 option-level policy on the same interface). The plan below remains the 1.0
 research thread and is unaffected.
 
-**Stages 1-4 are DONE, same day.** Stage 5 (a learned option-level arbiter, and
-the headline scripted-vs-learned comparison) is next. Stage 2/3/4 in one line
+**Stages 1-5 are DONE, same day.** The headline stage-5 comparison is run and
+**the scripted arbiter wins outright** -- see the stage-5 bullet and
+ISLAND2_DESIGN.md §10 before re-running anything. Stage 2/3/4/5 in one line
 each:
 
 * **Stage 2, utility agents.** A needs arbiter over goal-level options
@@ -93,6 +94,25 @@ each:
   happens by RAID (774/ep, 28% taking material, stone 2.6x over wood), not by
   gift (~4/ep) -- three treadmill/deadlock corrections are in ISLAND2_DESIGN.md
   §9 under "The trade lever". That world is stage 5's sharpest testbed.
+
+* **Stage 5, the learned arbiter.** `sim/arbiter.py`: semi-MDP PPO over the 15
+  goals (one transition per decision, per-agent asynchronous, gamma^k
+  bootstraps), one shared net + the scripted arbiter's own trait vector, menu
+  parity enforced by a shared `goal_availability`, and an arbiter zoo in
+  `sim.society` (`--arbiter`, `--vs` paired). **The scripted arbiter beats every
+  learned variant by ~100 ticks on 10/10 paired islands.** Four runs, all
+  converging to the same hyper-competent pure forager (93% harvest, 0-3% of
+  nights indoors): from scratch (456.7, and BELOW the random-over-menu floor of
+  533.9), imitation-warm-started (464.1 -- PPO erases the teacher in flight,
+  spread-nav's shape one level up), warm-started at gamma 0.997 (476.3, in a
+  regime where its own measured objective prefers the scripted behaviour, 8.24
+  vs 7.22), and with a critic warm-up (479.3). At gamma 0.99 the forager
+  genuinely wins the objective (4.47 vs 4.41) -- reward-alignment, not
+  algorithm; above that it is optimisation. **Verdict: the option level routes
+  around the one-step wall for single-trip prizes (travel, forage) and the wall
+  reappears intact for compound multi-agent prizes (construction).** §10 has
+  the do-not-re-run list and the three levers worth trying (mixed populations,
+  household-level baseline, persist-until-goal options).
 
 **Stage 1 (engine scale pass) detail.** The design doc's forecast
 that O(n²) neighbour queries would need a spatial hash was refuted by the
