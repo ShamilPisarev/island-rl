@@ -16,7 +16,15 @@ the mixedrandom floor, or anything on the §10 do-not-re-run list.
 
 ---
 
-## 1. Provisioner in the seasons world (cheapest, ~30 min total)
+## 1. Provisioner in the seasons world — DONE 2026-08-25 (`arb5-ramp`)
+
+Result: transfers but does not intensify (store_food 8.3% vs 8.8%, theft
+11.2% vs 11.4%); piles fuller all season (8.63/8.62/6.69 vs 8.24/7.60/6.12,
+deposits +25%); learned edge +5.0 +- 2.2 (6/10), compressed by the 599/600
+ceiling, not a regression; construction 0.0% again. Do not re-run.
+Write-up: ISLAND2_DESIGN.md §11. Original item kept below for the record.
+
+## 1-orig. Provisioner in the seasons world (cheapest, ~30 min total)
 
 **What**: train the mixed 20-learned setup in `society4_ramp.yaml` instead of
 `society4.yaml`. **Why**: arb5-hh produced a food-banking provisioner in a

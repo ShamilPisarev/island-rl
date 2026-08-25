@@ -162,6 +162,23 @@ each:
   (night predator, shelter tiers, craftable tool, gated unlocks) is sketched
   at the end of §11 -- every rung gets sized with `sim.economy` before it
   runs, and every adoption claim needs its floor.
+  **The provisioner was then trained IN this world (`arb5-ramp`, same recipe
+  as arb5-hh: 20 learned, household reward, gamma 0.997, 150 updates), and it
+  transfers but does not intensify.** Goal mix is arb5-hh's within a point
+  (store_food 8.3% vs 8.8%, theft-import 11.2% vs 11.4%, raid 0.0%), so
+  "banks harder when winter is coming" is falsified -- the policy is
+  climate-invariant; what rose is the pile (stock by third 8.63/8.62/6.69
+  vs the all-scripted 8.24/7.60/6.12 on the same seeds, deposits +25%).
+  Learned-slot paired edge **+5.0 +- 2.2 (6/10)** -- NOT a regression from
+  arb5-hh's +22.6: the learned slots sit at 599.0 of 600, so the seasons
+  world caps the winnable edge (the scripted arbiter is simply better here
+  in those slots). Construction still exactly 0.0%, third world running,
+  now with storms levelling shelters all episode. Nights indoors 86.6%,
+  above the scripted 80's 83.6% in the same world (the drop from 91.7% is
+  the storms, not the policy). One measurement note: household = i % 20 and
+  the learned set is agents 0..19, so every household hosts a learned agent
+  -- there are no scripted-only households inside a mixed run. Do not
+  re-run. Write-up: ISLAND2_DESIGN.md §11.
 
 **Stage 1 (engine scale pass) detail.** The design doc's forecast
 that O(n²) neighbour queries would need a spatial hash was refuted by the

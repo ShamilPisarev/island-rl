@@ -1058,6 +1058,65 @@ world, with the pre-registered checks from the config header:**
 * The pre-registered capacity failure mode did NOT fire: the pile peaks at
   8.2 of 12, so "full pile" readings are behaviour, not the cap.
 
+### The provisioner in the seasons world (`arb5-ramp`), pre-registered
+
+Written 2026-08-25, reads registered before the run. The question: `arb5-hh`
+produced a food-banking provisioner in `society4`, where banking barely
+matters; this world is the first where banking early is arithmetically
+load-bearing. Does the provisioner bank harder when winter is coming, and
+does the learned edge grow? Same recipe as `arb5-hh` -- 20 learned, one per
+household, gamma 0.997, 150 updates from scratch, `--household-reward` -- the
+only change is the world. Pre-registered: store_food share vs 8.8%; stock
+level by episode third vs the scripted-only world on the same seeds;
+learned-slot paired lifespan vs +22.6 +- 7.0; construction expected 0.0%
+(any nonzero is news); nights indoors vs 91.7% / this world's 84.0%.
+
+**Results, 10 paired islands (one measurement note first: agents 0..19 are
+the learned set and household = i % 20, so EVERY household hosts one learned
+agent -- there are no scripted-only households inside the mixed run, and the
+stock read is therefore mixed-world vs all-scripted-world on the same
+seeds, not household-vs-household.)**
+
+| the learned slots (20 agents) | lifespan | nights in | store_food | steal | vs same slots all-scripted |
+|---|---|---|---|---|---|
+| **seasons world (`arb5-ramp`)** | **599.0** | 86.6% | 8.3% | 11.2% | **+5.0 +- 2.2 (6/10)** |
+| society4 (`arb5-hh`) | 598.0 | 91.7% | 8.8% | 11.4% | +22.6 +- 7.0 (9/10) |
+
+* **The provisioner transfers but does not intensify.** store_food 8.3% of
+  goal-ticks against arb5-hh's 8.8%, theft-import 11.2% against 11.4%, raid
+  0.0% in both -- the goal mix is arb5-hh's within a point everywhere, so the
+  pre-registered hypothesis (banks HARDER when winter is coming) is
+  falsified. Kin-shared reward buys the same provisioner whatever the
+  climate; the seasonal pressure changed the world, not the policy.
+* **The banking is real at the pile, all season.** Stock by episode third,
+  same seeds: mixed **8.63 / 8.62 / 6.69** against the all-scripted world's
+  8.24 / 7.60 / 6.12 -- fuller in every third, largest mid-episode (+1.0),
+  with deposits up 25% (1540.8 vs 1237.3/ep) and steals up ~770/ep, which is
+  the 20 provisioners importing. The seasonal SHAPE (drain in the last
+  third) is unchanged; the learned agents raise the level, not the rhythm.
+* **The learned edge compressed to +5.0 +- 2.2 (6/10), and the reason is a
+  ceiling, not a regression.** The learned slots sit at 599.0 of 600 --
+  there is almost no lifespan left to win. The scripted arbiter handles the
+  seasons world better in these slots than it handled society4 (the +22.6
+  was earned against a weaker baseline), so the edge is real (~2.3 SE) but
+  cannot be large. Do not read the 22.6 -> 5.0 fall as the provisioner
+  failing; the denominators differ. Population paired: +2.2 +- 2.2, nil;
+  spillover to the scripted 80: +1.5 +- 2.6, nil.
+* **Construction contribution is exactly 0.0% for the third world running**
+  (harvest_wood, harvest_stone, deliver, store_material, draw_material all
+  zero; scripted 80: 2.7% / 0.6% / 2.2% / 2.0%). The compound wall now
+  stands in a world where shelter is levelled by storms and must be rebuilt
+  through the episode -- maximum demand for construction, same refusal.
+* Nights indoors 86.6% -- below arb5-hh's 91.7% but ABOVE the scripted 80 in
+  the same world (83.6%) and this world's all-utility 84.0%, so the drop is
+  the late storms levelling shelters (a world effect §11 already measured),
+  not the learned behaviour regressing.
+
+Do not re-run this configuration. What it adds to the ladder: the
+provisioner is climate-invariant at this pressure -- if a rung is ever
+supposed to change the learned MIX, it will need to change what a
+one-decision chain can buy, not how much the future hurts.
+
 **Where this fits the technology thread.** This is the cheapest rung of the
 escalation ladder discussed for "tech emergence": the world cannot make agents
 invent anything (the action set is the physics -- the colony-sim lesson in
