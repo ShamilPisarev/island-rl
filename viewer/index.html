@@ -123,6 +123,27 @@
     white-space: nowrap;
   }
 
+  /* ---- legend: every on-screen marker, named ----
+     Added because the markers were not self-explanatory and there was nothing
+     anywhere that said so: a red ball at the hip and a red diamond over the
+     head mean completely different things. Built from the viewer's own colour
+     constants, so it cannot drift from what is actually drawn. */
+  #legendBox {
+    border-bottom: 1px solid var(--line); padding: 6px 12px 8px;
+    font-size: 11px; color: var(--dim);
+  }
+  #legendBox > summary { cursor: pointer; padding: 4px 0; color: var(--accent); }
+  #legend { display: flex; flex-direction: column; gap: 5px; margin-top: 6px; }
+  #legend .grp { color: var(--fg); font-weight: 600; margin-top: 5px; font-size: 10.5px; }
+  #legend .item { display: flex; align-items: center; gap: 7px; }
+  #legend .key {
+    width: 11px; height: 11px; flex: none; border-radius: 2px;
+    border: 1px solid rgba(255,255,255,.15);
+  }
+  #legend .key.round { border-radius: 50%; }
+  #legend .key.diamond { border-radius: 2px; transform: rotate(45deg) scale(.82); }
+  #legend .key.ring { background: none; border: 2px solid #c8bb7a; border-radius: 50%; }
+
   /* ---- transport ---- */
   #transport {
     grid-column: 1; grid-row: 2;
@@ -173,6 +194,10 @@
     </div>
 
     <div id="summary"></div>
+    <details id="legendBox">
+      <summary>what am I looking at?</summary>
+      <div id="legend"></div>
+    </details>
     <div id="agents"></div>
   </aside>
 

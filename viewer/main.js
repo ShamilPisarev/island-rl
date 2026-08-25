@@ -404,6 +404,7 @@ function loadReplay(replay, origin) {
   controls.update();
 
   buildAgentPanel();
+  renderLegend();
   renderSummary();
   $('replayLabel').textContent = `${replay.label ?? 'replay'} · ${replay.source ?? '?'} · seed ${replay.seed}`;
   $('scrub').max = String(state.lastTick);
@@ -799,6 +800,57 @@ function updateAgentPanel(tick) {
   const focus = state.follow >= 0 ? state.follow : state.hover;
   state.popDetail.textContent = focus >= 0 ? describeAgent(focus)
     : 'click or hover an agent';
+}
+
+// Name every marker that is actually on screen for THIS replay, from the same
+// constants that draw it. Nothing here was discoverable before: a red ball at
+// the hip (carried berries) and a red diamond over the head (stealing) look
+// like the same "red dot" until someone tells you they are not.
+function renderLegend() {
+  const host = $('legend');
+  if (!host) return;
+  const hex = (n) => `#${n.toString(16).padStart(6, '0')}`;
+  const names = new Set(state.actionNames);
+  const rows = [];
+
+  const item = (cls, color, label, note) =>
+    `<div class="item"><span class="key ${cls}" style="background:${color}"></span>` +
+    `<span>${label}${note ? ` <span style="opacity:.65">— ${note}</span>` : ''}</span></div>`;
+
+  rows.push('<div class="grp">the agents</div>');
+  rows.push(item('', 'linear-gradient(90deg,#e05a7a,#5ac8e0)', 'body colour',
+                 'who they are, one per agent'));
+  rows.push(item('round', hex(0xd0466a), 'ball at the hip',
+                 'berries being carried — bigger means more'));
+
+  rows.push('<div class="grp">diamond over the head — what they are doing</div>');
+  // Only list actions this replay actually contains, so a foraging-only world
+  // does not advertise stealing and building it never had.
+  const labels = {
+    gather: 'picking berries', steal: 'stealing from a neighbour',
+    chop: 'chopping wood', mine: 'mining stone', build: 'building a shelter',
+    give_food: 'giving food away', give_material: 'handing over material',
+  };
+  for (const [action, color] of Object.entries(ACTION_PIP)) {
+    if (names.has(action)) rows.push(item('diamond', hex(color), labels[action] ?? action));
+  }
+  rows.push('<div class="item" style="opacity:.7">no diamond — walking, or doing nothing</div>');
+
+  if (state.construction) {
+    rows.push('<div class="grp">the island</div>');
+    rows.push(item('ring', 'none', 'ring on the ground',
+                   'how far a finished shelter protects'));
+    rows.push(item('', '#7a5c3a', 'brown dome', 'a shelter (part-built ones are smaller)'));
+    rows.push(item('', '#4f7a3a', 'green cone', 'a tree — wood'));
+    rows.push(item('', '#8b93a0', 'grey lump', 'a rock — stone'));
+  }
+  rows.push(item('', '#3f6b32', 'leafy bush', 'food; it goes bare brown when picked clean'));
+
+  if (state.exchange) {
+    rows.push('<div class="grp">lines between agents</div>');
+    rows.push(item('', hex(GIFT_COLORS[0]), 'a line', 'something was just handed over'));
+  }
+  host.innerHTML = rows.join('');
 }
 
 function renderSummary() {
