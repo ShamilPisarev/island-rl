@@ -200,7 +200,8 @@ def _warn_option_mismatch(arb, checkpoint: str) -> None:
 
 def make_runner(cfg: Config, policy: str, seed: int,
                 acfg: ArbiterConfig | None = None,
-                checkpoint: str | None = None) -> "OptionRunner | None":
+                checkpoint: str | None = None,
+                learn_agents: int | None = None) -> "OptionRunner | None":
     """The arbiter zoo, one place. `None` means raw random actions (the floor).
 
     Every non-random entry is an `OptionRunner` over the SAME controllers and the
@@ -246,7 +247,11 @@ def make_runner(cfg: Config, policy: str, seed: int,
         # survives well, "learned matches scripted" would mean the society
         # carries any passenger -- so the learned run is read against this.
         from .arbiter import MixedArbiter, RandomGoalArbiter
-        n_learn = max(cfg.society.num_households, 1)
+        # SIZE-MATCHED to the learned run it is the floor for. The default is
+        # one per household because that is the split arb5-mix trained; the
+        # learned-share sweep needs a floor at 40, 60, 80 and 100 too, or the
+        # only point on the curve with a control is its left end.
+        n_learn = learn_agents or max(cfg.society.num_households, 1)
         learn_mask = np.zeros(cfg.world.num_agents, dtype=bool)
         learn_mask[:n_learn] = True
         scripted = UtilityArbiter(cfg, acfg, seed=seed)
@@ -256,12 +261,13 @@ def make_runner(cfg: Config, policy: str, seed: int,
 
 
 def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | None = None,
-                 policy: str = "utility", checkpoint: str | None = None) -> SocietyReport:
+                 policy: str = "utility", checkpoint: str | None = None,
+                 learn_agents: int | None = None) -> SocietyReport:
     rep = SocietyReport(episodes=episodes)
     n_act = num_actions(cfg)
     for e in range(episodes):
         world = World(cfg, seed=seed + e)
-        runner = make_runner(cfg, policy, seed + e, acfg, checkpoint)
+        runner = make_runner(cfg, policy, seed + e, acfg, checkpoint, learn_agents)
         rng = np.random.default_rng(seed + e + 99991)
         learn_mask = (getattr(getattr(runner, "arbiter", None), "learn_mask", None)
                       if runner is not None else None)
@@ -612,6 +618,10 @@ def main() -> None:
                          "runner in the comparison, including --vs, so a paired "
                          "read stays a comparison of choosers.")
     ap.add_argument("--persist-timeout", type=int, default=None)
+    ap.add_argument("--learn-agents", type=int, default=None,
+                    help="size of the minority for --arbiter mixedrandom "
+                         "(default: one per household). A learned checkpoint "
+                         "carries its own split and ignores this.")
     ap.add_argument("--random", action="store_true", help="also run the random-action floor")
     ap.add_argument("--arbiter", default="utility",
                     choices=["utility", "learned", "randomgoal", "mixed", "mixedrandom"],
@@ -642,12 +652,14 @@ def main() -> None:
     acfg = ArbiterConfig(**overrides)
 
     rep = run_episodes(cfg, args.episodes, args.seed, acfg,
-                       policy=args.arbiter, checkpoint=args.checkpoint)
+                       policy=args.arbiter, checkpoint=args.checkpoint,
+                       learn_agents=args.learn_agents)
     print(format_report(cfg, rep, f"{args.arbiter} arbiter"))
 
     if args.vs:
         other = run_episodes(cfg, args.episodes, args.seed, acfg,
-                             policy=args.vs, checkpoint=args.vs_checkpoint)
+                             policy=args.vs, checkpoint=args.vs_checkpoint,
+                             learn_agents=args.learn_agents)
         print()
         print(format_report(cfg, other, f"{args.vs} arbiter"))
         # Paired per-island differences: same seed block, so island noise

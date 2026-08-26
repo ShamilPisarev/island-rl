@@ -176,6 +176,29 @@ each:
   §10 levers against the construction wall are now spent. Write-up:
   ISLAND2_DESIGN.md §10.
 
+  **The learned-share sweep is RUN (`arb5-mix40/60/80/90/100`): free-riding
+  scales to 90% and then falls off a cliff, and the cliff is the PROVIDER
+  going extinct, not a commons degrading.** One recipe at every point (gamma
+  0.997, 150 updates, from scratch, 25-tick options), N=20 = arb5-mix
+  re-measured, N=100 re-trained here because arb4c was warm-started (it
+  reproduces: 473.8 / 0.35% nights vs 476.3 / 2.6%). Completions/episode
+  **59.3 (all scripted) / 58.2 / 57.6 / 52.7 / 48.1 / 41.6 / 0.8** at 0/20/40/
+  60/80/90/100 learned, with **population lifespan flat at 582-589 across every
+  interior point** (all at or above the all-scripted 579.2) and then 473.8 with
+  45.5 deaths at 100. **Ten scripted builders house a hundred agents**, because
+  the shrinking minority works ~3.5x harder per agent (its own harvest_wood
+  share 3.0% -> 10.6%, deliver 1.5% -> 8.7% as it falls from 80 agents to 10) --
+  the needs scorer answering a labour shortage. The pre-registered prediction
+  (collapse between 60 and 80) is REFUTED: nothing collapses on the interior.
+  Learned-slot edge decays smoothly +19.1 -> +17.9 -> +15.0 -> +11.2 -> +7.3
+  and only breaks at 100 (-105.4 +- 8.5), each point against its own
+  size-matched random floor (-40 to -57, 0/10 everywhere), and spillover to the
+  scripted slots is nil at every share. At N=100 the failure is arb4's
+  option-level chicken-and-egg (nobody builds -> no shelter is ever finished ->
+  `shelter` never on the menu), i.e. a discontinuity at exactly zero builders.
+  New: `--learn-agents` on `sim.society` so `mixedrandom` is size-matched at
+  every share. Do not re-run these six points. Write-up: ISLAND2_DESIGN.md §10.
+
 * **The seasons world (`config/island2/society4_ramp.yaml`, design doc §11).**
   `society.shock_ramp` scales shock SEVERITY with episode progress (cadence
   and rng untouched; ramp 0 bit-identical, pinned; storm damage clamped at
@@ -617,7 +640,7 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   original verdict was reached where nothing was worth trading: giving stops being
   selected against and the flow turns directional, but it still buys no survival.
   Best checkpoint: `checkpoints/m5b` (497.5 lifespan).
-- `pytest` passes (363 tests).
+- `pytest` passes (364 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -796,6 +819,20 @@ python -m sim.society --config config/island2/society4.yaml --episodes 10 --pers
     --arbiter mixed --checkpoint checkpoints/arb5-persist/latest.pt --vs utility
 python -m sim.society --config config/island2/society4.yaml --episodes 10 --persist \
     --arbiter mixedrandom --vs utility          # the floor, in the same world
+
+# Island 2.0 stage 5, the learned-share sweep. SEQUENTIALLY -- never parallel on
+# this laptop. The floor must be SIZE-MATCHED at each share (--learn-agents),
+# or only the left end of the curve has a control.
+for N in 40 60 80 90 100; do
+  python -m sim.arbiter --config config/island2/society4.yaml \
+      --run-name arb5-mix$N --learn-agents $N --gamma 0.997 --updates 150
+  python -m sim.society --config config/island2/society4.yaml --episodes 10 \
+      --arbiter mixed --checkpoint checkpoints/arb5-mix$N/latest.pt --vs utility
+  python -m sim.society --config config/island2/society4.yaml --episodes 10 \
+      --arbiter mixedrandom --learn-agents $N --vs utility
+done
+# N=100 has no scripted remainder, so it is `--arbiter learned` against the
+# `randomgoal` floor -- `mixed` correctly refuses to invent a split.
 ```
 
 ## Compute budget — runs are longer than they need to be

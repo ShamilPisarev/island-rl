@@ -1111,6 +1111,82 @@ untried moves are all mechanic-level -- make the good excludable (only
 contributors sleep inside), or make the contribution a single one-decision act
 with an immediate personal return -- and both change what the question is.
 
+### The learned-share sweep: free-riding scales to 90%, then falls off a cliff
+
+Run 2026-08-25/26. Twenty free-riders cost the society nothing (`arb5-mix`) and
+a hundred kill it (`arb4`/`arb4c`), so somewhere in between the shelters stop
+getting built -- the tragedy-of-the-commons threshold, measured. Mixed training
+at `--learn-agents` 40, 60, 80, 90, 100 on `society4.yaml`, one recipe
+throughout (gamma 0.997, 150 updates, from scratch, individual reward, 25-tick
+options, sequentially -- never parallel on this laptop). N=20 is `arb5-mix`
+re-measured in the same harness. **N=100 was re-trained here rather than read
+off `arb4c`**, because that point was imitation warm-started and a recipe
+mismatch inside a curve is not a curve; it reproduces (473.8 / 0.35% nights
+against arb4c's 476.3 / 2.6%).
+
+Every point gets its own floor: `--arbiter mixedrandom --learn-agents N` now
+takes a size, so a random-goal minority of the SAME size is measured at each
+share (it was previously hardcoded to one per household, which would have left
+only the left end of the curve with a control).
+
+| learned | completions/ep | pop lifespan | deaths | nights in, learned | nights in, scripted | learned slots vs all-scripted | size-matched floor |
+|---|---|---|---|---|---|---|---|
+| 0 (all scripted) | **59.3** | 579.2 | 10.4 | -- | 85.7% (pop) | -- | -45.3 +- 6.4 (randomgoal) |
+| 20 | 58.2 | 582.6 | 8.5 | 84.0% | 83.3% | **+19.1 +- 7.4 (7/10)** | -55.9 +- 8.3 |
+| 40 | 57.6 | 587.7 | 6.0 | 80.8% | 81.7% | **+17.9 +- 4.7 (9/10)** | -57.3 +- 7.6 |
+| 60 | 52.7 | 587.5 | 6.8 | 74.8% | 77.8% | **+15.0 +- 4.5 (8/10)** | -52.0 +- 6.3 |
+| 80 | 48.1 | 589.1 | 7.3 | 75.7% | 81.2% | **+11.2 +- 6.6 (8/10)** | -44.1 +- 5.1 |
+| 90 | 41.6 | 585.7 | 8.3 | 74.6% | 83.4% | **+7.3 +- 5.3 (8/10)** | -39.8 +- 5.1 |
+| **100** | **0.8** | **473.8** | **45.5** | **0.35%** | -- | **-105.4 +- 8.5 (0/10)** | -45.3 +- 6.4 |
+
+**The pre-registered prediction was wrong, and the way it was wrong is the
+result.** It said completions would collapse between 60 and 80 learned. They do
+not collapse anywhere on the interior: 59.3 -> 41.6 is a gentle, roughly linear
+decline across a range where the builder population falls from 100 agents to
+TEN, and population lifespan does not degrade at all (582-589 at every interior
+point, all of them at or above the all-scripted control's 579.2). The entire
+collapse lives in the last ten agents: 41.6 completions -> 0.8, deaths 8.3 ->
+45.5, nights indoors 74.6% -> 0.35%.
+
+* **Ten scripted builders house a hundred agents.** That is the sweep's
+  headline. What makes it possible is that the shrinking minority WORKS HARDER:
+  the scripted remainder's own goal-ticks go 3.0% -> 3.6% -> 4.8% -> 8.7% ->
+  **10.6%** on `harvest_wood` and 1.5% -> 8.7% on `deliver` as it shrinks from 80
+  agents to 10 -- ~3.5x the per-agent construction effort. It is not altruism
+  arriving; it is the needs scorer responding to an unmet need (`shelter_stock`
+  rises as sites sit unfinished) exactly as designed, which is a utility
+  arbiter's answer to a labour shortage.
+* **Island-wide construction effort falls faster than completions do.** Roughly
+  2.3x less wood-harvest effort in total between N=20 and N=90 for a 1.4x fall
+  in completions, so the builders also get more done per tick of work -- fewer
+  agents competing for the same focal sites.
+* **Free-riders never measurably cost the builders their own lives.** Spillover
+  at the scripted slots: -0.5, +2.2, -1.9, +4.2, -0.5 +- 4-9 ticks across the
+  five interior shares. Nil everywhere, which is the honest form of "free-riding
+  scales".
+* **This is NOT a commons threshold, it is the option-level chicken-and-egg.**
+  At N=100 nobody builds, so no shelter is ever finished, so `shelter` is never
+  on the menu, so no learned agent can price a sheltered night -- `arb4`'s
+  original diagnosis, and the curve now shows it is a discontinuity at exactly
+  zero builders rather than a commons that degrades as it is exploited. The
+  learned edge decays smoothly toward it (+19.1 -> +7.3) because the good being
+  free-ridden on gets thinner; survival only breaks when the good disappears.
+* **Construction contribution by the learned subset stays a trace at every
+  share** -- deliver <= 0.05%, harvest_wood <= 0.001%, store_material 0.1-1.5%.
+  It is not exactly zero at 40-90 the way it was at 20 (store_material 1.2-1.5%),
+  which is the only sense in which more free-riders pull any weight.
+* **Nights indoors falls off the plateau early and then stops falling** (84% at
+  20, ~75% from 60 on), tracking how many finished shelters exist rather than the
+  learned share as such.
+
+Do not re-run any of these six points. What the curve says for the ladder: a
+population of authored agents is astonishingly robust to learned passengers --
+90% of it can free-ride with no cost in lives -- and the failure mode is not
+exploitation but EXTINCTION OF THE PROVIDER. Any future rung that wants to make
+contribution emerge has to make declining it individually expensive, because
+declining it collectively is what the world already punishes, and PPO never sees
+the collective bill.
+
 ### The stage-5 verdict, one paragraph
 
 The option level did exactly what the design doc promised and no more: it

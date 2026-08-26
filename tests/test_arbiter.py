@@ -458,3 +458,13 @@ def test_persist_off_leaves_the_trainer_bit_identical(cfg):
         return len(buffers["goal"]), h.hexdigest()
     assert digest(None) == digest(ArbiterConfig(persist_timeout=999))
     assert digest(None) == (118, digest(ArbiterConfig())[1])
+
+
+def test_mixedrandom_floor_is_size_matched(cfg):
+    """The learned-share sweep needs a random-goal floor at EVERY share, not
+    only at one-per-household -- otherwise the only point on the curve with a
+    control is its left end."""
+    rep = run_episodes(cfg, 1, 10000, policy="mixedrandom", learn_agents=7)
+    assert rep.learn_mask.sum() == 7
+    default = run_episodes(cfg, 1, 10000, policy="mixedrandom")
+    assert default.learn_mask.sum() == cfg.society.num_households

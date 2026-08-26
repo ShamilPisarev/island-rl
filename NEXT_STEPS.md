@@ -90,7 +90,21 @@ indoors must not regress from 84-92%.
     learned 20 is the headline; the honest cost (when-to-build, never
     building) goes in every write-up.
 
-## 3. The learned-share sweep (where does free-riding collapse? ~1.5h of runs)
+## 3. The learned-share sweep — DONE 2026-08-26 (`arb5-mix40/60/80/90/100`)
+
+Result: free-riding scales to 90% and the "threshold" does not exist. The
+pre-registered prediction (collapse between 60 and 80 learned) is refuted —
+completions/episode fall gently 59.3 / 58.2 / 57.6 / 52.7 / 48.1 / 41.6 at
+0/20/40/60/80/90 learned with population lifespan FLAT at 582-589 (all at or
+above the all-scripted 579.2), then collapse to 0.8 completions / 473.8 / 45.5
+deaths / 0.35% nights at 100. Ten scripted builders house a hundred agents,
+because the shrinking minority works ~3.5x harder per agent (harvest_wood share
+3.0% -> 10.6%). The cliff is arb4's option-level chicken-and-egg at exactly
+zero builders, not a commons degrading. Learned edge +19.1 -> +7.3 across the
+interior, each point against its own size-matched random floor. Do not re-run
+these six points. Write-up: ISLAND2_DESIGN.md §10. Original item kept below.
+
+## 3-orig. The learned-share sweep (where does free-riding collapse? ~1.5h of runs)
 
 **What**: mixed training at 40, 60, 80 learned agents (20 and 100 already
 measured -- 100 is `arb4c`, the all-learned collapse). **Why**: 20 free-riders
