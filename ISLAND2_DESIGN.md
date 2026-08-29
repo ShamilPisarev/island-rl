@@ -1476,3 +1476,108 @@ keys so a world without them writes a file the size of a v4 one:
 exists whether or not a shock fires); `SUPPORTED_SCHEMA` in `viewer/main.js`
 carries 1-5, so every replay ever written still loads. Verified in a browser on
 all three current worlds with no console errors.
+
+## 14. Tech ladder rung 2: the night predator, and a hazard nobody adapts to
+
+**Result in one line: unlike rung 1 the mechanic bites -- and the population
+absorbs it entirely in deaths, changing nothing about its behaviour.**
+
+`config/island2/society4_predator.yaml`. Twelve predators sleep at dens on the
+outer island by day; at night each walks at the nearest agent that is NOT under
+cover and takes 1.5 hunger a tick from anyone within 6 units. Deterministic --
+the dens are drawn once off their own rng stream and every move afterwards is a
+function of positions, so a predator world has no per-tick randomness in it and
+adding predators cannot shift the bush layout of an otherwise identical world.
+
+**No new action and no new goal.** There is nothing to do about a predator that
+this world does not already offer -- be indoors, or be somewhere else -- and a
+`flee` goal would score the response and then measure the score. Three
+observation channels are added so a learned chooser could see one; the scripted
+arbiter does not read them. The honest question rung 2 asks is whether the night
+behaviour the population ALREADY has is enough.
+
+### Sizing: the economy's estimate was a fiftyfold under-count, and it said so
+
+`sim.economy` was taught the predator before any config was sized, because a
+predator is a demand-side change and the last mechanic that moved demand
+(blights) forced a resize. It models the share of the island a pack covers and
+prints, in the report, that this is a LOWER bound because predators hunt rather
+than patrol. It is: for the first sizing the tool says 0.2% of an exposed night
+and the measurement says **10.2%**.
+
+So the rung was sized against a measured target instead -- an exposed agent
+already pays 0.5 x 3.0 = 1.5 hunger a tick, and the rung should catch it on
+roughly a fifth of the ticks it spends out:
+
+| count | reach | hunted share of an exposed night | lifespan |
+|---|---|---|---|
+| 4 | 2.0 | 10.2% | 589.5 |
+| 8 | 4.0 | 14.8% | 591.0 |
+| **12** | **6.0** | **21.4%** | 590.9 |
+| 16 | 8.0 | 28.4% | 591.3 |
+
+**Lifespan is flat down that column**, on one episode each, which is what makes
+picking the row that hits the target a sizing decision rather than a choice of
+result: there is no effect in the column to cherry-pick.
+
+### What was measured, 5 paired episodes on seeds 10000-10004
+
+| | predators | control | paired |
+|---|---|---|---|
+| **mean lifespan** | 563.7 | 574.5 | **-10.8 +- 2.8 (1/5)** |
+| **deaths / episode** | 15.20 | 11.80 | **+3.40 +- 0.40** |
+| nights indoors | 84.5% | 85.6% | **-1.08 +- 0.76** |
+| berries / episode | 895.4 | 898.2 | -2.8 +- 5.0 |
+| shelters / episode | 52.2 | 53.6 | -1.4 +- 1.4 |
+| night ticks exposed | 2149 | 2041 | +108 +- 111 |
+
+484 attacks an episode, 29.8 of 100 agents caught at least once, 727 hunger
+taken of the 33,000 the island feeds them.
+
+**Pre-registered failure mode 2 fired, and it was the one the header called
+interesting.** The predator is not ignored by the world -- deaths rise 29% and
+lifespan falls by eleven ticks, both far outside noise. It is ignored by the
+AGENTS: nights indoors moves by one point in the WRONG direction, and berries
+and shelters do not move at all. The population pays the bill in lives and
+changes nothing.
+
+The mechanism is not mysterious and it is worth stating because it is the
+finding: `NEED_SAFETY` is driven by the CLOCK. It rises as dusk approaches and
+falls inside a shelter, and it knows nothing about a wolf standing outside. An
+agent that is out at night is out because its wealth or hunger need outbid a
+clock, and a predator does not enter that arithmetic anywhere.
+
+Failure mode 1 (everyone hides all night and starves) did NOT fire -- berries
+are flat -- and failure mode 3 (the rung was never tested) did not either, at
+23.8% of an exposed night.
+
+### The mega-camp control, re-derived (rule 5)
+
+Failure mode 3 of the design doc's original three asks whether the population has
+collapsed onto one spot -- and **a predator packs people together on purpose**,
+so a WATCH on crowding here would be the mechanic working rather than failing.
+The number that still discriminates is the household one, and it reads
+**29.7% of agents nearer a foreign home than their own at night [OK]**, against
+36.6% in the axe world and a 95% no-information baseline. The piles stay
+separate; nobody has been driven into one hut.
+
+### What this rung adds to the ladder
+
+* **Rung 1 and rung 2 fail in exactly opposite ways, and together they say where
+  the next one goes.** The axe worked perfectly and moved nothing because it
+  attacked a cost that was not binding. The predator moves plenty and is not
+  responded to, because the response would have to come from a need the scripted
+  scorer does not have. Rung 1 was a mechanic looking for a constraint; rung 2 is
+  a constraint looking for a need.
+* **The obvious next move is also the one to be careful with.** Adding predator
+  proximity to `NEED_SAFETY` would certainly make the population hide -- and it
+  would be scoring the response and then reporting the score, which is rule 1 in
+  scripted clothing. The version of that experiment worth running is the LEARNED
+  one: the channels are already in the observation, so a learned arbiter in this
+  world is being offered a hazard the scripted scorer is blind to. That is the
+  first rung where the learned chooser has information the scripted one does not,
+  which makes it the first place a learned-over-scripted win would mean something
+  new.
+* A hazard that is real, measurable, and produces no adaptation is still a
+  result. It is the same shape as 1.0's oldest finding -- the world's incentives
+  were never the missing piece.

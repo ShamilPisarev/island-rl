@@ -10,9 +10,10 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createPopulation } from './biped.js';
 
 // --- replay schema this build can read (see sim/replay.py) ------------------
-const SUPPORTED_SCHEMA = [1, 2, 3, 4, 5];   // v2 = M4 materials/shelters/night, v3 = M5 transfers,
-                                           // v4 = island2 stage 4 households/stockpiles/raids,
-                                           // v5 = goals (`o`), shocks (`n`), learned-agent flags
+const SUPPORTED_SCHEMA = [1, 2, 3, 4, 5, 6];   // v2 = M4 materials/shelters/night, v3 = M5 transfers,
+                                              // v4 = island2 stage 4 households/stockpiles/raids,
+                                              // v5 = goals (`o`), shocks (`n`), learned-agent flags,
+                                              // v6 = predator positions (`d`)
 // Column order inside each tick's `a` rows. Cross-checked against the file's
 // own tick_fields on load, so a schema change cannot silently shift a column.
 const A_X = 0, A_Z = 1, A_HUNGER = 2, A_FOOD = 3, A_ALIVE = 4, A_ACTION = 5;
@@ -151,6 +152,7 @@ const state = {
   learn: null,        // Uint8Array, 1 where a learned arbiter drives that agent
   learnCount: 0,
   learnRings: [],     // one ring mesh per learned agent (there are ~20, not 100)
+  predators: [],      // one mesh per predator (schema v6)
 };
 
 function fatal(title, message) {
@@ -483,6 +485,37 @@ function loadReplay(replay, origin) {
     }
   }
 
+  // --- schema v6: the predators. A handful of meshes, not an instanced rig --
+  // there are twelve of them, and a thing that hunts should look different from
+  // the people it hunts rather than being a differently-coloured agent.
+  state.predators = [];
+  if (Array.isArray(replay.ticks[0]?.d)) {
+    const reach = replay.world?.predator_attack_radius ?? 6;
+    for (let k = 0; k < replay.ticks[0].d.length; k++) {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(
+        new THREE.ConeGeometry(1.5, 4.5, 5),
+        new THREE.MeshStandardMaterial({ color: 0x8a1420, roughness: 0.6, flatShading: true }),
+      );
+      body.position.y = ISLAND_TOP + 2.2;
+      body.rotation.x = Math.PI;   // a snout, not a party hat
+      g.add(body);
+      // The reach it actually kills inside, drawn rather than guessed at: a
+      // hazard whose radius you cannot see is a hazard you cannot learn to read.
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(reach - 0.35, reach, 32),
+        new THREE.MeshBasicMaterial({
+          color: 0xff3b30, transparent: true, opacity: 0.22, side: THREE.DoubleSide,
+        }),
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = ISLAND_TOP + 0.1;
+      g.add(ring);
+      worldGroup.add(g);
+      state.predators.push({ group: g, body, ring });
+    }
+  }
+
   // One instanced rig for the whole population. Replaces ~13 meshes per agent.
   state.population = createPopulation(
     replay.agents.length,
@@ -661,6 +694,24 @@ function applyTick(t) {
     if (alive) {
       ring.position.x = state.agentPos[agent * 2];
       ring.position.z = state.agentPos[agent * 2 + 1];
+    }
+  }
+
+  // Predators (schema v6). Interpolated between ticks like everything else, and
+  // dimmed by day: they walk home at dawn and stop being a threat, and a
+  // watcher should be able to see that without reading the clock.
+  if (state.predators.length && Array.isArray(cur.d)) {
+    const nxt = state.ticks[Math.min(i0 + 1, state.lastTick)];
+    const f = t - i0;
+    const hunting = state.construction ? nightFactor(t) > 0.5 : false;
+    for (let k = 0; k < state.predators.length; k++) {
+      const a = cur.d[k], b = nxt.d?.[k] ?? a;
+      const p = state.predators[k];
+      p.group.position.x = a[0] + (b[0] - a[0]) * f;
+      p.group.position.z = a[1] + (b[1] - a[1]) * f;
+      p.ring.visible = hunting;
+      p.body.material.opacity = hunting ? 1 : 0.45;
+      p.body.material.transparent = !hunting;
     }
   }
 
@@ -1091,6 +1142,14 @@ function renderLegend() {
     rows.push('<div class="grp">the panel (schema v5)</div>');
     rows.push(item('', 'transparent', 'the histogram counts GOALS, not actions',
                    'an intention like "deliver" rather than one tick of walking'));
+  }
+  if (state.predators.length) {
+    rows.push('<div class="grp">the night predator (schema v6)</div>');
+    rows.push(item('', '#8a1420', 'dark red spike',
+                   'a predator — it hunts agents who are NOT under cover, and '
+                   + 'walks home to its den at dawn'));
+    rows.push(item('round', '#ff3b30', 'red circle around it',
+                   'the reach it actually takes hunger inside; shown only at night'));
   }
   if (state.society) {
     rows.push('<div class="grp">the weather (schema v5)</div>');

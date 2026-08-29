@@ -309,6 +309,48 @@ class ToolsConfig:
 
 
 @dataclass(frozen=True)
+class PredatorConfig:
+    """Island 2.0 tech ladder, rung 2: a night predator.
+
+    Off by default, so every world before it stays bit-identical. Unlike rung 1
+    this appends NO action and NO goal -- only observation channels. That is
+    deliberate on two counts. There is nothing to do about a predator that the
+    world does not already offer (be indoors, or be somewhere else), and adding
+    a `flee` goal would score the response and then measure the score, which is
+    rule 1 wearing a scripted arbiter's clothes. The honest question a rung-2
+    world asks is whether the night behaviour a population ALREADY has is enough.
+
+    DETERMINISTIC FROM THE SEED, and with no per-tick randomness at all: a
+    predator's den is drawn once at reset and every move afterwards is a function
+    of positions. So a replay reproduces exactly, and adding predators cannot
+    shift the bush layout or the spawn positions of an otherwise identical world.
+
+    IT IS A DEMAND-SIDE CHANGE, so `sim.economy` had to be taught about it before
+    any config was sized (rule 5): a hunted night costs hunger the same way an
+    exposed one does, and the exposed demand rises accordingly.
+    """
+
+    enabled: bool = False
+    count: int = 4
+    # Faster than an agent (move_step 0.8), or nothing is ever caught -- but not
+    # so fast that reaching a shelter is hopeless, which would make the mechanic
+    # a tax rather than a hazard.
+    speed: float = 1.0
+    attack_radius: float = 2.0
+    # Hunger taken per tick of contact. Comparable to a night's exposure drain
+    # (0.5 x 3.0 = 1.5/tick) so being caught is serious without being instant.
+    damage: float = 1.5
+    # A predator only hunts agents whose shelter protection is below this. An
+    # agent indoors is safe: the shelter has to be the answer, or the mechanic
+    # teaches nothing about shelter.
+    protection_safe: float = 0.5
+    # By day predators walk back to their den and wait. Somewhere to be, so the
+    # island is not permanently patrolled and a daytime forager is free.
+    den_radius_frac: float = 0.75
+    observe_predator: bool = True
+
+
+@dataclass(frozen=True)
 class MixConfig:
     """Train on TWO worlds at once: a share of the envs run a second config.
 
@@ -421,6 +463,7 @@ class Config:
     exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
     society: SocietyConfig = field(default_factory=SocietyConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    predators: PredatorConfig = field(default_factory=PredatorConfig)
     mix: MixConfig = field(default_factory=MixConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
@@ -477,6 +520,7 @@ _SECTIONS: dict[str, type] = {
     "exchange": ExchangeConfig,
     "society": SocietyConfig,
     "tools": ToolsConfig,
+    "predators": PredatorConfig,
     "mix": MixConfig,
     "observation": ObservationConfig,
     "reward": RewardConfig,

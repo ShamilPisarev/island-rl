@@ -236,6 +236,39 @@ each:
   worlds with no tools in them. Do not re-run; the next rung must attack a leg
   that is measurably binding.
 
+* **Tech ladder rung 2 is RUN (`config/island2/society4_predator.yaml`, design
+  doc §14): the predator bites, and nobody adapts.** Twelve predators sleep at
+  dens by day; at night each walks at the nearest agent NOT under cover and takes
+  1.5 hunger a tick within 6 units. Deterministic (dens drawn once off their own
+  rng stream, every move a function of positions). **No new action and no new
+  goal** — there is nothing to do about a predator this world does not already
+  offer, and a `flee` goal would score the response and then measure the score;
+  three observation channels are added so a learned chooser could see one.
+  5 paired episodes against the same world without it: **lifespan −10.8 ± 2.8
+  (1/5)** and **deaths +3.40 ± 0.40 (11.8 → 15.2)**, both far outside noise —
+  while **nights indoors moves −1.08 ± 0.76**, berries −2.8 ± 5.0 and shelters
+  −1.4 ± 1.4. **The population pays the bill in lives and changes nothing.**
+  484 attacks an episode, 29.8 of 100 agents caught at least once. That is
+  pre-registered failure mode 2 (the predator is ignored) firing, and the
+  mechanism is plain: `NEED_SAFETY` is driven by the CLOCK and knows nothing
+  about a wolf. **Sizing note worth carrying: `sim.economy` estimates the
+  predator's share of an exposed night at 0.2% and the measured figure is 10.2%**
+  — the tool says out loud that it models a pack that patrols and these hunt, so
+  its number is a lower bound, and it is a fiftyfold one. The shipped sizing
+  (12 / reach 6.0 = 21.4% of an exposed night) was picked from a four-row sweep
+  against a pre-registered target, and **lifespan is flat down that column**, so
+  the choice cannot be cherry-picking an effect. The mega-camp control was
+  re-derived (rule 5: a predator packs people together on purpose) and the
+  household number reads 29.7% [OK]. Do not re-run. **The follow-up worth
+  running is the LEARNED one**: the channels are in the observation, so a learned
+  arbiter here is being offered a hazard the scripted scorer is blind to — the
+  first rung where the learned chooser knows something the scripted one does not.
+  New: `PredatorConfig`, predator state/hunt/movement in `world.py`,
+  `predator.*` observation channels, a report section that leads with "was the
+  rung tested at all", **replay schema v6** (predator positions per tick, drawn
+  as dark red spikes with their reach ring at night), `tests/test_predators.py`
+  (12 tests).
+
 * **Replay schema v5 (design doc §13): goals, shocks, and who is learned.**
   Three things a stage-4 replay could not answer, added as optional per-tick keys
   so a world without them writes a v4-sized file. `o` = one arbiter goal id per
@@ -688,7 +721,7 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   original verdict was reached where nothing was worth trading: giving stops being
   selected against and the flow turns directional, but it still buys no survival.
   Best checkpoint: `checkpoints/m5b` (497.5 lifespan).
-- `pytest` passes (384 tests).
+- `pytest` passes (397 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -892,6 +925,14 @@ python -m sim.society --config config/island2/society4_axe_control.yaml --episod
 # the adoption floor, in the same world
 python -m sim.society --config config/island2/society4_axe.yaml --episodes 5 \
     --arbiter randomgoal
+
+# Island 2.0 tech ladder rung 2: the night predator. Also no training. Size it
+# first -- and read the sizing note: the economy's estimate is a LOWER bound and
+# was fiftyfold low, so the shipped count/reach came from a measured sweep.
+python -m sim.economy --config config/island2/society4_predator.yaml
+python -m sim.society --config config/island2/society4_predator.yaml --episodes 5
+python -m sim.society --config config/island2/society4.yaml --episodes 5   # the control
+python -m sim.society --config config/island2/society4_predator.yaml --replay
 ```
 
 **The counterfactual is what makes the axe a result rather than a shrug**, and

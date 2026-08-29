@@ -183,6 +183,20 @@ class SocietyView:
         return self.stock_wood + self.stock_stone
 
 
+@dataclass
+class PredatorView:
+    """Where the predators are, and whether they are hunting tonight.
+
+    Same shape of bundle as `ConstructionView` and `SocietyView`, for the same
+    reason: agents.py keeps no dependency on world.py, and a test can build one
+    in two lines.
+    """
+
+    x: np.ndarray
+    z: np.ndarray
+    hunting: bool
+
+
 def neighbour_society_channels(cfg: Config) -> int:
     """Stage-4 additions to a neighbour slot: same-household, and a grudge."""
     if not cfg.society.enabled:
@@ -268,12 +282,18 @@ def observation_dim(cfg: Config) -> int:
         dim += 2                    # cycle phase, is_night
     dim += society_channels(cfg)
     dim += tool_channels(cfg)
+    dim += predator_channels(cfg)
     return dim
 
 
 def tool_channels(cfg: Config) -> int:
     """Tech ladder rung 1: one channel, `own.axe`."""
     return int(cfg.tools.enabled and cfg.tools.observe_axe)
+
+
+def predator_channels(cfg: Config) -> int:
+    """Tech ladder rung 2: the nearest predator's offset, and whether it hunts."""
+    return 3 * int(cfg.predators.enabled and cfg.predators.observe_predator)
 
 
 def action_mask(
@@ -493,6 +513,11 @@ def observation_layout(cfg: Config) -> tuple[str, ...]:
         # the same fact -- what the policy cannot otherwise know is whether it is
         # ALREADY carrying an axe, because nothing else in the vector implies it.
         names.append("own.axe")
+    if cfg.predators.enabled and cfg.predators.observe_predator:
+        # One k-nearest slot, like the foreign stockpile: an agent only ever
+        # needs the closest one, and the fixed-width rule is what keeps the
+        # observation independent of how many predators a world has.
+        names += ["predator.dx", "predator.dz", "predator.hunting"]
     names += ["edge.room", "edge.outward_x", "edge.outward_z"]
     return tuple(names)
 
@@ -562,6 +587,7 @@ def build_observations(
     cfg: Config,
     construction: "ConstructionView | None" = None,
     society: "SocietyView | None" = None,
+    predators: "PredatorView | None" = None,
 ) -> np.ndarray:
     """Egocentric fixed-size observation for every agent, shape ``(A, obs_dim)``.
 
@@ -770,6 +796,21 @@ def build_observations(
     if cfg.tools.enabled and cfg.tools.observe_axe:
         out[:, col] = pool.axe.astype(np.float64)
         col += 1
+
+    # --- tech ladder rung 2: where is the nearest predator, and is it hunting?
+    if cfg.predators.enabled and cfg.predators.observe_predator:
+        if predators is not None and predators.x.size:
+            dx = predators.x[None, :] - pool.x[:, None]
+            dz = predators.z[None, :] - pool.z[:, None]
+            j = np.argmin(dx ** 2 + dz ** 2, axis=1)
+            rows_p = np.arange(n)
+            out[:, col + 0] = np.clip(dx[rows_p, j] / scale, -1.0, 1.0)
+            out[:, col + 1] = np.clip(dz[rows_p, j] / scale, -1.0, 1.0)
+            # One flag rather than a per-predator state: what an agent needs to
+            # know is whether the thing out there is hunting tonight or sleeping
+            # off the day, and that is the same answer for all of them.
+            out[:, col + 2] = float(predators.hunting)
+        col += 3
 
     # --- shoreline
     r = np.sqrt(pool.x**2 + pool.z**2)

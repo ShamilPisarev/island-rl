@@ -15,11 +15,31 @@ Do NOT re-run: arb4/b/c/d (all four all-learned variants), arb5-mix, arb5-hh,
 the mixedrandom floor, anything on the §10 do-not-re-run list, the learned-share
 sweep (item 3), or the axe (item 4).
 
-**What is left in this queue: item 5 (the night predator) only.** Rung 1 is the
-reason to read it differently than it was written: the axe attacked the COST of
-contributing and the cost was not what binds. §10's sweep says what binds is the
-DECISION to contribute at all, so a demand-side rung (a predator, or making
-shelter excludable) is the one with something to move.
+**THIS QUEUE IS EMPTY.** Items 1-6 are all done as of 2026-08-29. What the two
+tech rungs left behind, as the next thing worth doing:
+
+**Run the learned arbiter in the predator world.** Rung 1 (the axe) attacked the
+COST of contributing and moved nothing, because cost was not what binds. Rung 2
+(the predator) moves plenty -- deaths +3.4, lifespan -10.8 -- and the population
+does not respond, because responding would need a need the scripted scorer does
+not have. The predator's three observation channels ARE in the observation, so
+**a learned chooser in that world is being offered a hazard the scripted one is
+blind to.** That is the first rung where the learned arbiter knows something the
+scripted arbiter does not, which makes it the first place a learned-over-scripted
+win would mean something new rather than repeating arb5-mix.
+
+    Train the mixed arbiter in the predator world: sim.arbiter --config
+    config/island2/society4_predator.yaml --run-name arb6-pred --learn-agents 20
+    --gamma 0.997 --updates 150, then evaluate paired vs utility on 10 episodes
+    and against the size-matched mixedrandom floor. Pre-register: nights indoors
+    of the learned 20 against the scripted 80's 84.5%, attacks per learned agent
+    against attacks per scripted agent (the direct test of whether the channels
+    are used at all), and learned-slot paired lifespan. Construction share is
+    expected 0.0% again -- any nonzero is news.
+
+The tempting alternative -- adding predator proximity to NEED_SAFETY -- would
+certainly make the population hide, and would be scoring the response and then
+reporting the score. Rule 1 in scripted clothing. Do not start there.
 
 ---
 
@@ -171,7 +191,21 @@ material), never a paid reward.
     result predicts yes), and completions/lifespan vs the same world without
     the axe on paired seeds. Run 5-episode utility evals, write up, commit.
 
-## 5. Tech ladder rung 2: the night predator (~1 session)
+## 5. Tech ladder rung 2: the night predator — DONE 2026-08-29 (`society4_predator`)
+
+Result: **the hazard is real and the population does not adapt to it.** 5 paired
+episodes against the same world without it: lifespan -10.8 +- 2.8 (1/5), deaths
++3.40 +- 0.40 (11.8 -> 15.2), while nights indoors moves -1.08 +- 0.76 and
+berries and shelters do not move at all. 484 attacks an episode, 29.8 of 100
+agents caught. Pre-registered failure mode 2 fired: NEED_SAFETY is driven by the
+CLOCK and knows nothing about a wolf. Sizing note: sim.economy's estimate (0.2%
+of an exposed night) is a LOWER bound and was fiftyfold low against the measured
+10.2%; the shipped 12/reach-6.0 came from a four-row sweep against a
+pre-registered 20% target, with lifespan flat down the column. Replay schema
+went to v6 so the predators are visible. No training needed. Do not re-run.
+Write-up: ISLAND2_DESIGN.md §14. Original item kept below for the record.
+
+## 5-orig. Tech ladder rung 2: the night predator (~1 session)
 
 **What**: a scripted hostile that hunts agents outside shelter radius at
 night (drains hunger on contact, deterministic from the seed). Config-gated.

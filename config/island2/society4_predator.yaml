@@ -1,0 +1,73 @@
+# Island 2.0 tech ladder, rung 2: a night predator.
+#
+# society4 plus one hostile. Four predators sleep at dens on the outer island by
+# day; at night each walks at the nearest agent that is NOT under cover and takes
+# 1.5 hunger a tick from anyone it reaches. Deterministic from the seed -- the
+# dens are drawn once and every move afterwards is a function of positions -- so
+# a predator world reproduces exactly and a replay of one is watchable.
+#
+# WHY THIS RUNG, AND WHY AFTER THE AXE. Rung 1 attacked the COST of contributing
+# and measured nothing, because cost was not what binds: the learned-share sweep
+# had already shown ten scripted builders housing a hundred agents. What binds is
+# the DECISION to be indoors and the decision to build the thing that lets you
+# be. A predator is a demand-side rung: it does not make shelter cheaper, it
+# makes being outside worse.
+#
+# NO NEW ACTION AND NO NEW GOAL, deliberately. There is nothing to do about a
+# predator that this world does not already offer -- be indoors, or be somewhere
+# else -- and adding a `flee` goal would score the response and then measure the
+# score. The honest question rung 2 asks is whether the night behaviour the
+# population ALREADY has is enough. Three observation channels are added so a
+# learned chooser could see one; the scripted arbiter does not read them.
+#
+# SIZED WITH `sim.economy` FIRST (rule 5), because a predator is a demand-side
+# change and the last time a mechanic moved demand (blights, stage 4) the world
+# had to be resized. The tool now prints the predator's contribution to exposed
+# demand and flags that its estimate is a LOWER bound: it models the share of
+# the island a pack covers, and a pack that hunts covers more than that.
+#
+# THE MEGA-CAMP CONTROL HAS TO BE RE-DERIVED, and this is rule 5 again in the
+# form section 9 already met once. Failure mode 3 asks whether the population has
+# collapsed onto one spot. A predator PACKS PEOPLE TOGETHER ON PURPOSE -- that is
+# the behaviour it exists to produce -- so a WATCH on crowding here is the
+# mechanic working, and the number that still discriminates is the household one:
+# do the twenty piles stay separate, or does everyone end up in one hut?
+#
+# PRE-REGISTERED FAILURE MODES (written before the first run):
+#   1. EVERYONE HIDES ALL NIGHT AND STARVES. Nights indoors goes to ~100%,
+#      berries harvested falls, and lifespan falls with it. The predator would
+#      then be a tax rather than a hazard: read berries/episode against the
+#      control, not just nights indoors.
+#   2. THE PREDATOR IS IGNORED ENTIRELY. Attacks per episode are high and nights
+#      indoors does not move, because the scripted safety need is driven by the
+#      CLOCK and knows nothing about a wolf. That is a real possible outcome and
+#      it is the interesting one: it would say the rung needs the need, not the
+#      mechanic -- with the honesty cost that scoring the response is scoring the
+#      answer.
+#   3. NOTHING HAPPENS AT ALL. 88% of nights are already spent indoors, so the
+#      hunted population may be too small to move any aggregate. Read attacks
+#      per episode first: if it is near zero, the rung was never tested.
+# SIZED TO A TARGET, MEASURED, NOT PICKED. The pre-registered target was that a
+# predator should escalate the hazard it exists to escalate by a fraction an
+# agent can feel: an exposed agent already pays 0.5 x 3.0 = 1.5 hunger a tick at
+# night, and the rung should catch it on roughly a FIFTH of the ticks it spends
+# out. Measured over four sizings on one episode (seed 10000):
+#
+#   count  radius   hunted share of an exposed night   lifespan
+#       4     2.0                              10.2%      589.5
+#       8     4.0                              14.8%      591.0
+#      12     6.0                              21.4%      590.9   <- shipped
+#      16     8.0                              28.4%      591.3
+#
+# Note two things about that table before reading the run. `sim.economy`'s own
+# estimate for the 4/2.0 row is 0.2%, and the measured figure is 10.2% -- the
+# tool says out loud that it models a pack that PATROLS and these hunt, so its
+# number is a lower bound, and it is a fiftyfold one. And LIFESPAN IS FLAT AT
+# EVERY SIZING, which is why choosing the row that hits the target cannot be
+# cherry-picking: there is no effect in the column to pick from.
+extends: society4.yaml
+
+predators:
+  enabled: true
+  count: 12
+  attack_radius: 6.0

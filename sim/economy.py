@@ -44,6 +44,10 @@ class Economy:
     # know why a world got poorer cannot recover it from one number.
     blight_ticks: float = 0.0
     blight_loss: float = 0.0
+    # tech ladder rung 2. `hunted_share` is the share of an exposed night spent
+    # inside a predator's reach -- a lower bound, see `subsistence`.
+    hunted_share: float = 0.0
+    predator_damage: float = 0.0
 
     @property
     def ratio_sheltered(self) -> float:
@@ -74,6 +78,11 @@ class Economy:
             f"supply / sheltered demand   {self.ratio_sheltered:8.2f}x",
             f"supply / exposed demand     {self.ratio_exposed:8.2f}x",
         ]
+        if self.predator_damage > 0.0:
+            lines.append(
+                f"  ...the exposed figure includes predators: {self.hunted_share:.1%}"
+                f" of an exposed night inside reach, at {self.predator_damage} hunger"
+                f"/tick (a LOWER bound -- they hunt, they do not patrol)")
         if self.ratio_sheltered < 1.0:
             lines.append("\nWARNING: even a fully sheltered population starves. "
                          "Nothing behavioural can be read off this world.")
@@ -109,6 +118,25 @@ def subsistence(cfg: Config) -> Economy:
     else:
         exposed_drain = drain
 
+    # A PREDATOR IS A DEMAND-SIDE CHANGE, so the sizing has to know about it --
+    # rule 5, applied to rung 2 the way blights forced it on stage 4. An exposed
+    # agent that is caught loses `damage` hunger on top of its night drain, so
+    # the exposed figure rises and the sheltered one does not move at all (an
+    # agent indoors is never hunted, which is the entire point of the mechanic).
+    #
+    # `hunted_share` is what this cannot know from the config: how much of a
+    # night an exposed agent actually spends inside a predator's reach. Modelled
+    # as the share of the island a hunting pack can cover, which is a LOWER
+    # BOUND on the pressure -- predators walk at the exposed rather than
+    # patrolling at random, so the real figure is higher. Read the exposed ratio
+    # as optimistic and size with headroom.
+    pc = cfg.predators
+    hunted_share = 0.0
+    if pc.enabled and cfg.construction.enabled:
+        reach = pc.count * (pc.attack_radius ** 2)
+        hunted_share = min(reach / max(cfg.world.island_radius ** 2, 1e-9), 1.0)
+        exposed_drain += cfg.construction.night_fraction * hunted_share * pc.damage
+
     ticks_per_meal = h.eat_restore / drain
     meals_sheltered = ticks / ticks_per_meal
     meals_exposed = ticks / (h.eat_restore / exposed_drain)
@@ -138,6 +166,8 @@ def subsistence(cfg: Config) -> Economy:
     supply = bushes * (min(b.initial_berries, b.capacity) + regrowths)
 
     return Economy(
+        hunted_share=hunted_share,
+        predator_damage=pc.damage if pc.enabled else 0.0,
         blight_ticks=blight_ticks,
         blight_loss=float(bushes * lost),
         ticks=ticks,

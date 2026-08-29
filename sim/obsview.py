@@ -153,6 +153,18 @@ class ObsView:
         else:
             self.axe = np.zeros(self.n, dtype=bool)
 
+        # --- tech ladder rung 2. Absent for every world without predators, and
+        # read as "nothing out there", so an arbiter written for a predator world
+        # runs in a safe one unchanged.
+        if cfg.predators.enabled and cfg.predators.observe_predator:
+            self.predator_dx = obs[:, col["predator.dx"]] * self.scale
+            self.predator_dz = obs[:, col["predator.dz"]] * self.scale
+            self.predator_hunting = obs[:, col["predator.hunting"]] > 0.5
+        else:
+            self.predator_dx = np.zeros(self.n)
+            self.predator_dz = np.zeros(self.n)
+            self.predator_hunting = np.zeros(self.n, dtype=bool)
+
         self.edge_room = obs[:, col["edge.room"]]
         self.outward_x = obs[:, col["edge.outward_x"]]
         self.outward_z = obs[:, col["edge.outward_z"]]

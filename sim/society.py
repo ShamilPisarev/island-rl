@@ -92,6 +92,10 @@ class SocietyReport:
         default_factory=lambda: np.zeros(N_GOALS, dtype=np.int64))
     # --- tech ladder rung 1. Adoption, and the M2 specialisation question asked
     # of a tool: do the agents who own an axe do more of the harvesting?
+    # --- tech ladder rung 2
+    attacks: list[int] = field(default_factory=list)
+    hunger_lost: list[float] = field(default_factory=list)
+    caught_agents: list[int] = field(default_factory=list)
     axes_crafted: list[int] = field(default_factory=list)
     axe_holders: list[int] = field(default_factory=list)
     goal_ticks_armed: np.ndarray = field(
@@ -367,6 +371,10 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
         if cfg.tools.enabled:
             rep.axes_crafted.append(stats.axes_crafted)
             rep.axe_holders.append(stats.axe_holders)
+        if cfg.predators.enabled:
+            rep.attacks.append(stats.attacks)
+            rep.hunger_lost.append(stats.hunger_lost_to_predators)
+            rep.caught_agents.append(int((stats.attacks_per_agent > 0).sum()))
         if cfg.society.enabled:
             rep.deposits.append(stats.deposits)
             rep.withdrawals.append(stats.withdrawals)
@@ -508,9 +516,36 @@ def format_report(cfg: Config, rep: SocietyReport, label: str) -> str:
         out.append(_household_section(cfg, rep))
     if cfg.tools.enabled and rep.axes_crafted:
         out.append(_tool_section(cfg, rep))
+    if cfg.predators.enabled and rep.attacks:
+        out.append(_predator_section(cfg, rep))
     if rep.learn_mask is not None:
         out.append(_mixed_section(cfg, rep))
     return "\n".join(out)
+
+
+def _predator_section(cfg: Config, rep: SocietyReport) -> str:
+    """Tech ladder rung 2: did the hazard land, and did the population respond?
+
+    READ THE FIRST LINE FIRST. If attacks per episode are near zero the rung was
+    never tested and nothing below it means anything -- which is pre-registered
+    failure mode 3 in the config header, and the reason this section leads with
+    the count rather than with an outcome.
+    """
+    exposed = max(sum(rep.night_out), 1)
+    attacks = float(np.mean(rep.attacks))
+    hunted = 100.0 * sum(rep.attacks) / exposed
+    return "\n".join([
+        "\n-- the tech ladder, rung 2: the night predator --",
+        f"  {cfg.predators.count} predators, reach {cfg.predators.attack_radius}, "
+        f"{cfg.predators.damage} hunger a tick",
+        f"  attacks / episode       {attacks:7.1f}",
+        f"  hunted share of an exposed night {hunted:6.1f}% "
+        f"(0% means the rung was never tested)",
+        f"  hunger lost to them     {np.mean(rep.hunger_lost):7.1f} "
+        f"of {cfg.hunger.eat_restore * np.mean(rep.berries):.0f} the island fed them",
+        f"  agents ever caught      {np.mean(rep.caught_agents):7.1f} "
+        f"of {cfg.world.num_agents}",
+    ])
 
 
 def _tool_section(cfg: Config, rep: SocietyReport) -> str:

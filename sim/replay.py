@@ -1,5 +1,21 @@
 """Replay recording, schema, and the manifest the viewer reads.
 
+REPLAY SCHEMA v1 / v2 / v3 / v4 / v5 / v6
+=========================================
+
+v6 (tech ladder rung 2) extends v5 and is emitted only for worlds with
+predators. One optional per-tick field, and a bump rather than a quiet addition
+for the reason the whole ladder exists:
+
+    per tick    : d = [[x, z], ...] -- where each predator stands, in index
+                  order, rounded to 2dp like every other position
+    world block : predator_count, predator_attack_radius, predator_speed
+
+A predator that is not drawn is the storm problem again -- agents die at night
+to nothing visible, and a watcher concludes the night drain got harsher. The
+rung is also the most watchable thing in the project so far, which is a poor
+reason to build a mechanic and an excellent reason to render one.
+
 REPLAY SCHEMA v1 / v2 / v3 / v4 / v5
 ====================================
 
@@ -135,7 +151,11 @@ SCHEMA_VERSION_SOCIETY = 4
 # no arbiter driving it still carries the shock channel, so the bump is about the
 # WORLD, not about who is playing it.
 SCHEMA_VERSION_VIEW = 5
-SUPPORTED_VERSIONS = frozenset({1, 2, 3, 4, 5})
+# v6 adds the predators' positions. Bumped rather than folded into v5 because a
+# v5 reader shown a v6 file would draw a world with an invisible thing killing
+# people in it -- which is exactly the failure the version check exists for.
+SCHEMA_VERSION_PREDATOR = 6
+SUPPORTED_VERSIONS = frozenset({1, 2, 3, 4, 5, 6})
 
 AGENT_FIELDS = ["x", "z", "hunger", "food", "alive", "action"]
 AGENT_FIELDS_V2 = AGENT_FIELDS + ["wood", "stone"]
@@ -250,6 +270,12 @@ class ReplayRecorder:
             storm = int(getattr(self.world, "last_storm", 0)) if self.ticks else 0
             if blight or storm:
                 tick["n"] = [blight, storm]
+        # v6. Every tick, not only the hunting ones: a predator walking home at
+        # dawn is part of what makes the island read as inhabited, and a thing
+        # that vanishes by day looks like a rendering bug.
+        if self.cfg.predators.enabled and self.world.predator_x.size:
+            tick["d"] = [[round(float(x), 2), round(float(z), 2)]
+                         for x, z in zip(self.world.predator_x, self.world.predator_z)]
         if self.cfg.exchange.enabled and self.ticks and self.world.last_transfers:
             tick["g"] = [[int(g), int(r), int(item)] for g, r, item in self.world.last_transfers]
         self.ticks.append(tick)
@@ -267,7 +293,8 @@ class ReplayRecorder:
             # shock ever fires, so it is always v5 -- the version says what the
             # reader must be able to parse, not what this particular episode
             # happened to contain.
-            version = SCHEMA_VERSION_VIEW
+            version = (SCHEMA_VERSION_PREDATOR if cfg.predators.enabled
+                       else SCHEMA_VERSION_VIEW)
         elif exchange:
             version = SCHEMA_VERSION_EXCHANGE
         elif construction:
@@ -372,6 +399,14 @@ class ReplayRecorder:
                 for agent, flag in zip(blob["agents"], self.learn_mask):
                     agent["learn"] = bool(flag)
             blob["world"]["shock_ramp"] = sc.shock_ramp
+            if cfg.predators.enabled:
+                pc = cfg.predators
+                blob["world"].update({
+                    "predator_count": pc.count,
+                    "predator_attack_radius": pc.attack_radius,
+                    "predator_speed": pc.speed,
+                })
+                blob["summary"]["predator_attacks"] = stats.attacks
             blob["summary"].update({
                 "deposits": stats.deposits,
                 "withdrawals": stats.withdrawals,

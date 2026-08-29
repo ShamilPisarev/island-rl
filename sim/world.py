@@ -46,6 +46,7 @@ from .agents import (
     STEAL,
     AgentPool,
     ConstructionView,
+    PredatorView,
     SocietyView,
     action_mask,
     build_observations,
@@ -137,6 +138,12 @@ class EpisodeStats:
     axes_crafted: int = 0
     axes_per_agent: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     axe_holders: int = 0
+    # tech ladder rung 2: agent-ticks spent in a predator's jaws, and the hunger
+    # that cost. Per agent as well as summed, because "was it the same unlucky
+    # few every night" is the question a mean cannot answer.
+    attacks: int = 0
+    attacks_per_agent: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    hunger_lost_to_predators: float = 0.0
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -382,6 +389,28 @@ class World:
         # Shocks come off their own stream so adding or removing one cannot shift
         # the bush layout or the spawn positions of an otherwise identical world.
         self.shock_rng = np.random.default_rng(self._seed + 991)
+        # --- tech ladder rung 2: predators. Dens are drawn once, off their OWN
+        # stream for the same reason shocks have one, and every move afterwards
+        # is a deterministic function of positions -- so a predator world has no
+        # per-tick randomness in it at all and a replay reproduces exactly.
+        pc = cfg.predators
+        n_pred = pc.count if pc.enabled else 0
+        self.den_x = np.zeros(n_pred)
+        self.den_z = np.zeros(n_pred)
+        if n_pred:
+            pred_rng = np.random.default_rng(self._seed + 7717)
+            angles = np.arange(n_pred) * (2.0 * np.pi / n_pred)
+            angles = angles + pred_rng.uniform(0.0, 2.0 * np.pi)
+            r = cfg.world.island_radius * pc.den_radius_frac
+            self.den_x = r * np.cos(angles)
+            self.den_z = r * np.sin(angles)
+        self.predator_x = self.den_x.copy()
+        self.predator_z = self.den_z.copy()
+        self._attacks = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        self._hunger_lost_to_predators = 0.0
+        # Who was under cover when the drain was applied. By day nobody is, which
+        # is right: a predator walking home does not care.
+        self._last_sheltered = np.zeros(cfg.world.num_agents, dtype=bool)
         return self.observations()
 
     def construction_view(self) -> ConstructionView | None:
@@ -416,12 +445,26 @@ class World:
             grudge=self.grudge, blight=self.blight_active,
         )
 
+    def predator_view(self) -> PredatorView | None:
+        if not self.cfg.predators.enabled:
+            return None
+        return PredatorView(x=self.predator_x, z=self.predator_z,
+                            hunting=self.predators_hunting)
+
+    @property
+    def predators_hunting(self) -> bool:
+        """Predators hunt at night and go home by day."""
+        if not (self.cfg.predators.enabled and self.cfg.construction.enabled):
+            return False
+        _, is_night = night_phase(self.tick, self.cfg)
+        return bool(is_night)
+
     # --- stepping ---------------------------------------------------------
 
     def observations(self) -> np.ndarray:
         return build_observations(
             self.pool, self.bush_x, self.bush_z, self.bush_berries, self.cfg,
-            self.construction_view(), self.society_view(),
+            self.construction_view(), self.society_view(), self.predator_view(),
         )
 
     def action_mask(self) -> np.ndarray:
@@ -882,6 +925,23 @@ class World:
                                           progress[None, :], 0.0).max(axis=1)
                 drain = drain * (1.0 + (cc.night_drain_multiplier - 1.0) * (1.0 - protection))
                 sheltered = protection >= 0.5   # "indoors" for the stats
+                self._last_sheltered = protection >= cfg.predators.protection_safe
+                # --- tech ladder rung 2: the hunt. Here, not in its own phase,
+                # because `protection` is what says who is exposed and it is
+                # computed exactly once. A predator only takes from an agent
+                # below `protection_safe`: the shelter has to be the answer, or
+                # the mechanic teaches nothing about shelter.
+                pc = cfg.predators
+                if pc.enabled and self.predator_x.size:
+                    prey = pool.alive & (protection < pc.protection_safe)
+                    d2p = ((self.predator_x[None, :] - pool.x[:, None]) ** 2
+                           + (self.predator_z[None, :] - pool.z[:, None]) ** 2)
+                    caught = (d2p <= pc.attack_radius ** 2).any(axis=1) & prey
+                    if caught.any():
+                        drain = drain + np.where(caught, pc.damage, 0.0)
+                        self._attacks += caught
+                        self._hunger_lost_to_predators += float(
+                            caught.sum()) * pc.damage
                 self._night_sheltered += int((acted & sheltered).sum())
                 self._night_exposed += int((acted & ~sheltered).sum())
                 self.night_sheltered_agent += acted & sheltered
@@ -954,6 +1014,36 @@ class World:
         #     sites x 4 units against 100 agents carrying one each), so
         #     `shelter_stock` sat at zero and there was nothing left to cooperate
         #     about. A storm restores the demand and a blight restores the scarcity.
+        # 7c. predators move (tech ladder rung 2). AFTER the tick counter, so the
+        #     positions a replay records are the ones that will hunt next tick,
+        #     and DETERMINISTIC: every move is a function of positions, so a
+        #     predator world has no per-tick randomness in it.
+        #
+        #     At night each predator walks at the nearest EXPOSED living agent;
+        #     by day it walks home to its den. Chasing only the exposed is what
+        #     makes a shelter a refuge rather than a delay -- a predator that
+        #     besieged a hut would turn the mechanic into a tax on everyone.
+        pc = cfg.predators
+        if pc.enabled and self.predator_x.size:
+            if self.predators_hunting:
+                prey = np.flatnonzero(pool.alive & ~self._last_sheltered)
+            else:
+                prey = np.zeros(0, dtype=np.int64)
+            if prey.size:
+                dx = pool.x[prey][None, :] - self.predator_x[:, None]
+                dz = pool.z[prey][None, :] - self.predator_z[:, None]
+                j = np.argmin(dx ** 2 + dz ** 2, axis=1)
+                rows_p = np.arange(self.predator_x.size)
+                tx, tz = dx[rows_p, j], dz[rows_p, j]
+            else:
+                tx = self.den_x - self.predator_x
+                tz = self.den_z - self.predator_z
+            dist = np.hypot(tx, tz)
+            step = np.minimum(pc.speed, dist)
+            move = np.where(dist > 1e-9, step / np.maximum(dist, 1e-9), 0.0)
+            self.predator_x = self.predator_x + tx * move
+            self.predator_z = self.predator_z + tz * move
+
         self.last_storm = 0
         if sc.enabled and sc.shock_interval > 0 and self.tick % sc.shock_interval == 0:
             kind = int(self.shock_rng.integers(0, 2))
@@ -1048,6 +1138,9 @@ class World:
             axes_crafted=int(self._crafted.sum()),
             axes_per_agent=self._crafted.copy(),
             axe_holders=int((self.pool.axe > 0).sum()),
+            attacks=int(self._attacks.sum()),
+            attacks_per_agent=self._attacks.copy(),
+            hunger_lost_to_predators=float(self._hunger_lost_to_predators),
         )
 
 
