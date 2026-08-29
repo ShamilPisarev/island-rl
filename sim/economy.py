@@ -152,6 +152,117 @@ def subsistence(cfg: Config) -> Economy:
     )
 
 
+@dataclass(frozen=True)
+class Materials:
+    """Wood and stone: what the island holds against what the village needs.
+
+    Rung 1 of the tech ladder is an axe that doubles chop YIELD, and this exists
+    because the first thing to establish about it is which of two very different
+    things it does. Trees hold a finite stock, so an axe never creates wood:
+
+      * if the material STOCK is the binding constraint, an axe cannot help at
+        all -- it empties the same trees sooner and the village still runs out.
+      * if LABOUR is the constraint (the stock is slack and the cost of a shelter
+        is the trips), an axe halves the trips and is worth real ticks.
+
+    Sizing a tool world without knowing which regime it is in is rule 5's mistake
+    with a new mechanic, so this is computed before the config is written rather
+    than after the run disappoints.
+    """
+
+    trees: int
+    rocks: int
+    wood_supply: int
+    stone_supply: int
+    sites: int
+    site_cost: int
+    # Storms knock finished sites back down, so demand is not just the initial build.
+    storm_rebuild: float
+    chop_trips_bare: float
+    chop_trips_axed: float
+    axe_wood_cost: int
+    axe_stone_cost: int
+    axes_if_everyone: int
+
+    @property
+    def demand(self) -> float:
+        return self.sites * self.site_cost + self.storm_rebuild
+
+    @property
+    def supply(self) -> float:
+        return float(self.wood_supply + self.stone_supply)
+
+    @property
+    def ratio(self) -> float:
+        return self.supply / max(self.demand, 1e-9)
+
+    def report(self) -> str:
+        lines = [
+            f"material stock  {self.wood_supply:6d} wood ({self.trees} trees)"
+            f" + {self.stone_supply:6d} stone ({self.rocks} rocks)"
+            f" = {self.supply:.0f}",
+            f"material demand {self.demand:6.0f}"
+            f"   ({self.sites} sites x {self.site_cost}"
+            f" + {self.storm_rebuild:.0f} storm rebuilds)",
+            f"supply / demand {self.ratio:6.2f}x",
+        ]
+        if self.axes_if_everyone:
+            axe_bill = self.axes_if_everyone * (self.axe_wood_cost + self.axe_stone_cost)
+            lines += [
+                "",
+                f"an axe costs {self.axe_wood_cost}w + {self.axe_stone_cost}s;"
+                f" arming all {self.axes_if_everyone} agents spends {axe_bill}"
+                f" ({100.0 * axe_bill / max(self.supply, 1e-9):.1f}% of the island's stock)",
+                f"chop trips for the wood bill: {self.chop_trips_bare:.0f} bare"
+                f" -> {self.chop_trips_axed:.0f} with an axe",
+            ]
+            if self.ratio < 1.3:
+                lines.append(
+                    "\nWARNING: material STOCK is tight, so an axe cannot help -- it "
+                    "empties the same trees sooner. A tool world needs slack stock, "
+                    "or the thing being measured is scarcity, not technology.")
+            else:
+                lines.append(
+                    "\nOK: stock is slack, so the constraint is LABOUR and an axe "
+                    "buys trips. That is the regime rung 1 is asking about.")
+        return "\n".join(lines)
+
+
+def materials(cfg: Config) -> Materials:
+    """The material side of the same arithmetic. See `Materials`."""
+    cc = cfg.construction
+    sc = cfg.society
+    tc = cfg.tools
+    site_cost = cc.site_wood_cost + cc.site_stone_cost
+    # Storms damage every FINISHED site, clamped at a site's cost. In expectation
+    # half the shocks are storms; each costs the village `storm_damage * ramp`
+    # per finished site, which has to be rebuilt out of the same stock.
+    rebuild = 0.0
+    if sc.enabled and sc.shock_interval > 0 and cc.enabled:
+        ticks = cfg.world.max_ticks
+        rebuild = sum(
+            0.5 * min(sc.storm_damage * (1.0 + sc.shock_ramp * t / ticks), site_cost)
+            * cc.num_sites
+            for t in range(sc.shock_interval, ticks + 1, sc.shock_interval))
+    wood = cc.num_trees * cc.tree_wood
+    per_chop = max(tc.chop_multiplier, 1) if tc.enabled else 1
+    wood_bill = float(cc.num_sites * cc.site_wood_cost) + rebuild * 0.5
+    return Materials(
+        trees=cc.num_trees,
+        rocks=cc.num_rocks,
+        wood_supply=wood,
+        stone_supply=cc.num_rocks * cc.rock_stone,
+        sites=cc.num_sites,
+        site_cost=site_cost,
+        storm_rebuild=rebuild,
+        chop_trips_bare=wood_bill,
+        chop_trips_axed=wood_bill / per_chop,
+        axe_wood_cost=tc.axe_wood_cost,
+        axe_stone_cost=tc.axe_stone_cost,
+        axes_if_everyone=cfg.world.num_agents if tc.enabled else 0,
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default=None)
@@ -163,6 +274,9 @@ def main() -> None:
     cfg = load_config(args.config)
     econ = subsistence(cfg)
     print(econ.report())
+    if cfg.construction.enabled:
+        print()
+        print(materials(cfg).report())
 
     if args.target is not None:
         per_bush = econ.supply / max(econ.bushes, 1)

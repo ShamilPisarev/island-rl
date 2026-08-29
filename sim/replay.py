@@ -1,5 +1,33 @@
 """Replay recording, schema, and the manifest the viewer reads.
 
+REPLAY SCHEMA v1 / v2 / v3 / v4 / v5
+====================================
+
+v5 (Island 2.0 stage 5 viewing) extends v4 and is emitted only for society
+worlds. It adds two optional per-tick fields, both of them things a watcher
+could previously only INFER:
+
+    per tick    : o = [goal, ...]  -- one arbiter goal id per agent, in id
+                  order, index-aligned with `goal_names` at top level
+    per tick    : n = [blight, storm_sites]  -- the shock state, omitted
+                  entirely on ticks where neither is happening
+    agent block : `learn` -- true for an agent whose goals came from a learned
+                  arbiter, in a mixed population
+
+Every one of these exists because watching a stage-4 replay could not answer a
+question the run was about. The action column says "NE"; it does not say the
+agent is walking to a site to deliver, which is the difference between a builder
+and a free-rider and the whole subject of stage 5. A storm at tick 500 destroyed
+76 units of shelter and was pixel-for-pixel invisible, because the damage is only
+readable as a jump in `s` between two frames nobody compares. And in a mixed run
+the twenty learned agents were indistinguishable from the eighty scripted ones,
+which is the one distinction the run exists to make.
+
+`o` is a separate array rather than two more agent columns because a goal exists
+only when an ARBITER drives the world: a replay written by `sim.train` has
+actions and no goals, and an optional key is how `g`, `k` and `p` already handle
+"this world has no such thing".
+
 REPLAY SCHEMA v1 / v2 / v3
 ==========================
 
@@ -102,7 +130,12 @@ SCHEMA_VERSION_EXCHANGE = 3
 # rule that made that the right call is the same one that makes this the wrong
 # place to economise: bump on any change to the tick encoding.
 SCHEMA_VERSION_SOCIETY = 4
-SUPPORTED_VERSIONS = frozenset({1, 2, 3, 4})
+# v5 adds the goal channel and the shock channel (see the module docstring). Same
+# rule again, and the same reason it is a separate constant: a society world with
+# no arbiter driving it still carries the shock channel, so the bump is about the
+# WORLD, not about who is playing it.
+SCHEMA_VERSION_VIEW = 5
+SUPPORTED_VERSIONS = frozenset({1, 2, 3, 4, 5})
 
 AGENT_FIELDS = ["x", "z", "hunger", "food", "alive", "action"]
 AGENT_FIELDS_V2 = AGENT_FIELDS + ["wood", "stone"]
@@ -144,12 +177,20 @@ class ReplayRecorder:
     it impossible for the replay to disagree with the simulation.
     """
 
-    def __init__(self, world: World, cfg: Config, label: str, source: str, seed: int) -> None:
+    def __init__(self, world: World, cfg: Config, label: str, source: str, seed: int,
+                 goal_source: Any = None, learn_mask: np.ndarray | None = None) -> None:
         self.world = world
         self.cfg = cfg
         self.label = label
         self.source = source
         self.seed = seed
+        # `goal_source` is anything with a `.goals` array of one goal id per
+        # agent -- in practice the OptionRunner driving the episode. Duck-typed
+        # rather than imported, because replay.py must not depend on utility.py:
+        # a recorder that can only be fed by one arbiter is a recorder that has
+        # to be edited every time a new one is written.
+        self.goal_source = goal_source
+        self.learn_mask = None if learn_mask is None else np.asarray(learn_mask, dtype=bool)
         self.ticks: list[dict[str, Any]] = []
         self.bushes = [
             {"x": round(float(x), 2), "z": round(float(z), 2)}
@@ -196,6 +237,19 @@ class ReplayRecorder:
             if self.ticks and self.world.last_raids:
                 tick["k"] = [[int(a), int(h), int(item)]
                              for a, h, item in self.world.last_raids]
+            # v5. The goal is the INTENTION behind the action column, and it is
+            # the only one of the two that says whether an agent walking north is
+            # fetching wood or running home. Recorded on the first snapshot too,
+            # where every goal is still the arbiter's initial `rest` -- honest,
+            # and the same convention the action column uses.
+            if self.goal_source is not None:
+                tick["o"] = [int(g) for g in self.goal_source.goals]
+            # Omitted entirely on a calm tick, so a world with `shock_interval: 0`
+            # writes a file byte-for-byte the size of a v4 one.
+            blight = int(bool(self.world.blight_active))
+            storm = int(getattr(self.world, "last_storm", 0)) if self.ticks else 0
+            if blight or storm:
+                tick["n"] = [blight, storm]
         if self.cfg.exchange.enabled and self.ticks and self.world.last_transfers:
             tick["g"] = [[int(g), int(r), int(item)] for g, r, item in self.world.last_transfers]
         self.ticks.append(tick)
@@ -209,7 +263,11 @@ class ReplayRecorder:
         society = cfg.society.enabled
         version = SCHEMA_VERSION
         if society:
-            version = SCHEMA_VERSION_SOCIETY
+            # A society world always carries the shock channel, whether or not a
+            # shock ever fires, so it is always v5 -- the version says what the
+            # reader must be able to parse, not what this particular episode
+            # happened to contain.
+            version = SCHEMA_VERSION_VIEW
         elif exchange:
             version = SCHEMA_VERSION_EXCHANGE
         elif construction:
@@ -301,6 +359,19 @@ class ReplayRecorder:
             ]
             for agent, h in zip(blob["agents"], self.world.household):
                 agent["household"] = int(h)
+            if self.goal_source is not None:
+                # Index -> label, exactly as `action_names` is carried, so the
+                # viewer never hardcodes a goal list that can drift from the
+                # arbiter's.
+                from .utility import GOAL_NAMES
+                blob["goal_names"] = list(GOAL_NAMES)
+            if self.learn_mask is not None:
+                # WHICH agents a learned arbiter is driving. Without it a mixed
+                # replay is 100 identical-looking agents and the twenty the run is
+                # about cannot be picked out of them.
+                for agent, flag in zip(blob["agents"], self.learn_mask):
+                    agent["learn"] = bool(flag)
+            blob["world"]["shock_ramp"] = sc.shock_ramp
             blob["summary"].update({
                 "deposits": stats.deposits,
                 "withdrawals": stats.withdrawals,

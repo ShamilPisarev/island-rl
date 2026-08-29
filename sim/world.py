@@ -27,6 +27,7 @@ import numpy as np
 from .agents import (
     BUILD,
     CHOP,
+    CRAFT,
     GATHER,
     GIVE_FOOD,
     GIVE_MATERIAL,
@@ -130,6 +131,12 @@ class EpisodeStats:
     # small enough to always keep, unlike the gift ledger: a raid is rare where a
     # gift can be thousands.
     raid_ledger: list[tuple[int, int, int, int]] = field(default_factory=list)
+    # tech ladder rung 1: axes made, and who is holding one at the end. Per agent,
+    # because "who became the village lumberjack" is the M2 specialisation
+    # question asked of a tool, and a population total cannot answer it.
+    axes_crafted: int = 0
+    axes_per_agent: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    axe_holders: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -354,6 +361,9 @@ class World:
         self.stock_stone = np.zeros(n_house, dtype=np.int64)
         self.grudge = np.zeros((cfg.world.num_agents, cfg.world.num_agents))
         self.blight_until = -1
+        # Tech ladder rung 1. Per agent, so "who became a lumberjack" can be
+        # asked of the same array that says who owns a tool.
+        self._crafted = np.zeros(cfg.world.num_agents, dtype=np.int64)
         self._shocks_fired = 0
         self._blight_ticks = 0
         self._storms = 0
@@ -363,6 +373,12 @@ class World:
         self._raids = np.zeros(cfg.world.num_agents, dtype=np.int64)
         self.raid_ledger: list[tuple[int, int, int, int]] = []
         self.last_raids: list[tuple[int, int, int]] = []
+        # Shocks from the most recent step only, for the replay recorder. Same
+        # reason as `last_raids`: a storm leaves its mark on the site counters but
+        # nothing says WHEN it landed, and a blight leaves no mark at all -- the
+        # regrowth that did not happen is invisible in the state either side.
+        # Pure bookkeeping: nothing in the dynamics reads either field.
+        self.last_storm = 0
         # Shocks come off their own stream so adding or removing one cannot shift
         # the bush layout or the spawn positions of an otherwise identical world.
         self.shock_rng = np.random.default_rng(self._seed + 991)
@@ -535,21 +551,39 @@ class World:
         built = np.zeros(n, dtype=np.int64)
         cc = cfg.construction
         if cc.enabled:
-            def harvest(action, ex, ez, stock):
+            def harvest(action, ex, ez, stock, per_take=None):
                 out = np.zeros(n, dtype=np.int64)
                 for i in np.flatnonzero(acted & (actions == action)):
-                    if pool.wood[i] + pool.stone[i] >= cc.material_capacity:
+                    room = cc.material_capacity - (pool.wood[i] + pool.stone[i])
+                    if room <= 0:
                         continue
                     d2 = (ex - pool.x[i]) ** 2 + (ez - pool.z[i]) ** 2
                     cand = np.flatnonzero((d2 <= cc.harvest_radius ** 2) & (stock > 0))
                     if cand.size == 0:
                         continue
                     target = int(cand[np.argmin(d2[cand])])
-                    stock[target] -= 1
-                    out[i] = 1
+                    # An axe takes more per swing, bounded by what the agent can
+                    # carry and what the tree still holds. Both bounds matter: an
+                    # unbounded multiplier would let one chop empty a tree, and a
+                    # tool that overfills an inventory is a capacity bug wearing a
+                    # technology's name. `per_take` defaults to 1, so mining and
+                    # every tool-free world take exactly the old path.
+                    take = 1 if per_take is None else int(per_take[i])
+                    take = min(take, int(room), int(stock[target]))
+                    if take <= 0:
+                        continue
+                    stock[target] -= take
+                    out[i] = take
                 return out
 
-            wood_got = harvest(CHOP, self.tree_x, self.tree_z, self.tree_wood)
+            chop_take = None
+            if cfg.tools.enabled:
+                # 1 without an axe, `chop_multiplier` with one. Note this is a
+                # RATE, not a supply: the trees hold what they hold, so an axe
+                # buys ticks rather than wood (see ToolsConfig and sim.economy).
+                chop_take = 1 + pool.axe * (cfg.tools.chop_multiplier - 1)
+            wood_got = harvest(CHOP, self.tree_x, self.tree_z, self.tree_wood,
+                               chop_take)
             pool.wood += wood_got
             rewards += wood_got * cfg.reward.wood
             stone_got = harvest(MINE, self.rock_x, self.rock_z, self.rock_stone)
@@ -781,6 +815,36 @@ class World:
                     self.grudge[victim, thief] + sc.grudge_per_theft, 1.0)
             self.grudge *= sc.grudge_decay
 
+        # 1g. crafting (tech ladder rung 1). Last of the action phases, and after
+        #     the raids on purpose: material raided this tick is in the pocket, so
+        #     an axe can be made out of it. The reverse order would make a raid
+        #     silently useless for exactly one tick, which is the kind of hidden
+        #     ordering rule the M5 gotcha note exists to warn about.
+        #
+        #     Nothing pays for crafting. Its whole return is the extra wood every
+        #     later chop brings in -- deliberately the same unpaid shape the rest
+        #     of the project uses, so an axe that gets adopted was adopted because
+        #     it works (rule 1).
+        crafted = np.zeros(n, dtype=np.int64)
+        if cfg.tools.enabled:
+            tc = cfg.tools
+            for i in (int(v) for v in np.flatnonzero(acted & (actions == CRAFT))):
+                if pool.axe[i]:
+                    continue
+                if pool.wood[i] < tc.axe_wood_cost or pool.stone[i] < tc.axe_stone_cost:
+                    continue
+                if self.site_x.size:
+                    d2 = (self.site_x - pool.x[i]) ** 2 + (self.site_z - pool.z[i]) ** 2
+                    if float(d2.min()) > tc.craft_radius ** 2:
+                        continue
+                else:
+                    continue
+                pool.wood[i] -= tc.axe_wood_cost
+                pool.stone[i] -= tc.axe_stone_cost
+                pool.axe[i] = 1
+                crafted[i] = 1
+            self._crafted += crafted
+
         # 2. hunger drain -- multiplied at night for anyone not near a completed
         #    shelter. This is the hazard that makes shelter worth its materials.
         drain = np.full(n, cfg.hunger.drain_per_tick)
@@ -890,6 +954,7 @@ class World:
         #     sites x 4 units against 100 agents carrying one each), so
         #     `shelter_stock` sat at zero and there was nothing left to cooperate
         #     about. A storm restores the demand and a blight restores the scarcity.
+        self.last_storm = 0
         if sc.enabled and sc.shock_interval > 0 and self.tick % sc.shock_interval == 0:
             kind = int(self.shock_rng.integers(0, 2))
             self._shocks_fired += 1
@@ -915,6 +980,7 @@ class World:
                     self.site_wood_needed[done] = np.minimum(
                         self.site_wood_needed[done] + damage, total)
                     self._damaged += int(done.size)
+                    self.last_storm = int(done.size)
                 self._storms += 1
         truncated = self.tick >= cfg.world.max_ticks
         all_dead = not bool(pool.alive.any())
@@ -979,6 +1045,9 @@ class World:
             stock_food_final=self.stock_food.copy(),
             stock_material_final=self.stock_material.copy(),
             raid_ledger=list(self.raid_ledger),
+            axes_crafted=int(self._crafted.sum()),
+            axes_per_agent=self._crafted.copy(),
+            axe_holders=int((self.pool.axe > 0).sum()),
         )
 
 

@@ -1,0 +1,53 @@
+# Island 2.0 tech ladder, rung 1: the craftable axe.
+#
+# society4 plus one mechanic -- an agent standing at a site with 1 wood and 1
+# stone can make an axe, and every chop after that brings back two units instead
+# of one. Nothing pays for it. Its whole return is the wood it saves.
+#
+# WHY THIS RUNG FIRST. It is the shortest honest technology in the project: one
+# act, then a permanently better rate. M2's specialisation result predicts the
+# tool-owners become the village's lumberjacks, which would be an emergence
+# headline at the population level rather than at the individual one. And the
+# chain is short enough that a null here means "the tool is not worth it",
+# not "the credit was too far away" -- which is the failure every long chain in
+# this project has already produced.
+#
+# THE ECONOMY HAD TO BE RESIZED, AND `sim.economy` SAID SO BEFORE THE RUN.
+# An axe is not free: it takes 1 wood + 1 stone out of the same stock the
+# shelters are built from. On society4's material economy:
+#
+#   stock  240 wood + 100 stone = 340;  demand 200 (20 sites x 4 + 120 rebuilds)
+#   arming all 100 agents would spend 200 more -- 58.8% of the island's stock,
+#   and 100 of the 100 stone that exists.
+#
+# So on society4 the axe could not be adopted widely without starving
+# construction, and a low adoption number would have measured SCARCITY rather
+# than whether a tool is worth making. That is rule 5: re-derive the arithmetic
+# the moment the mechanic changes. 60 trees and 45 rocks put the material stock
+# at 540 against a 400 bill if literally everyone arms themselves (1.35x), so
+# adoption is free to be whatever the agents think it is worth.
+#
+# THE CONTROL IS society4_axe_control.yaml -- this same resized world with the
+# axe switched off. NOT society4: that world has a different material economy
+# now, and comparing across it would price the extra trees, not the tool.
+#
+# PRE-REGISTERED READS (written before the first run):
+#   1. adoption -- axes crafted and axe-holders at the end, against the
+#      random-goal floor in the same world. A tool a random chooser also picks
+#      up at the same rate has not been adopted, it has been stumbled into.
+#   2. specialisation -- do axe-holders take a larger share of harvest_wood
+#      goal-ticks than the unarmed? M2 says yes; a flat split refutes it.
+#   3. does it pay -- completions and lifespan against the control on paired
+#      seeds. The honest possibility is that it does not: society4's builders
+#      already finish 59 shelters an episode, so wood may not be the constraint
+#      that binds, and a faster axe would then buy nothing.
+extends: society4.yaml
+
+construction:
+  # Sized by sim.economy, not by taste -- see the header. Enough stock that
+  # arming the whole island and building every shelter both fit.
+  num_trees: 60
+  num_rocks: 45
+
+tools:
+  enabled: true

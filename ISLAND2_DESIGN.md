@@ -1338,3 +1338,141 @@ costlier, storm-proof), a craftable tool (axe -> 2x chop, the first true
 tool-owners may become the village lumberjacks), then gated unlocks. Every
 rung must be sized with `sim.economy` before it runs, and every rung's
 adoption claim needs its random floor.
+
+## 12. Tech ladder rung 1: the craftable axe, and the wall it does not touch
+
+**Result in one line: the mechanic works perfectly and buys nothing, because
+wood was never the constraint.**
+
+`config/island2/society4_axe.yaml`. An agent standing at a site with one wood
+and one stone can `craft` an axe (action 21); every chop after that brings back
+two units instead of one. Nothing pays for it -- rule 1 -- so its whole return is
+the wood it saves. The control is `society4_axe_control.yaml`: the same island,
+the same trees, the same seeds, with `tools.enabled: false`.
+
+### Sized before the run, and the sizing changed the world
+
+`sim.economy` grew a material block for this rung, because an axe does one of
+two very different things and which one depends on the world:
+
+* if the material **stock** binds, an axe cannot help at all -- it empties the
+  same trees sooner and the village still runs out;
+* if **labour** binds (stock slack, a shelter's cost is the trips), an axe halves
+  the trips and is worth real ticks.
+
+On plain society4 that block reads 340 units of stock against 200 of demand --
+and arming all 100 agents would spend 200 more, i.e. **58.8% of the island's
+stock and 100 of the 100 stone that exists**. A low adoption number there would
+have measured scarcity, not whether a tool is worth making. So the axe world
+carries 60 trees and 45 rocks (stock 540, 2.70x the build demand, 37% of stock to
+arm everyone). Rule 5, doing its job before the run rather than after it.
+
+### What was measured, 5 paired episodes on seeds 10000-10004
+
+| | axe world | control | paired |
+|---|---|---|---|
+| mean lifespan | 575.2 | 574.4 | **+0.8 +- 3.2 (1/5)** |
+| shelters / episode | 55.20 | 55.20 | **0.00** |
+| deaths / episode | 10.00 | 10.00 | 0.00 |
+| berries / episode | 896.8 | 893.0 | +3.8 |
+
+Nothing moved. And the counterfactual says that is about the WORLD, not about
+adoption -- **arm every agent at spawn** and the mechanic visibly works while the
+outcome does not:
+
+| all 100 armed vs bare, 5 paired episodes | bare | armed | paired |
+|---|---|---|---|
+| **chop actions** | 264.4 | **141.8** | **-122.6 +- 9.3** |
+| wood gathered | 260.4 | 261.4 | +1.0 +- 3.9 |
+| shelters | 55.2 | 56.6 | +1.4 +- 1.0 |
+| lifespan | 574.4 | 576.2 | +1.8 +- 6.2 |
+
+**The axe halves the swings and delivers the same wood.** That is the whole
+finding: it is a labour-saving tool on a leg that was not binding. Read it
+against §10's learned-share sweep, which said the same thing from the other side
+-- ten scripted builders house a hundred agents, because the minority works ~3.5x
+harder per agent. A village whose construction is already met by a tenth of its
+labour has no use for cheaper labour.
+
+### Adoption, and why it is low
+
+8.80 axes per episode among 100 agents, against a **random-goal floor of 3.20**
+in the same world -- above the floor, and tiny. The reason is measurable and is
+an old friend:
+
+> An unarmed agent stands at a site with a full load on **9,552 agent-ticks** an
+> episode, and on **153 of them (1.6%)** that load is one wood and one stone.
+
+That is m4h's composition deadlock, rebuilt at a workbench. `fungible_materials`
+lets a site take whatever arrives because a wall is a wall; an axe needs a haft
+and a head, so an agent carrying two wood is standing at the forge unable to use
+it. Keeping the composition is deliberate -- it is the only thing that stops
+`mine` becoming a dead action once a village is built -- and the forced-adoption
+counterfactual above says removing it would buy nothing anyway.
+
+**State the honesty cost plainly: adoption here is SCORED, not emergent.** The
+scripted arbiter crafts because `RESTORE[CRAFT_AXE, NEED_TOOL]` says an unarmed
+agent lacks something, and that line is a weight this session chose. "A tool is
+adopted because agents worked out it was worth it" is a claim only a learned
+chooser can earn. What the axe world CAN honestly measure -- and did -- is
+whether the tool pays against its own control, and whether its owners specialise.
+
+### The M2 specialisation prediction is refuted, in an interesting direction
+
+The rung was proposed on the theory that tool-owners become the village
+lumberjacks. They become the opposite:
+
+| share of its own goal-ticks | armed | unarmed |
+|---|---|---|
+| harvest_wood | **0.53%** | **3.31%** |
+| harvest_stone | 0.0% | 0.7% |
+| deliver | 0.2% | 1.2% |
+
+An axe-owner spends **3 points less** of its life harvesting than an unarmed
+agent. Which is exactly right and only looks surprising: a labour-saving tool
+saves labour. The same wood arrives in half the trips, the wealth need is met
+sooner, and the agent goes and does something else. Caveats that ride with it:
+the armed group is only 3.3% of the population's goal-ticks, and who ends up
+armed is not randomised, so treat the direction as the finding and not the size.
+
+### What this rung adds to the ladder
+
+* **A rung can be perfectly implemented, adopted above its floor, and worth
+  zero.** The escalation ladder's next rungs should be sized against a
+  constraint that is measurably binding, not against one that sounds important.
+  `sim.economy`'s material block now prints which regime a world is in.
+* **The next rung should attack a leg that IS binding.** §10's sweep says the
+  binding one is the *decision to contribute at all*, not the cost of
+  contributing -- which is the night predator (demand-side, §11's ladder) or a
+  mechanic that makes shelter excludable, not a cheaper way to do work nobody is
+  short of.
+* Two things the build forced, both recorded as tests named after the symptom:
+  appending a goal reshuffled **every agent's traits** (`rng.normal` fills
+  row-major) and rewidened the **learned arbiter's net**, which would have
+  changed every from-scratch stage-5 number in worlds with no tools in them.
+  `agent_traits` now freezes the stage-4 draw and `goal_width` freezes the
+  stage-4 head. See `tests/test_tools.py`.
+
+## 13. Replay schema v5: goals, shocks, and who is learned
+
+Three things a stage-4 replay could not answer, all added as optional per-tick
+keys so a world without them writes a file the size of a v4 one:
+
+* **`o`, one arbiter goal id per agent.** The action column says "NE"; only the
+  goal says the agent is walking to a site to deliver, which is the difference
+  between a builder and a free-rider and the entire subject of §10. The
+  population panel's histogram now counts goals rather than actions -- at tick
+  250 of the seasons world it reads explore 48 / raid 16 / steal 12, which is a
+  blight legible at a glance.
+* **`n = [blight, storm_sites]`.** A storm at tick 500 of the ramp world destroys
+  76 units of shelter and the frame was previously pixel-for-pixel identical to
+  tick 496; a blight leaves no trace at all, since the regrowth that did not
+  happen is invisible in the state either side. Both now carry a banner and a
+  screen tint.
+* **`learn` on each agent.** In a mixed run the twenty learned agents were
+  indistinguishable from the eighty scripted ones. They now wear a cyan ring.
+
+`SCHEMA_VERSION_VIEW = 5`, emitted for every society world (the shock channel
+exists whether or not a shock fires); `SUPPORTED_SCHEMA` in `viewer/main.js`
+carries 1-5, so every replay ever written still loads. Verified in a browser on
+all three current worlds with no console errors.

@@ -38,7 +38,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .agents import (BUILD, CHOP, DEPOSIT_FOOD, DEPOSIT_MATERIAL, GATHER,
+from .agents import (BUILD, CHOP, CRAFT, DEPOSIT_FOOD, DEPOSIT_MATERIAL, GATHER,
                      GIVE_FOOD, GIVE_MATERIAL, IDLE, MINE, N_MOVE_ACTIONS, RAID,
                      STEAL, WITHDRAW_FOOD, WITHDRAW_MATERIAL, num_actions)
 from .config import Config
@@ -64,11 +64,18 @@ GOAL_NAMES: tuple[str, ...] = (
     "draw_food",       # eat out of the household store
     "draw_material",   # take material out of the store to rebuild with
     "raid",            # take from ANOTHER household's stockpile
+    # --- tech ladder rung 1
+    "craft",           # make an axe at a site, out of wood and stone carried
 )
 (FORAGE, HARVEST_WOOD, HARVEST_STONE, DELIVER, SHELTER, GOAL_STEAL,
  GOAL_GIVE_FOOD, GOAL_GIVE_MATERIAL, EXPLORE, REST,
- STORE_FOOD, STORE_MATERIAL, DRAW_FOOD, DRAW_MATERIAL, GOAL_RAID) = range(len(GOAL_NAMES))
+ STORE_FOOD, STORE_MATERIAL, DRAW_FOOD, DRAW_MATERIAL, GOAL_RAID,
+ CRAFT_AXE) = range(len(GOAL_NAMES))
 N_GOALS = len(GOAL_NAMES)
+# The goal count as of stage 4, frozen forever. `agent_traits` draws that many
+# columns first so appending a goal cannot perturb an existing world's traits;
+# see the comment there for the failure this prevents.
+N_GOALS_STAGE4 = 15
 
 # --- needs ------------------------------------------------------------------
 NEED_NAMES: tuple[str, ...] = ("hunger", "food_stock", "safety", "shelter_stock", "wealth",
@@ -76,9 +83,15 @@ NEED_NAMES: tuple[str, ...] = ("hunger", "food_stock", "safety", "shelter_stock"
                                # These are the first needs in the project that are
                                # not about the agent's own body, which is what gives
                                # a group something to be a group ABOUT.
-                               "house_food", "house_material")
+                               "house_food", "house_material",
+                               # tech ladder rung 1: a capability I do not have.
+                               # Every other need is about a STOCK running low;
+                               # this one is about being unable to do something
+                               # well, and it stays at full deficit until the tool
+                               # exists, then goes to zero forever.
+                               "tool")
 (NEED_HUNGER, NEED_FOOD_STOCK, NEED_SAFETY, NEED_SHELTER_STOCK, NEED_WEALTH,
- NEED_HOUSE_FOOD, NEED_HOUSE_MATERIAL) = range(7)
+ NEED_HOUSE_FOOD, NEED_HOUSE_MATERIAL, NEED_TOOL) = range(8)
 N_NEEDS = len(NEED_NAMES)
 
 # How much each goal restores each need, in [0, 1]. Rows are goals, columns
@@ -111,12 +124,29 @@ RESTORE[DRAW_FOOD, NEED_HUNGER] = 0.9
 RESTORE[DRAW_MATERIAL, NEED_WEALTH] = 1.0
 RESTORE[GOAL_RAID, NEED_FOOD_STOCK] = 1.0
 RESTORE[GOAL_RAID, NEED_HUNGER] = 0.9
+# Tech ladder rung 1. An axe serves WEALTH -- the material need -- because that is
+# what it is for: every later chop brings back twice the wood. Half of what a
+# harvest trip restores, not more, and the halving is the honest bit: crafting
+# spends two units NOW for a rate that only pays off over the trips that follow,
+# so it must not outbid the trip it is competing with while an agent is short.
+# What it must not be is a reward (rule 1): nothing in world.py pays for a craft,
+# and if axes get made it is because the wood they bring back keeps agents alive.
+# ...and it serves the TOOL need, which is the only reason it can ever be
+# chosen. Restoring `wealth` alone was the first version and it can never fire:
+# `craft` is available exactly when the agent is carrying a wood and a stone,
+# and on a 2-unit inventory that means FULL -- so the wealth deficit is zero at
+# the precise moment the goal becomes possible, and the goal scores zero. The
+# lesson is the file's own, arriving in new clothes: a need is what you LACK, and
+# what an unarmed agent lacks is the tool, not the material in its hands.
+RESTORE[CRAFT_AXE, NEED_TOOL] = 1.0
+RESTORE[CRAFT_AXE, NEED_WEALTH] = 0.5
 
 # Maslow shaping: which tier each need sits in, lowest first. Only tiers that can
 # actually kill gate anything -- hunger, then night exposure. A half-empty
 # inventory is prudence, not an emergency, so food_stock/wealth/shelter_stock
 # contribute to scores without suppressing anything.
-NEED_TIER = np.array([0, 2, 1, 2, 2, 3, 3])
+NEED_TIER = np.array([0, 2, 1, 2, 2, 3, 3,
+                      2])   # tool: prudence, like every other stock need
 # EXPLORE sits at tier 0, i.e. ungated, and that placement is a correction worth
 # recording. It was tier 4 first, which meant an agent whose inventory was empty
 # had tier-2 urgency at 1.0, which zeroed the gate on every tier above it --
@@ -131,7 +161,8 @@ NEED_TIER = np.array([0, 2, 1, 2, 2, 3, 3])
 # one goal that empties it. `store_*` and `draw_material` are prudence and sit
 # with the other tier-2 goals; a household larder is never an emergency.
 GOAL_TIER = np.array([0, 2, 2, 2, 1, 0, 3, 3, 0, 4,
-                      2, 2, 0, 2, 0])
+                      2, 2, 0, 2, 0,
+                      2])   # craft: prudence, exactly like harvesting
 
 # A goal serving no need at all still has to be choosable, or an agent with
 # nothing visible would have no legal intention. These are the floors, and they
@@ -164,6 +195,9 @@ BASE_APPEAL[REST] = 0.02
 PERSIST_GOALS = np.zeros(N_GOALS, dtype=bool)
 PERSIST_GOALS[[FORAGE, HARVEST_WOOD, HARVEST_STONE, DELIVER, SHELTER,
                STORE_FOOD, STORE_MATERIAL, DRAW_FOOD, DRAW_MATERIAL]] = True
+# `craft` is deliberately NOT persistent: its goal state is reached in the single
+# tick the axe is made, so a persisted craft is a commitment with nothing left to
+# commit to -- the `rest` failure mode above, at a workbench.
 
 
 def commit_budget(acfg: ArbiterConfig, goals: np.ndarray) -> np.ndarray:
@@ -232,7 +266,19 @@ def agent_traits(num_agents: int, seed: int, cfg: ArbiterConfig) -> np.ndarray:
     everything else here.
     """
     rng = np.random.default_rng(seed)
-    return np.exp(rng.normal(0.0, cfg.trait_spread, size=(num_agents, N_GOALS)))
+    # DRAWN IN TWO CALLS, AND THE FIRST SHAPE IS FROZEN. `rng.normal` fills
+    # row-major, so a single draw of (agents, N_GOALS) reshuffles EVERY agent's
+    # every trait the moment a goal is appended -- which is how rung 1 first broke
+    # the persist-off golden checksum, in a world with no tools in it. The
+    # append-never-insert rule applies to the random stream as well as to the
+    # index: the stage-4 block keeps the draw it always had, and each later rung
+    # takes fresh numbers off the end.
+    base = np.exp(rng.normal(0.0, cfg.trait_spread, size=(num_agents, N_GOALS_STAGE4)))
+    if N_GOALS == N_GOALS_STAGE4:
+        return base
+    extra = np.exp(rng.normal(0.0, cfg.trait_spread,
+                              size=(num_agents, N_GOALS - N_GOALS_STAGE4)))
+    return np.concatenate([base, extra], axis=1)
 
 
 def compute_needs(view: ObsView, cfg: Config) -> np.ndarray:
@@ -253,6 +299,17 @@ def compute_needs(view: ObsView, cfg: Config) -> np.ndarray:
     threshold = cfg.hunger.eat_threshold / cfg.hunger.max
     needs[:, NEED_HUNGER] = np.clip((threshold - view.hunger) / max(threshold, 1e-9), 0.0, 1.0)
     needs[:, NEED_FOOD_STOCK] = np.clip(1.0 - view.food, 0.0, 1.0)
+
+    # tech ladder rung 1. Full deficit while unarmed, zero once the axe exists.
+    # Note what this makes the adoption number MEAN, stated here rather than
+    # discovered later: the scripted arbiter's adoption rate is a consequence of
+    # this line, not an emergent finding. What the axe world can honestly measure
+    # is whether the tool PAYS (against the no-axe control on the same seeds) and
+    # whether its owners SPECIALISE -- neither of which anything here scores.
+    # "A tool is adopted because agents worked out it was worth it" is a claim
+    # only a learned chooser can earn.
+    if cfg.tools.enabled:
+        needs[:, NEED_TOOL] = (~view.axe).astype(np.float64)
 
     if cfg.construction.enabled:
         cc = cfg.construction
@@ -529,6 +586,24 @@ def goal_availability(view: ObsView, cfg: Config, needs: np.ndarray,
         available[:, [STORE_FOOD, STORE_MATERIAL, DRAW_FOOD, DRAW_MATERIAL,
                       GOAL_RAID]] = False
 
+
+    # --- tech ladder rung 1. Available only where the mask would allow the act:
+    # at a site, with a haft and a head in hand, and no axe already. Same rule as
+    # every other availability test -- a goal whose target does not exist cannot
+    # be wanted -- and the "no axe already" clause is what stops a tool-owner
+    # spending the rest of its life wanting a second one.
+    if cfg.tools.enabled:
+        tc = cfg.tools
+        d_site, _, _, _ = view.sites.nearest(view.sites.present)
+        set_target(CRAFT_AXE, d_site)
+        available[:, CRAFT_AXE] &= (
+            ~view.axe
+            & (view.wood * cfg.construction.material_capacity >= tc.axe_wood_cost - 1e-6)
+            & (view.stone * cfg.construction.material_capacity >= tc.axe_stone_cost - 1e-6)
+        )
+    else:
+        available[:, CRAFT_AXE] = False
+
     return available, discount, bonus
 
 
@@ -754,6 +829,16 @@ def goal_viable(view: ObsView, cfg: Config, goals: np.ndarray,
     # were not choosing to wander, they were serving out a commitment whose reason
     # had expired. Searching is the one option whose purpose is a perception, so
     # its termination test is a perception too.
+    if cfg.tools.enabled:
+        # A craft ends the instant the axe exists -- there is nothing further to
+        # pursue. Also ends if the materials go (raided, or spent on a wall),
+        # which is the same "another agent changed the state while I walked" case
+        # the stockpile goals guard against.
+        cap_m = max(cfg.construction.material_capacity, 1)
+        when(CRAFT_AXE, ~view.axe
+             & (view.wood * cap_m >= cfg.tools.axe_wood_cost - 1e-6)
+             & (view.stone * cap_m >= cfg.tools.axe_stone_cost - 1e-6))
+
     when(EXPLORE, ~(view.loaded_bushes.any(axis=1) & room_food))
     # The gifts are single-tick by nature and `rest` never fails.
     when(GOAL_GIVE_FOOD, np.zeros(n, dtype=bool))
@@ -842,6 +927,14 @@ def execute_goals(goals: np.ndarray, view: ObsView, cfg: Config,
             chosen = np.where(inside, IDLE, _heading(hx, hz))
             chosen = np.where(np.isfinite(d_home), chosen, IDLE)
             actions[shelter_rows] = chosen[shelter_rows]
+
+        if cfg.tools.enabled:
+            # Walk to the nearest site and make the axe there. Same
+            # walk-there-then-act muscle as every other goal; nothing here
+            # decides WHETHER to craft, which is the arbiter's job and, one day,
+            # a learned chooser's.
+            d_shop, wx, wz, _ = view.sites.nearest(view.sites.present)
+            walk_then(CRAFT_AXE, d_shop, wx, wz, CRAFT, cfg.tools.craft_radius)
 
     if cfg.exchange.enabled:
         for goal, action in ((GOAL_GIVE_FOOD, GIVE_FOOD), (GOAL_GIVE_MATERIAL, GIVE_MATERIAL)):

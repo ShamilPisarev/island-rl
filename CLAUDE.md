@@ -199,6 +199,54 @@ each:
   New: `--learn-agents` on `sim.society` so `mixedrandom` is size-matched at
   every share. Do not re-run these six points. Write-up: ISLAND2_DESIGN.md §10.
 
+* **Tech ladder rung 1 is RUN (`config/island2/society4_axe.yaml`, design doc
+  §12): the craftable axe works perfectly and buys nothing, because wood was
+  never the constraint.** An agent at a site holding 1 wood + 1 stone can
+  `craft` (action 21); every later chop takes 2 units instead of 1. Nothing pays
+  for it. Against its own control -- the same island, same trees, same seeds,
+  `tools.enabled: false` -- 5 paired episodes give **+0.8 ± 3.2 ticks (1/5)** and
+  **shelters identical to two decimal places (55.20 both)**. The counterfactual
+  is what makes that a result rather than an adoption failure: **arm every agent
+  at spawn and chop actions fall 264.4 → 141.8 (−122.6 ± 9.3) while wood
+  gathered does not move (+1.0 ± 3.9)** and lifespan does not either
+  (+1.8 ± 6.2). The tool halves the swings and delivers the same wood. Read it
+  with the learned-share sweep: a village whose construction is already met by a
+  tenth of its labour has no use for cheaper labour.
+  Adoption is **8.80 axes of 100 agents against a random-goal floor of 3.20**,
+  and the reason it is low is m4h's composition deadlock at a workbench -- an
+  unarmed agent stands at a site fully loaded on 9,552 agent-ticks an episode and
+  on **153 of them (1.6%)** that load is one wood and one stone (a site takes
+  whatever arrives; an axe needs a haft and a head). **The M2 specialisation
+  prediction is REFUTED in the interesting direction**: axe-owners spend 0.53% of
+  their goal-ticks on `harvest_wood` against the unarmed 3.31% -- a labour-saving
+  tool saves labour (small subset, 3.3% of goal-ticks; read the direction, not
+  the size). **Honest cost, in every write-up: adoption here is SCORED, not
+  emergent** -- the scripted arbiter crafts because `RESTORE[CRAFT_AXE,
+  NEED_TOOL]` says so, and "agents worked out it was worth it" is a claim only a
+  learned chooser can earn. Sized with `sim.economy`'s new material block BEFORE
+  the run (rule 5): on plain society4 arming everyone would have spent 58.8% of
+  the island's stock and all 100 of its stone, so the axe world carries 60 trees
+  and 45 rocks. New: `ToolsConfig`, `CRAFT`/`own.axe`/`pool.axe`, a `craft` goal
+  and a `tool` NEED, `sim.economy --config` material report,
+  `tests/test_tools.py` (16 tests). **Two bit-identity traps the rung sprang and
+  both are pinned**: appending a goal reshuffles every agent's traits
+  (`rng.normal` fills row-major -- `agent_traits` now freezes the stage-4 draw)
+  and rewidens the learned arbiter's net (`goal_width` now freezes the stage-4
+  head), either of which would have changed every from-scratch stage-5 number in
+  worlds with no tools in them. Do not re-run; the next rung must attack a leg
+  that is measurably binding.
+
+* **Replay schema v5 (design doc §13): goals, shocks, and who is learned.**
+  Three things a stage-4 replay could not answer, added as optional per-tick keys
+  so a world without them writes a v4-sized file. `o` = one arbiter goal id per
+  agent (the population histogram now counts GOALS, not compass directions);
+  `n = [blight, storm_sites]` (a storm at tick 500 of the ramp world destroys 76
+  units of shelter and the frame was previously identical to tick 496); `learn`
+  per agent (the 20 learned agents in a mixed run now wear a cyan ring).
+  `SUPPORTED_SCHEMA` is 1-5, so every replay ever written still loads. Verified
+  in a browser on the seasons world, the mixed population and the axe world, no
+  console errors.
+
 * **The seasons world (`config/island2/society4_ramp.yaml`, design doc §11).**
   `society.shock_ramp` scales shock SEVERITY with episode progress (cadence
   and rng untouched; ramp 0 bit-identical, pinned; storm damage clamped at
@@ -640,7 +688,7 @@ shaping ablation and the M4 economy sizing notes before touching any config.
   original verdict was reached where nothing was worth trading: giving stops being
   selected against and the flow turns directional, but it still buys no survival.
   Best checkpoint: `checkpoints/m5b` (497.5 lifespan).
-- `pytest` passes (364 tests).
+- `pytest` passes (384 tests).
 - All three viewer pages verified in a browser against real data, including their
   schema-mismatch failure paths.
 
@@ -833,7 +881,31 @@ for N in 40 60 80 90 100; do
 done
 # N=100 has no scripted remainder, so it is `--arbiter learned` against the
 # `randomgoal` floor -- `mixed` correctly refuses to invent a split.
+
+# Island 2.0 tech ladder rung 1: the craftable axe. NO TRAINING -- the scripted
+# arbiter runs it, which is why the whole experiment costs seconds. Size it
+# first (rule 5): sim.economy now prints the MATERIAL economy as well as the
+# berry one, and says which regime the world is in.
+python -m sim.economy --config config/island2/society4_axe.yaml
+python -m sim.society --config config/island2/society4_axe.yaml --episodes 5
+python -m sim.society --config config/island2/society4_axe_control.yaml --episodes 5
+# the adoption floor, in the same world
+python -m sim.society --config config/island2/society4_axe.yaml --episodes 5 \
+    --arbiter randomgoal
 ```
+
+**The counterfactual is what makes the axe a result rather than a shrug**, and
+it has a flag: `--arm-all` gives every agent an axe at spawn, so adoption is off
+the table and only the tool's value is left (the movement counterpart of
+`sim.opportunity --force`).
+
+```bash
+python -m sim.society --config config/island2/society4_axe.yaml --episodes 5 --arm-all
+```
+
+The other measurement behind the write-up -- 1.6% of unarmed-loaded-at-a-site
+ticks hold one of each material -- is a ten-line script against `World` directly;
+there was no reason to give a one-off composition count a permanent flag.
 
 ## Compute budget — runs are longer than they need to be
 

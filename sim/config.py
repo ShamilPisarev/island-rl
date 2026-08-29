@@ -266,6 +266,49 @@ class SocietyConfig:
 
 
 @dataclass(frozen=True)
+class ToolsConfig:
+    """Island 2.0 tech ladder, rung 1: a craftable axe.
+
+    Off by default, so every 1.0 world and every island2 stage stays
+    bit-identical. Enabling it appends ONE action (`craft`, index 21) and ONE
+    observation channel (`own.axe`), by the append-never-insert rule that carried
+    an M1 checkpoint into M3 -- and, like `society`, enabling it implies the whole
+    block below it is present, so `craft` is a fixed index in every tool world.
+
+    WHY AN AXE AND WHY THIS SHAPE. It is the cheapest thing in this project that
+    is honestly a *technology*: a durable object an agent makes out of two things
+    it already gathers, which then changes the rate at which it can gather one of
+    them. The chain is short enough to be creditable (craft once, benefit every
+    chop afterwards) -- which matters, because every long chain this project has
+    tried has failed, and the point of rung 1 is to establish the ladder, not to
+    re-run the credit-assignment wall.
+
+    IT DOES NOT CREATE WOOD. Trees hold a finite stock, so an axe buys TICKS, not
+    supply: the same wood arrives in half the trips. `sim.economy` says which of
+    those two the world is actually short of, and it says so before a config is
+    sized (rule 5) -- if material stock is the binding constraint, the axe cannot
+    help and the run would measure nothing.
+
+    An axe is permanent once made. Durability was left out deliberately: it is a
+    second mechanic (a decay rate to tune) wearing the same name, and rung 1 has
+    to answer "does a tool get adopted at all" before anything is tuned.
+    """
+
+    enabled: bool = False
+    axe_wood_cost: int = 1
+    axe_stone_cost: int = 1
+    # Yield per successful chop while holding an axe. 2 is the rung-1 setting;
+    # the multiplier is a config knob so the adoption question can be asked at a
+    # price the agents can actually see.
+    chop_multiplier: int = 2
+    # An axe is made AT A SITE -- the household's own building spot doubles as the
+    # workshop. Somewhere rather than anywhere, because a tool you can make while
+    # standing in a berry patch is not a technology, it is an inventory slot.
+    craft_radius: float = 2.0
+    observe_axe: bool = True
+
+
+@dataclass(frozen=True)
 class MixConfig:
     """Train on TWO worlds at once: a share of the envs run a second config.
 
@@ -377,6 +420,7 @@ class Config:
     construction: ConstructionConfig = field(default_factory=ConstructionConfig)
     exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
     society: SocietyConfig = field(default_factory=SocietyConfig)
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
     mix: MixConfig = field(default_factory=MixConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
@@ -432,6 +476,7 @@ _SECTIONS: dict[str, type] = {
     "construction": ConstructionConfig,
     "exchange": ExchangeConfig,
     "society": SocietyConfig,
+    "tools": ToolsConfig,
     "mix": MixConfig,
     "observation": ObservationConfig,
     "reward": RewardConfig,

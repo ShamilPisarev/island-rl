@@ -58,14 +58,32 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .agents import IDLE, num_actions, observation_dim
+from .agents import IDLE, num_actions, observation_dim, observation_layout
 from .config import Config, load_config
 from .obsview import ObsView
-from .policy import ActorCritic
-from .utility import (GOAL_NAMES, N_GOALS, NEED_SAFETY, REST, ArbiterConfig,
+from .policy import ActorCritic, column_map, grow_actor_critic
+from .utility import (GOAL_NAMES, N_GOALS, N_GOALS_STAGE4, NEED_SAFETY, REST, ArbiterConfig,
                       agent_traits, commit_budget, compute_needs,
                       goal_availability, option_interrupted)
 from .world import World
+
+
+def goal_width(cfg: Config) -> int:
+    """How many goals a LEARNED chooser sees in this world.
+
+    Not always `N_GOALS`, and the difference is a reproducibility guarantee
+    rather than an optimisation. A net's random initialisation is shaped by its
+    input and output widths, so appending a goal to `GOAL_NAMES` changes every
+    weight a from-scratch run starts with -- and with it every number in the
+    stage-5 write-ups, in worlds that do not have the new goal in them. The trait
+    draw had the same problem and `agent_traits` freezes it the same way.
+
+    So a world without tools keeps the stage-4 width and reproduces exactly;
+    enabling tools widens the head by the goals that world actually has. Goal ids
+    are global and appended, so a narrower menu is always a PREFIX -- which is
+    the only reason slicing is safe, and the reason a rung must never insert.
+    """
+    return N_GOALS if cfg.tools.enabled else N_GOALS_STAGE4
 
 
 def goal_mask(view: ObsView, cfg: Config, acfg: ArbiterConfig) -> np.ndarray:
@@ -78,7 +96,9 @@ def goal_mask(view: ObsView, cfg: Config, acfg: ArbiterConfig) -> np.ndarray:
     needs = compute_needs(view, cfg)
     available, _, _ = goal_availability(view, cfg, needs, acfg)
     available[:, REST] = True
-    return available
+    # Trimmed to the goals this world's chooser has (see `goal_width`). The
+    # columns dropped are always unavailable here, so nothing choosable is lost.
+    return available[:, :goal_width(cfg)]
 
 
 class LearnedArbiter:
@@ -97,7 +117,11 @@ class LearnedArbiter:
         self.policy = policy
         self.cfg = cfg
         self.acfg = acfg or ArbiterConfig()
-        self.traits = agent_traits(cfg.world.num_agents, seed, self.acfg)
+        # Trimmed to this world's menu, so the input width matches the head.
+        # See `goal_width`: the trait block is appended, so a prefix is exactly
+        # the traits of the goals this chooser has.
+        self.traits = agent_traits(cfg.world.num_agents, seed,
+                                   self.acfg)[:, :goal_width(cfg)]
         self.deterministic = deterministic
         torch.manual_seed(seed)
 
@@ -158,7 +182,7 @@ class RandomGoalArbiter:
         # per agent, vectorised -- same trick as the utility arbiter's softmax.
         p = available / available.sum(axis=1, keepdims=True)
         u = rng.random((view.n, 1))
-        return (p.cumsum(axis=1) < u).sum(axis=1).clip(0, N_GOALS - 1)
+        return (p.cumsum(axis=1) < u).sum(axis=1).clip(0, available.shape[1] - 1)
 
 
 # --------------------------------------------------------------------------
@@ -209,7 +233,7 @@ class _EnvState:
         self.dec_goal = np.full(n, -1, dtype=np.int64)
         self.dec_logprob = np.zeros(n, dtype=np.float32)
         self.dec_value = np.zeros(n, dtype=np.float32)
-        self.dec_mask = np.zeros((n, N_GOALS), dtype=bool)
+        self.dec_mask = np.zeros((n, goal_width(cfg)), dtype=bool)
         self.reward_acc = np.zeros(n, dtype=np.float64)
         self.disc = np.ones(n, dtype=np.float64)            # gamma^j inside the option
         self.has_open = np.zeros(n, dtype=bool)
@@ -235,7 +259,7 @@ class ArbiterTrainer:
         self.acfg = acfg or ArbiterConfig()
         self.seed = seed
         n = cfg.world.num_agents
-        self.traits = agent_traits(n, seed, self.acfg)
+        self.traits = agent_traits(n, seed, self.acfg)[:, :goal_width(cfg)]
         # Mixed population (design doc section 10, the first lever): only the
         # agents in `learn_agents` are driven by -- and train -- the policy; the
         # rest run the scripted arbiter in the SAME worlds. The point is the
@@ -272,9 +296,10 @@ class ArbiterTrainer:
         if household_reward and not cfg.society.enabled:
             raise ValueError("--household-reward needs a society world "
                              "(society.enabled) -- there is no household to share with")
-        self.in_dim = observation_dim(cfg) + N_GOALS
+        self.n_goals = goal_width(cfg)
+        self.in_dim = observation_dim(cfg) + self.n_goals
         torch.manual_seed(seed)
-        self.policy = ActorCritic(self.in_dim, n_actions=N_GOALS,
+        self.policy = ActorCritic(self.in_dim, n_actions=self.n_goals,
                                   hidden_sizes=tcfg.hidden_sizes)
         self.optim = torch.optim.Adam(self.policy.parameters(), lr=tcfg.lr, eps=1e-5)
         self.mb_rng = np.random.default_rng(seed + 12_345)   # never global numpy state
@@ -634,6 +659,38 @@ def load_arbiter(path: str | Path, cfg: Config | None = None,
     policy = ActorCritic(pc["obs_dim"], n_actions=pc["n_actions"],
                          hidden_sizes=pc["hidden_sizes"])
     policy.load_state_dict(blob["policy_state"])
+    # GROW A NARROWER CHECKPOINT. Appending a goal widens both ends of this net:
+    # the trait vector on the input (obs_dim = observation_dim + N_GOALS) and the
+    # goal head on the output. Every arb4/arb5 checkpoint predates rung 1, so
+    # without this they simply stop loading -- and the project's own rule is that
+    # a milestone grows a policy rather than orphaning it (`grow_policy`, M3).
+    #
+    # New weights are ZERO, and the new goal is unavailable in a world without
+    # tools, so a grown checkpoint chooses exactly what it chose before. The test
+    # named after that is what keeps it true.
+    want_goals = goal_width(cfg)
+    want_obs = observation_dim(cfg) + want_goals
+    if pc["obs_dim"] != want_obs or pc["n_actions"] != want_goals:
+        if pc["obs_dim"] > want_obs or pc["n_actions"] > want_goals:
+            raise ValueError(
+                f"{path} is WIDER than this build ({pc['obs_dim']} obs / "
+                f"{pc['n_actions']} goals against {want_obs} / {want_goals}). "
+                f"Shrinking would silently drop trained weights; check out the "
+                f"revision that wrote it.")
+        # MAPPED BY NAME, not by position. The input is [observation | traits],
+        # and rung 1 appends `own.axe` in the MIDDLE of the observation (before
+        # the shoreline block), so loading a stage-4 checkpoint into a tools world
+        # by position would feed its edge weights the axe flag -- the exact silent
+        # misalignment `column_map` was written for in M3. The trait block is
+        # appended, so it maps as the identity onto the first `n_goals` slots.
+        src_cfg = config_from_dict(blob["config"])
+        obs_map = column_map(observation_layout(src_cfg), observation_layout(cfg))
+        src_obs_width = len(observation_layout(src_cfg))
+        trait_map = [observation_dim(cfg) + g for g in range(pc["n_actions"])]
+        assert src_obs_width + pc["n_actions"] == pc["obs_dim"], (
+            "checkpoint input width is not observation + traits")
+        policy = grow_actor_critic(policy, want_obs, want_goals,
+                                   obs_map=list(obs_map) + trait_map)
     policy.eval()
     arb = LearnedArbiter(policy, cfg, seed=blob.get("seed", 0),
                          deterministic=deterministic)

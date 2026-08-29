@@ -12,7 +12,14 @@ run, size any economy change with `sim.economy` first (rule 5), pair on the
 same seed block (rule 7), and 150-200 updates is always enough (rule 4).
 
 Do NOT re-run: arb4/b/c/d (all four all-learned variants), arb5-mix, arb5-hh,
-the mixedrandom floor, or anything on the §10 do-not-re-run list.
+the mixedrandom floor, anything on the §10 do-not-re-run list, the learned-share
+sweep (item 3), or the axe (item 4).
+
+**What is left in this queue: item 5 (the night predator) only.** Rung 1 is the
+reason to read it differently than it was written: the axe attacked the COST of
+contributing and the cost was not what binds. §10's sweep says what binds is the
+DECISION to contribute at all, so a demand-side rung (a predator, or making
+shelter excludable) is the one with something to move.
 
 ---
 
@@ -124,7 +131,22 @@ completions/episode falls off the ~50-58 plateau.
     the measured endpoints (20: arb5-mix, 100: arb4c). Find where free-riding
     stops scaling. Write up, commit.
 
-## 4. Tech ladder rung 1: the craftable axe (first true "technology", ~1 session)
+## 4. Tech ladder rung 1: the craftable axe — DONE 2026-08-29 (`society4_axe`)
+
+Result: **the mechanic works perfectly and buys nothing, because wood was never
+the constraint.** Against its own control on 5 paired seeds: +0.8 +- 3.2 ticks
+(1/5), shelters identical (55.20 both). The counterfactual is what makes that a
+result -- arm every agent at spawn and chop actions fall 264.4 -> 141.8
+(-122.6 +- 9.3) while wood gathered does not move (+1.0 +- 3.9). Adoption 8.80
+of 100 against a random-goal floor of 3.20, limited by m4h's composition
+deadlock at a workbench (1.6% of unarmed-loaded-at-a-site ticks hold one of
+each). M2's specialisation prediction is REFUTED in the interesting direction:
+axe-owners harvest LESS (0.53% vs 3.31% of their goal-ticks). Honest cost:
+adoption here is scored, not emergent. No training was needed -- the scripted
+arbiter runs it. Do not re-run. Write-up: ISLAND2_DESIGN.md §12. Original item
+kept below for the record.
+
+## 4-orig. Tech ladder rung 1: the craftable axe (first true "technology", ~1 session)
 
 **What**: an axe crafted at a site (costs 1 wood + 1 stone), carried in a new
 inventory slot, doubling chop yield. Config-gated, off by default, appended
@@ -171,7 +193,17 @@ predator legitimately packs people together).
     run 5-episode utility evals vs the same world without it, write up,
     commit.
 
-## 6. Watch it (no science, ~15 min)
+## 6. Watch it — DONE 2026-08-29 (replays + replay schema v5)
+
+Done, and it turned into a schema bump because the replays could not answer the
+questions the runs were about. v5 adds `o` (one arbiter goal per agent), `n`
+(blight / storm), and a `learn` flag per agent; the viewer counts GOALS in its
+histogram, rings the learned agents in cyan, and banners a storm or a blight.
+Replays written and verified in a browser with no console errors:
+`society4_ramp.json`, `society4_mixed_arb5hh.json`, `society4_axe.json`.
+Write-up: ISLAND2_DESIGN.md §13. Original item kept below for the record.
+
+## 6-orig. Watch it (no science, ~15 min)
 
 **What**: replays of the seasons world and the mixed population for the
 viewer. The seasons world especially -- late storms levelling settlements

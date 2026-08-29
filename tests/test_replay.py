@@ -240,3 +240,85 @@ def test_v2_world_block_carries_the_shelter_rules(cfg):
         assert world["partial_shelter"] is expected
         assert world["shelter_radius"] == m4.construction.shelter_radius
         assert world["night_cycle"] == m4.construction.night_cycle
+
+
+# --- schema v5: goals, shocks, and who is learned ---------------------------
+#
+# Each of these is named after the thing that was invisible before it, because
+# that is what the test is protecting: a replay that renders and answers no
+# question is the failure mode, not a crash.
+
+def _society_replay(config="config/island2/society4_ramp.yaml", ticks=120,
+                    policy="utility", **kw):
+    from sim.config import load_config
+    from sim.society import make_runner
+    from sim.replay import ReplayRecorder
+    from sim.utility import ArbiterConfig
+    from sim.world import World
+
+    cfg = load_config(config).replace(**{"world.max_ticks": ticks})
+    world = World(cfg, seed=10000)
+    runner = make_runner(cfg, policy, 10000, ArbiterConfig(), kw.get("checkpoint"))
+    rec = ReplayRecorder(world, cfg, label="t", source="test", seed=10000,
+                         goal_source=runner,
+                         learn_mask=getattr(runner.arbiter, "learn_mask", None))
+    rec.snapshot()
+    obs = world.observations()
+    while True:
+        res = world.step(runner.act(obs, world.action_mask()))
+        obs = res.obs
+        rec.snapshot()
+        if res.episode_done:
+            break
+    return cfg, rec.to_dict()
+
+
+def test_society_replay_is_v5_and_carries_a_goal_per_agent():
+    """The action column says "NE"; only the goal says what for."""
+    cfg, d = _society_replay()
+    assert d["schema_version"] == 5
+    from sim.utility import GOAL_NAMES
+    assert d["goal_names"] == list(GOAL_NAMES)
+    for tick in d["ticks"]:
+        assert len(tick["o"]) == cfg.world.num_agents
+        assert all(0 <= g < len(GOAL_NAMES) for g in tick["o"])
+
+
+def test_a_storm_is_recorded_on_the_tick_it_lands():
+    """It was previously readable only as a jump in `s` between two frames."""
+    cfg, d = _society_replay()
+    storms = [(t["t"], t["n"][1]) for t in d["ticks"] if "n" in t and t["n"][1]]
+    assert storms, "the ramp world fires a shock every shock_interval ticks"
+    for tick_index, hit in storms:
+        assert hit > 0
+        # ...and the site counters really did move on that tick, which is what
+        # makes the flag a record rather than a decoration.
+        before = sum(sum(pair) for pair in d["ticks"][tick_index - 1]["s"])
+        after = sum(sum(pair) for pair in d["ticks"][tick_index]["s"])
+        assert after > before
+
+
+def test_a_calm_tick_carries_no_shock_key_at_all():
+    """A world with shocks off must write a file the size of a v4 one."""
+    _, d = _society_replay(config="config/island2/society4.yaml", ticks=40)
+    # society4 fires its first shock at tick 100, so 40 ticks is all calm.
+    assert all("n" not in tick for tick in d["ticks"])
+
+
+def test_learn_flag_is_absent_unless_the_population_is_mixed():
+    """A `learn` key on every agent of an all-scripted run would read as a
+    result -- "these are the learned ones" -- where there is none."""
+    _, d = _society_replay(ticks=40)
+    assert all("learn" not in a for a in d["agents"])
+
+
+def test_blight_is_flagged_while_it_lasts():
+    # 280 rather than 200: the ramp world's first shock (tick 100) is a storm and
+    # the blight lands on the second, so a 200-tick episode ends on the frame the
+    # blight begins and the span has nowhere to show.
+    cfg, d = _society_replay(ticks=280)
+    blighted = [t["t"] for t in d["ticks"] if "n" in t and t["n"][0]]
+    assert blighted, "the ramp world blights on one of its first two shocks"
+    # A blight is a span, not an instant: the flag must persist tick by tick or
+    # a watcher sees a single frame and nothing else.
+    assert len(blighted) > 1

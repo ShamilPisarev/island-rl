@@ -10,8 +10,9 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createPopulation } from './biped.js';
 
 // --- replay schema this build can read (see sim/replay.py) ------------------
-const SUPPORTED_SCHEMA = [1, 2, 3, 4];   // v2 = M4 materials/shelters/night, v3 = M5 transfers,
-                                         // v4 = island2 stage 4 households/stockpiles/raids
+const SUPPORTED_SCHEMA = [1, 2, 3, 4, 5];   // v2 = M4 materials/shelters/night, v3 = M5 transfers,
+                                           // v4 = island2 stage 4 households/stockpiles/raids,
+                                           // v5 = goals (`o`), shocks (`n`), learned-agent flags
 // Column order inside each tick's `a` rows. Cross-checked against the file's
 // own tick_fields on load, so a schema change cannot silently shift a column.
 const A_X = 0, A_Z = 1, A_HUNGER = 2, A_FOOD = 3, A_ALIVE = 4, A_ACTION = 5;
@@ -33,6 +34,9 @@ const MAX_GIFT_LINES = 256;
 // pool means one cap and one place the fade logic can be wrong.
 const RAID_COLOR = 0xff3b30;
 const RAID_FADE_TICKS = 20;   // longer than a gift: a raid is worth noticing
+// A storm lands in a single tick. Held on screen for a beat afterwards for the
+// same reason a raid line is: an event one frame wide is an event nobody sees.
+const STORM_HOLD_TICKS = 25;
 // Above this population the per-agent list stops being glanceable and the panel
 // switches to a swatch grid plus aggregates. 6 agents fit; 100 do not.
 const ROSTER_LIMIT = 24;
@@ -142,6 +146,11 @@ const state = {
   hover: -1,          // agent under the cursor, or -1
   rows: [],           // cached panel elements, per agent
   rosterMode: true,   // per-agent list (few agents) vs population view (many)
+  // --- schema v5
+  goalNames: null,    // index -> label, or null when the replay carries no goals
+  learn: null,        // Uint8Array, 1 where a learned arbiter drives that agent
+  learnCount: 0,
+  learnRings: [],     // one ring mesh per learned agent (there are ~20, not 100)
 };
 
 function fatal(title, message) {
@@ -446,6 +455,34 @@ function loadReplay(replay, origin) {
     });
   }
 
+  // --- schema v5: goals, and who is learned.
+  // Both are read from the file rather than derived from the version, because a
+  // society world always carries the shock channel but only carries goals when an
+  // arbiter drove it, and only carries `learn` when the population was mixed.
+  state.goalNames = Array.isArray(replay.goal_names) ? replay.goal_names : null;
+  state.learn = null;
+  state.learnCount = 0;
+  state.learnRings = [];
+  if (replay.agents.some((a) => 'learn' in a)) {
+    state.learn = Uint8Array.from(replay.agents, (a) => (a.learn ? 1 : 0));
+    state.learnCount = state.learn.reduce((n, v) => n + v, 0);
+    // A ring on the ground under each learned agent. One mesh per learned agent
+    // rather than an instanced attribute: the mixed runs put a learned agent in
+    // one slot per household, so this is ~20 meshes, not 100.
+    const ringGeo = new THREE.RingGeometry(1.5, 2.1, 20);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0x6fd3ff, transparent: true, opacity: 0.75, side: THREE.DoubleSide,
+    });
+    for (let i = 0; i < state.learn.length; i++) {
+      if (!state.learn[i]) continue;
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = ISLAND_TOP + 0.12;
+      worldGroup.add(ring);
+      state.learnRings.push({ ring, agent: i });
+    }
+  }
+
   // One instanced rig for the whole population. Replaces ~13 meshes per agent.
   state.population = createPopulation(
     replay.agents.length,
@@ -615,10 +652,56 @@ function applyTick(t) {
 
   if (state.exchange || state.society) applyTransfers(t);
 
+  // Learned agents wear a ring (schema v5). Positions come from the same
+  // interpolated buffer the follow camera uses, so the ring never lags the body.
+  for (let k = 0; k < state.learnRings.length; k++) {
+    const { ring, agent } = state.learnRings[k];
+    const alive = cur.a[agent][A_ALIVE] === 1;
+    ring.visible = alive;
+    if (alive) {
+      ring.position.x = state.agentPos[agent * 2];
+      ring.position.z = state.agentPos[agent * 2 + 1];
+    }
+  }
+
+  applyShock(cur, i0);
   updateAgentPanel(cur);
   const night = state.construction && nightFactor(t) > 0.5;
   $('tickCount').textContent = `${night ? '\u263e ' : ''}${i0} / ${state.lastTick}`;
   $('scrub').value = String(t);
+}
+
+// --- shocks (schema v5) -----------------------------------------------------
+//
+// `n` is [blight, storm_sites], present only on ticks where something is
+// happening. A blight is a STATE (berry regrowth is suspended, and the only
+// visible consequence is bushes that quietly stop refilling); a storm is an
+// EVENT that lands in one tick and is legible only as a jump in the site
+// counters between two frames. Neither was visible before, so both get an
+// explicit cue rather than being left to inference.
+function applyShock(tick, tickIndex) {
+  const box = $('shock'), label = $('shockLabel');
+  if (!box || !label) return;
+  const blight = Array.isArray(tick.n) && tick.n[0] > 0;
+  // Scanned backwards over the hold window rather than remembered in state:
+  // the scrubber can jump anywhere, and a remembered "last storm" shows a stale
+  // banner when you drag forward and no banner at all when you drag back onto an
+  // earlier one. Twenty-five array lookups a frame is nothing.
+  let hit = 0;
+  for (let k = 0; k < STORM_HOLD_TICKS; k++) {
+    const idx = tickIndex - k;
+    if (idx < 0) break;
+    const n = state.ticks[idx]?.n;
+    if (Array.isArray(n) && n[1] > 0) { hit = n[1]; break; }
+  }
+  const storming = hit > 0;
+  box.classList.toggle('storm', storming);
+  box.classList.toggle('blight', blight && !storming);
+  label.classList.toggle('on', storming || blight);
+  label.classList.toggle('storm', storming);
+  label.classList.toggle('blight', blight && !storming);
+  if (storming) label.textContent = `storm — ${hit} shelters hit`;
+  else if (blight) label.textContent = 'blight — no berries are regrowing';
 }
 
 // --- transfers (schema v3) --------------------------------------------------
@@ -788,7 +871,7 @@ function buildAgentPanel() {
   if (state.rosterMode) {
     state.replay.agents.forEach((a, i) => {
       const row = document.createElement('div');
-      row.className = 'agent';
+      row.className = 'agent' + (state.learn?.[i] ? ' learned' : '');
       row.dataset.i = String(i);
       row.innerHTML =
         `<div class="swatch" style="background:${a.color}"></div>` +
@@ -820,9 +903,9 @@ function buildAgentPanel() {
   grid.className = 'swatchgrid';
   state.replay.agents.forEach((a, i) => {
     const cell = document.createElement('button');
-    cell.className = 'cell';
+    cell.className = 'cell' + (state.learn?.[i] ? ' learned' : '');
     cell.style.background = a.color;
-    cell.title = `agent ${a.id}`;
+    cell.title = `agent ${a.id}${state.learn?.[i] ? ' (learned)' : ''}`;
     cell.addEventListener('click', () => setFollow(state.follow === i ? -1 : i));
     grid.appendChild(cell);
     state.rows.push({ cell });
@@ -833,6 +916,12 @@ function buildAgentPanel() {
   state.popDetail = detail;
 }
 
+/** The arbiter goal an agent held at this tick, or '' when the replay has none. */
+function goalName(i, tick) {
+  if (!state.goalNames || !Array.isArray(tick.o)) return '';
+  return state.goalNames[tick.o[i]] ?? '';
+}
+
 /** One-line description of an agent at the current tick, for hover and follow. */
 function describeAgent(i) {
   const tick = state.ticks[Math.min(Math.floor(state.t), state.lastTick)];
@@ -840,7 +929,13 @@ function describeAgent(i) {
   const world = state.replay.world;
   if (a[A_ALIVE] !== 1) return `agent ${i} · dead`;
   const act = state.actionNames[a[A_ACTION]] ?? '?';
-  let s = `agent ${i} · ${act} · hunger ${a[A_HUNGER].toFixed(0)}`
+  // Goal first, action second: the goal is what the agent is TRYING to do and
+  // the action is one tick of it. "NE" says nothing; "deliver · NE" says the
+  // agent is carrying material to a site, which is the whole question a mixed
+  // run asks.
+  const goal = goalName(i, tick);
+  let s = `agent ${i}${state.learn?.[i] ? ' (learned)' : ''} · `
+        + (goal ? `${goal} · ` : '') + `${act} · hunger ${a[A_HUNGER].toFixed(0)}`
         + ` · food ${a[A_FOOD]}/${world.food_capacity}`;
   if (state.construction) s += ` · w${a[A_WOOD]} s${a[A_STONE]}`;
   return s;
@@ -862,15 +957,20 @@ function updateAgentPanel(tick) {
       r.fill.style.width = `${Math.max(alive ? hunger : 0, 0) * 100}%`;
       r.fill.style.background = hunger > 0.55 ? 'var(--good)'
         : hunger > 0.28 ? 'var(--warn)' : 'var(--bad)';
-      r.act.textContent = alive ? (state.actionNames[a[A_ACTION]] ?? '?') : '—';
+      const g = alive ? goalName(i, tick) : '';
+      r.act.textContent = alive
+        ? (g ? `${g} · ${state.actionNames[a[A_ACTION]] ?? '?'}`
+             : (state.actionNames[a[A_ACTION]] ?? '?'))
+        : '—';
     }
     return;
   }
 
   // Population mode: one pass over the tick for aggregates, then style-only
   // writes on the swatch grid.
-  let alive = 0, hungerSum = 0, food = 0;
+  let alive = 0, hungerSum = 0, food = 0, aliveLearned = 0;
   const counts = new Map();
+  const hasGoals = !!state.goalNames && Array.isArray(tick.o);
   for (let i = 0; i < state.agentCount; i++) {
     const a = tick.a[i];
     const isAlive = a[A_ALIVE] === 1;
@@ -879,24 +979,33 @@ function updateAgentPanel(tick) {
     cell.classList.toggle('followed', state.follow === i);
     if (!isAlive) continue;
     alive++;
+    if (state.learn?.[i]) aliveLearned++;
     hungerSum += a[A_HUNGER];
     food += a[A_FOOD];
-    const name = state.actionNames[a[A_ACTION]] ?? '?';
+    // The histogram counts GOALS when the replay has them (schema v5). A goal
+    // histogram answers "how many of them are building?"; an action histogram
+    // answers "how many of them are facing north-east", which nobody asked.
+    const name = hasGoals ? (goalName(i, tick) || '?')
+                          : (state.actionNames[a[A_ACTION]] ?? '?');
     counts.set(name, (counts.get(name) || 0) + 1);
   }
   const meanHunger = alive ? hungerSum / alive : 0;
   state.popLine.innerHTML =
     `<b>${alive}</b>/${state.agentCount} alive · mean hunger <b>${meanHunger.toFixed(0)}</b>`
-    + ` · carrying <b>${food}</b> berries`;
+    + ` · carrying <b>${food}</b> berries`
+    + (state.learnCount
+        ? ` · <span class="learnnote"><b>${aliveLearned}</b>/${state.learnCount} learned alive</span>`
+        : '');
 
-  // Action histogram: what the population is doing, as bars. This is the
-  // 100-agent replacement for reading a hundred rows.
   const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
-  state.popActs.innerHTML = top.map(([name, n]) => {
-    const pct = Math.round(100 * n / Math.max(alive, 1));
-    return `<div class="actrow"><span>${name}</span>`
-         + `<div class="actbar"><i style="width:${pct}%"></i></div><b>${n}</b></div>`;
-  }).join('');
+  state.popActs.innerHTML =
+    `<div class="actrow" style="opacity:.55"><span>${hasGoals ? 'goal' : 'action'}</span>`
+    + `<div class="actbar"></div><b></b></div>`
+    + top.map(([name, n]) => {
+      const pct = Math.round(100 * n / Math.max(alive, 1));
+      return `<div class="actrow"><span>${name}</span>`
+           + `<div class="actbar"><i style="width:${pct}%"></i></div><b>${n}</b></div>`;
+    }).join('');
 
   const focus = state.follow >= 0 ? state.follow : state.hover;
   state.popDetail.textContent = focus >= 0 ? describeAgent(focus)
@@ -971,6 +1080,24 @@ function renderLegend() {
       rows.push(item('', hex(RAID_COLOR), 'red arc',
                      'a raid — it runs from the robbed store to the raider'));
     }
+  }
+  if (state.learnCount) {
+    rows.push('<div class="grp">the mixed population (schema v5)</div>');
+    rows.push(item('round', '#6fd3ff', 'cyan ring on the ground',
+                   `one of the ${state.learnCount} agents whose goals come from a `
+                   + 'LEARNED arbiter; everyone else is scripted'));
+  }
+  if (state.goalNames) {
+    rows.push('<div class="grp">the panel (schema v5)</div>');
+    rows.push(item('', 'transparent', 'the histogram counts GOALS, not actions',
+                   'an intention like "deliver" rather than one tick of walking'));
+  }
+  if (state.society) {
+    rows.push('<div class="grp">the weather (schema v5)</div>');
+    rows.push(item('', '#7fb3ff', 'blue flash and banner',
+                   'a storm just knocked finished shelters back down'));
+    rows.push(item('', '#e2c14a', 'yellow tint and banner',
+                   'a blight: berries have stopped regrowing until it lifts'));
   }
   host.innerHTML = rows.join('');
 }

@@ -1,0 +1,11 @@
+# The axe world with no axe in it: the control for society4_axe.yaml.
+#
+# Same island, same trees, same rocks, same seeds -- the ONLY difference is that
+# `craft` is not in the action space. Any difference measured between these two
+# is the tool. Comparing society4_axe against plain society4 instead would price
+# the extra trees the axe world needed (rule 5, and the m4d lesson: a lever that
+# changes two things at once measures neither).
+extends: society4_axe.yaml
+
+tools:
+  enabled: false

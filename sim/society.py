@@ -33,9 +33,9 @@ import numpy as np
 from .agents import action_names, night_phase, num_actions
 from .config import Config, load_config
 from .economy import subsistence
-from .policy import random_actions
 from .replay import ReplayRecorder
-from .utility import (GOAL_NAMES, GOAL_RAID, N_GOALS, ArbiterConfig,
+from .utility import (CRAFT_AXE, DELIVER, FORAGE, GOAL_NAMES, GOAL_RAID,
+                      HARVEST_STONE, HARVEST_WOOD, N_GOALS, ArbiterConfig,
                       utility_runner)
 from .world import World
 
@@ -89,6 +89,14 @@ class SocietyReport:
     goal_ticks_learned: np.ndarray = field(
         default_factory=lambda: np.zeros(N_GOALS, dtype=np.int64))
     goal_ticks_scripted: np.ndarray = field(
+        default_factory=lambda: np.zeros(N_GOALS, dtype=np.int64))
+    # --- tech ladder rung 1. Adoption, and the M2 specialisation question asked
+    # of a tool: do the agents who own an axe do more of the harvesting?
+    axes_crafted: list[int] = field(default_factory=list)
+    axe_holders: list[int] = field(default_factory=list)
+    goal_ticks_armed: np.ndarray = field(
+        default_factory=lambda: np.zeros(N_GOALS, dtype=np.int64))
+    goal_ticks_unarmed: np.ndarray = field(
         default_factory=lambda: np.zeros(N_GOALS, dtype=np.int64))
 
 
@@ -262,11 +270,21 @@ def make_runner(cfg: Config, policy: str, seed: int,
 
 def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | None = None,
                  policy: str = "utility", checkpoint: str | None = None,
-                 learn_agents: int | None = None) -> SocietyReport:
+                 learn_agents: int | None = None,
+                 arm_all: bool = False) -> SocietyReport:
     rep = SocietyReport(episodes=episodes)
     n_act = num_actions(cfg)
     for e in range(episodes):
         world = World(cfg, seed=seed + e)
+        if arm_all:
+            # The counterfactual that separates "the tool is worthless" from
+            # "nobody adopted it" -- the movement counterpart of
+            # `sim.opportunity --force`. Every agent starts holding an axe, so
+            # adoption is taken off the table and only the tool's value is left.
+            # It is what turned rung 1 from a shrug into a result: chop actions
+            # fall by half and the wood, the shelters and the lifespan do not
+            # move (design doc section 12).
+            world.pool.axe[:] = 1
         runner = make_runner(cfg, policy, seed + e, acfg, checkpoint, learn_agents)
         rng = np.random.default_rng(seed + e + 99991)
         learn_mask = (getattr(getattr(runner, "arbiter", None), "learn_mask", None)
@@ -286,6 +304,12 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
             if runner is not None:
                 actions = runner.act(obs, mask)
             else:
+                # Imported here, not at module scope: `policy` pulls in torch,
+                # and a scripted-arbiter run has no network in it. On an 8GB
+                # laptop that import is the single largest cost of a
+                # `sim.society --arbiter utility` invocation when the machine is
+                # paging, and the random floor is the only caller.
+                from .policy import random_actions
                 actions = random_actions(obs, rng, n_act)
             res = world.step(actions)
             obs = res.obs
@@ -296,6 +320,13 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
                 # shares are comparable with the population line above them.
                 np.add.at(rep.goal_ticks_learned, runner.goals[learn_mask], 1)
                 np.add.at(rep.goal_ticks_scripted, runner.goals[~learn_mask], 1)
+            if cfg.tools.enabled and runner is not None:
+                # Split by whether the agent was holding an axe on this tick, so
+                # the two shares are comparable with the population line. Counted
+                # every tick, exactly as `OptionRunner.goal_ticks` is.
+                armed = pool.axe > 0
+                np.add.at(rep.goal_ticks_armed, runner.goals[armed], 1)
+                np.add.at(rep.goal_ticks_unarmed, runner.goals[~armed], 1)
             if world.tick % 10 == 0 and pool.alive.any():
                 _, is_night = night_phase(world.tick, cfg)
                 # Rhythm is measured as distance to the nearest FINISHED shelter,
@@ -333,6 +364,9 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
             if res.episode_done:
                 break
         stats = world.stats()
+        if cfg.tools.enabled:
+            rep.axes_crafted.append(stats.axes_crafted)
+            rep.axe_holders.append(stats.axe_holders)
         if cfg.society.enabled:
             rep.deposits.append(stats.deposits)
             rep.withdrawals.append(stats.withdrawals)
@@ -472,8 +506,51 @@ def format_report(cfg: Config, rep: SocietyReport, label: str) -> str:
 
     if cfg.society.enabled and rep.house_lifespan:
         out.append(_household_section(cfg, rep))
+    if cfg.tools.enabled and rep.axes_crafted:
+        out.append(_tool_section(cfg, rep))
     if rep.learn_mask is not None:
         out.append(_mixed_section(cfg, rep))
+    return "\n".join(out)
+
+
+def _tool_section(cfg: Config, rep: SocietyReport) -> str:
+    """Tech ladder rung 1: adoption, and whether owning a tool changes what an
+    agent spends its life doing.
+
+    Read the specialisation block, not the adoption number. Adoption is a
+    consequence of the scorer's `NEED_TOOL` row (utility.py says so at the line
+    that sets it), so it prices a weight this session chose. What nothing scores
+    -- and what M2's specialisation result actually predicts -- is whether the
+    agents who end up armed do MORE of the harvesting than the ones who do not.
+    """
+    n = cfg.world.num_agents
+    armed = rep.goal_ticks_armed
+    unarmed = rep.goal_ticks_unarmed
+    a_tot, u_tot = max(int(armed.sum()), 1), max(int(unarmed.sum()), 1)
+    out = ["\n-- the tech ladder, rung 1: the axe --",
+           f"  axes crafted / episode  {np.mean(rep.axes_crafted):7.2f}",
+           f"  holding one at the end  {np.mean(rep.axe_holders):7.2f} of {n} agents "
+           f"({100 * np.mean(rep.axe_holders) / max(n, 1):.1f}%)",
+           f"  goal-ticks spent armed  {100 * a_tot / max(a_tot + u_tot, 1):7.1f}% "
+           f"of the population's",
+           "  what each group spends its time on (share of ITS OWN goal-ticks):",
+           f"    {'goal':<16}{'armed':>9}{'unarmed':>9}"]
+    for g in (HARVEST_WOOD, HARVEST_STONE, DELIVER, FORAGE, CRAFT_AXE):
+        out.append(f"    {GOAL_NAMES[g]:<16}{100 * armed[g] / a_tot:8.1f}%"
+                   f"{100 * unarmed[g] / u_tot:8.1f}%")
+    if int(armed.sum()) == 0 or int(unarmed.sum()) == 0:
+        # Under --arm-all (or before the first axe exists) one group is empty, so
+        # the comparison has no second arm. Saying so beats printing a difference
+        # against nothing, which is the shape of every wrong number in this repo.
+        out.append("  -> no specialisation split: one of the two groups is empty "
+                   "(--arm-all, or no axe has been made yet)")
+        return "\n".join(out)
+    wood_gap = 100 * (armed[HARVEST_WOOD] / a_tot - unarmed[HARVEST_WOOD] / u_tot)
+    out.append(f"  -> axe-owners spend {wood_gap:+.1f} points more of their time on "
+               f"harvest_wood than the unarmed")
+    if abs(wood_gap) < 1.0:
+        out.append("     (inside a point: no specialisation, which REFUTES the "
+                   "M2 prediction for this rung)")
     return "\n".join(out)
 
 
@@ -586,12 +663,19 @@ def _household_section(cfg: Config, rep: SocietyReport) -> str:
 
 def record_replay(cfg: Config, seed: int, path: str, label: str,
                   acfg: ArbiterConfig | None = None, policy: str = "utility",
-                  checkpoint: str | None = None) -> str:
+                  checkpoint: str | None = None,
+                  learn_agents: int | None = None) -> str:
     """One episode, written as a replay the viewer can load."""
     world = World(cfg, seed=seed)
-    runner = make_runner(cfg, policy, seed, acfg, checkpoint)
+    runner = make_runner(cfg, policy, seed, acfg, checkpoint, learn_agents)
     assert runner is not None, "record_replay drives an arbiter, not raw random"
-    rec = ReplayRecorder(world, cfg, label=label, source="sim.society", seed=seed)
+    # The runner IS the goal source (schema v5), and in a mixed population its
+    # arbiter knows which slots it is driving. Read off the arbiter rather than
+    # recomputed here, so the replay cannot disagree with the run about who the
+    # learned agents were.
+    learn_mask = getattr(runner.arbiter, "learn_mask", None)
+    rec = ReplayRecorder(world, cfg, label=label, source="sim.society", seed=seed,
+                         goal_source=runner, learn_mask=learn_mask)
     rec.snapshot()
     obs = world.observations()
     while True:
@@ -635,6 +719,10 @@ def main() -> None:
                     help="also run this arbiter on the SAME seeds and print the "
                          "paired per-island differences (rule 7)")
     ap.add_argument("--vs-checkpoint", default=None)
+    ap.add_argument("--arm-all", action="store_true",
+                    help="give every agent an axe at spawn (tools worlds only). "
+                         "The counterfactual that separates 'the tool is "
+                         "worthless' from 'nobody adopted it'.")
     ap.add_argument("--replay", action="store_true", help="write a replay for the viewer")
     ap.add_argument("--replay-path", default=None)
     args = ap.parse_args()
@@ -653,7 +741,7 @@ def main() -> None:
 
     rep = run_episodes(cfg, args.episodes, args.seed, acfg,
                        policy=args.arbiter, checkpoint=args.checkpoint,
-                       learn_agents=args.learn_agents)
+                       learn_agents=args.learn_agents, arm_all=args.arm_all)
     print(format_report(cfg, rep, f"{args.arbiter} arbiter"))
 
     if args.vs:
@@ -705,7 +793,8 @@ def main() -> None:
         path = args.replay_path or f"{cfg.logging.replay_dir}/{stem}.json"
         written = record_replay(cfg, args.seed, path,
                                 f"island2 {args.arbiter} arbiter ({stem})", acfg,
-                                policy=args.arbiter, checkpoint=args.checkpoint)
+                                policy=args.arbiter, checkpoint=args.checkpoint,
+                                learn_agents=args.learn_agents)
         print(f"\nreplay written: {written}")
         print(f"open viewer/index.html?replay={written.split('/')[-1]}")
 

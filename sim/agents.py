@@ -7,7 +7,7 @@ instead of a Python loop over agent objects.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -49,6 +49,10 @@ EXCHANGE_ACTION_NAMES: tuple[str, ...] = CONSTRUCTION_ACTION_NAMES + ("give_food
 # place it can be got wrong. A raider takes whatever is there, food first.
 SOCIETY_ACTION_NAMES: tuple[str, ...] = EXCHANGE_ACTION_NAMES + (
     "deposit_food", "deposit_material", "withdraw_food", "withdraw_material", "raid")
+# Island 2.0 tech ladder rung 1 appends one more, same rule again: enabling
+# `tools` implies the whole society block is present, so `craft` is a fixed index
+# in every tool world and no earlier checkpoint's action head is disturbed.
+TOOL_ACTION_NAMES: tuple[str, ...] = SOCIETY_ACTION_NAMES + ("craft",)
 N_MOVE_ACTIONS = 8
 IDLE = 8
 GATHER = 9
@@ -63,6 +67,7 @@ DEPOSIT_MATERIAL = 17
 WITHDRAW_FOOD = 18
 WITHDRAW_MATERIAL = 19
 RAID = 20
+CRAFT = 21
 N_ACTIONS = len(BASE_ACTION_NAMES)
 
 # Item codes for the transfer ledger and the replay's per-tick transfer list.
@@ -71,6 +76,8 @@ ITEM_NAMES: tuple[str, ...] = ("food", "wood", "stone")
 
 
 def action_names(cfg: Config) -> tuple[str, ...]:
+    if cfg.tools.enabled:
+        return TOOL_ACTION_NAMES
     if cfg.society.enabled:
         return SOCIETY_ACTION_NAMES
     if cfg.exchange.enabled:
@@ -104,6 +111,10 @@ class AgentPool:
     stone: np.ndarray
     alive: np.ndarray
     last_action: np.ndarray
+    # Tech ladder rung 1. Always allocated, never read unless `tools.enabled` --
+    # one array of zeros costs nothing and keeps every world's pool one shape,
+    # which is what stops the construction/exchange/society branches multiplying.
+    axe: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
 
     @property
     def n(self) -> int:
@@ -120,6 +131,7 @@ class AgentPool:
             stone=np.zeros(num_agents, dtype=np.int64),
             alive=np.ones(num_agents, dtype=bool),
             last_action=np.full(num_agents, IDLE, dtype=np.int64),
+            axe=np.zeros(num_agents, dtype=np.int64),
         )
 
 
@@ -255,7 +267,13 @@ def observation_dim(cfg: Config) -> int:
         dim += site_channels(cfg) * cc.k_sites
         dim += 2                    # cycle phase, is_night
     dim += society_channels(cfg)
+    dim += tool_channels(cfg)
     return dim
+
+
+def tool_channels(cfg: Config) -> int:
+    """Tech ladder rung 1: one channel, `own.axe`."""
+    return int(cfg.tools.enabled and cfg.tools.observe_axe)
 
 
 def action_mask(
@@ -396,6 +414,26 @@ def action_mask(
                         | (has_mat & room_m[:, None]))
             mask[:, RAID] = (in_reach & takeable).any(axis=1)
 
+    if cfg.tools.enabled and construction is not None:
+        # Craft: at a site, with the materials, and not already holding an axe.
+        # The "already holding" clause is what makes this a mask rule rather than
+        # a preference -- a second axe does nothing, so offering one would be a
+        # doomed action, which is the entire thing masking exists to delete.
+        tc = cfg.tools
+        if construction.site_x.size:
+            d2 = ((construction.site_x[None, :] - pool.x[:, None]) ** 2
+                  + (construction.site_z[None, :] - pool.z[:, None]) ** 2)
+            at_site = (d2 <= tc.craft_radius ** 2).any(axis=1)
+        else:
+            at_site = np.zeros(n, dtype=bool)
+        # Wood AND stone, never fungible, even in a `fungible_materials` world: a
+        # site takes whatever arrives because a wall is a wall, and an axe is a
+        # haft and a head. Keeping the composition here is also the only reason
+        # `mine` stays worth doing once a village is built.
+        mask[:, CRAFT] = (at_site & (pool.axe == 0)
+                          & (pool.wood >= tc.axe_wood_cost)
+                          & (pool.stone >= tc.axe_stone_cost))
+
     mask[~pool.alive] = False
     mask[~pool.alive, IDLE] = True
     return mask
@@ -449,6 +487,12 @@ def observation_layout(cfg: Config) -> tuple[str, ...]:
                   "raid.dx", "raid.dz", "raid.food", "raid.material"]
         if cfg.society.observe_shock:
             names.append("shock.blight")
+    if cfg.tools.enabled and cfg.tools.observe_axe:
+        # One channel, not two. "Can I craft right now" is already the mask's
+        # job, and duplicating it in the observation would be paying twice for
+        # the same fact -- what the policy cannot otherwise know is whether it is
+        # ALREADY carrying an axe, because nothing else in the vector implies it.
+        names.append("own.axe")
     names += ["edge.room", "edge.outward_x", "edge.outward_z"]
     return tuple(names)
 
@@ -721,6 +765,11 @@ def build_observations(
         if sc.observe_shock:
             out[:, col] = float(society.blight)
             col += 1
+
+    # --- tech ladder rung 1: am I carrying an axe?
+    if cfg.tools.enabled and cfg.tools.observe_axe:
+        out[:, col] = pool.axe.astype(np.float64)
+        col += 1
 
     # --- shoreline
     r = np.sqrt(pool.x**2 + pool.z**2)

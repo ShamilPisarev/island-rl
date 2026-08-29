@@ -22,7 +22,8 @@ import pytest
 import torch
 
 from sim.arbiter import (ArbiterTrainer, LearnedArbiter, RandomGoalArbiter,
-                         TrainConfig, goal_mask, load_arbiter, save_checkpoint)
+                         TrainConfig, goal_mask, goal_width, load_arbiter,
+                         save_checkpoint)
 from sim.config import load_config
 from sim.obsview import ObsView
 from sim.policy import ActorCritic
@@ -45,7 +46,10 @@ def cfg():
 def fresh_arbiter(cfg, seed=0, deterministic=True):
     from sim.agents import observation_dim
     torch.manual_seed(seed)      # the WEIGHTS must be reproducible too
-    policy = ActorCritic(observation_dim(cfg) + N_GOALS, n_actions=N_GOALS)
+    # `goal_width`, not N_GOALS: a world without tools keeps the stage-4 menu so
+    # its from-scratch runs stay reproducible when a rung is appended.
+    width = goal_width(cfg)
+    policy = ActorCritic(observation_dim(cfg) + width, n_actions=width)
     return LearnedArbiter(policy, cfg, seed=seed, deterministic=deterministic)
 
 

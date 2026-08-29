@@ -145,6 +145,14 @@ class ObsView:
             self.raid_food = self.raid_material = zero
             self.blight = np.zeros(self.n, dtype=bool)
 
+        # --- tech ladder rung 1. Absent for every world without tools, and read
+        # as "nobody has one", so an arbiter written for an axe world runs in a
+        # toolless one and simply never finds a reason to craft.
+        if cfg.tools.enabled and cfg.tools.observe_axe:
+            self.axe = obs[:, col["own.axe"]] > 0.5
+        else:
+            self.axe = np.zeros(self.n, dtype=bool)
+
         self.edge_room = obs[:, col["edge.room"]]
         self.outward_x = obs[:, col["edge.outward_x"]]
         self.outward_z = obs[:, col["edge.outward_z"]]
