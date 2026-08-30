@@ -1,0 +1,10 @@
+# S4's control, and the first version of S4 did not have one.
+#
+# `village_seasons.yaml` against `village.yaml` differs in TWO keys -- the ramp
+# AND the granary -- so it cannot say which of them did anything. This is the
+# seasons world with the second technology switched off and nothing else
+# touched, which is the only pair that isolates a granary.
+extends: village_seasons.yaml
+
+tech:
+  enabled: false

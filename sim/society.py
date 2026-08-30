@@ -1005,6 +1005,13 @@ def main() -> None:
                     help="give every agent an axe at spawn (tools worlds only). "
                          "The counterfactual that separates 'the tool is "
                          "worthless' from 'nobody adopted it'.")
+    ap.add_argument("--set", dest="overrides", action="append", default=[],
+                    metavar="SECTION.KEY=VALUE",
+                    help="override any config value, e.g. --set world.num_agents=80. "
+                         "Repeatable. Same flag sim.train has, and it is here for "
+                         "the same reason: a one-off probe should not need its own "
+                         "YAML file, and a replay small enough to load in a "
+                         "browser is exactly that.")
     ap.add_argument("--replay", action="store_true", help="write a replay for the viewer")
     ap.add_argument("--replay-path", default=None)
     args = ap.parse_args()
@@ -1012,6 +1019,10 @@ def main() -> None:
     cfg = load_config(args.config)
     if args.ticks is not None:
         cfg = cfg.replace(**{"world.max_ticks": args.ticks})
+    if args.overrides:
+        import yaml as _yaml
+        cfg = cfg.replace(**{k.strip(): _yaml.safe_load(v.strip())
+                             for k, v in (o.split("=", 1) for o in args.overrides)})
     overrides = {}
     if args.commit is not None:
         overrides["commit_ticks"] = args.commit

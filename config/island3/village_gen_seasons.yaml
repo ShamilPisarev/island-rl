@@ -1,0 +1,22 @@
+# The generational village WITH SEASONS -- the world the granary exists for.
+#
+# `village_gen.yaml` plus `society.shock_ramp`, so blights get long late in a
+# run. A store creates no berries; it bridges a gap, and a world whose worst gap
+# is shorter than the store already covers has no use for a bigger one.
+# `village_seasons.yaml` was the first attempt at this and it extends
+# `village.yaml`, so it has neither teaching nor reuse -- the granary could
+# appear but never spread, and the village could not outlive its array.
+#
+# `sim.economy` on this file:
+#   a full larder feeds a full house    56 ticks
+#   ...with a granary                  112 ticks
+#   worst blight                       120 ticks
+#
+# So a granary roughly doubles how far into the hungry season a family can eat,
+# and bridges neither fully. Read population against THIS world's own control
+# (`village_gen_seasons_notech.yaml`), never against the flat village: the ramp
+# is a demand-side change and this island supports far fewer people.
+extends: village_gen.yaml
+
+society:
+  shock_ramp: 1.0

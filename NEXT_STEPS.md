@@ -15,13 +15,62 @@ Do NOT re-run: arb4/b/c/d (all four all-learned variants), arb5-mix, arb5-hh,
 the mixedrandom floor, anything on the §10 do-not-re-run list, the learned-share
 sweep (item 3), or the axe (item 4).
 
-## ISLAND 3.0 IS BUILT (2026-08-30). The queue below is its follow-ups.
+## ISLAND 3.0 STAGE 2 IS BUILT (2026-08-30). Read this queue first.
+
+Stage 2 answered the old item 3.0-1 (slot reuse) and added heredity, technology
+diffusion and a technology with a prerequisite. Read `ISLAND3_DESIGN.md` (stage 2
+sections) and CLAUDE.md's Island 3.0 blocks before touching anything. Do NOT
+re-run S1, S2 (either seed count), S3, S4/S4b or S5.
+
+### 3.1-1. Selection or drift? (cheapest, and it needs NO new runs)
+
+**What**: regress a lineage's realised number of descendants on its trait vector,
+using the pedigree `world.last_births` already records. **Why**: S2 establishes
+that heredity makes lineages persist -- trait drift 0.08 against a fresh-draw
+control's 0.05, +0.04 +- 0.01 on 10/10 seeds -- and does NOT establish that the
+direction is selection. Ten seeds give ~0.11 per goal under a drift null and
+there are 18 goals, so the 80-90% direction agreement is not significant. A
+fitness regression settles it out of runs that already exist. **Reads**: the sign
+and size of each goal's fitness coefficient, against the drift directions
+(`explore` -10%, `forage` +9%, `raid` -8%, `draw_food` +7%, `steal` -6%). If they
+agree, the drift IS selection and the write-ups can say so.
+
+### 3.1-2. Village fission (the most likely reason S5 keeps coming back null)
+
+**What**: let a household at capacity found a NEW household at a new site.
+**Why**: twenty households is twenty households forever -- a household owns the
+site of its own index and there are no spare sites -- so a successful lineage
+cannot expand territorially and "the strongest tribe" has no way to win ground.
+S5 has now returned null twice, at 6,000 and 12,000 ticks, with the geographic
+control saying most of the inequality is the ground. Fission is the mechanic that
+would let a tribe actually take some. **Design care**: `num_sites` and
+`num_households` are coupled through the stockpile-owns-its-site rule, and
+`num_households <= num_sites` is enforced at reset; a new household needs a site
+that does not exist yet, so this is a real change to the world's layout, not a
+config knob. **Reads**: households at the end; quarter-population Gini against
+the same geographic control (0.27-0.31 is the number to beat); tribe share.
+
+### 3.1-3. A learned arbiter in the generational village
+
+**What**: `sim.arbiter` on `config/island3/village_gen.yaml`, mixed, household
+reward. **Why**: there are now TWO things a learned chooser would face that no
+scorer scores -- a birth is not a goal, and neither is teaching (nothing in
+`RESTORE` values standing next to somebody who knows something). **Reads**:
+births and taught-technologies in learned households against scripted ones;
+`expand` uptake, where any sustained nonzero is the construction wall finally
+moving.
+
+---
+
+## The stage-1 queue (item 1 is DONE; 2 and 3 stand)
 
 Read `ISLAND3_DESIGN.md` first, then CLAUDE.md's Island 3.0 section. Do NOT
 re-run any of R1, R1b, R2, R3, R4 (either control), R5 or R6 -- the do-not-re-run
 list is at the end of the design doc.
 
-### 3.0-1. Slot reuse (the biggest, ~1 session)
+### 3.0-1. Slot reuse -- DONE 2026-08-30 (stage 2). Result: 200 rows now hold 606 lives, and a village that went extinct at tick 12,000 is at 82.7 agents at 20,000 (+82.7 +- 7.5, 3/3). R6's extinction was the array. Original item below for the record.
+
+### 3.0-1-orig. Slot reuse (the biggest, ~1 session)
 
 **What**: recycle a dead agent's row so a village can run past its generational
 horizon. **Why**: R6 measured an extinction that was an ARRAY BOUND -- 40

@@ -1,0 +1,8 @@
+# S4's control: the generational seasons village with no granary.
+#
+# One key. Everything else -- the ramp, teaching, reuse, heredity, farming -- is
+# identical, so the difference is a household's food store and nothing else.
+extends: village_gen_seasons.yaml
+
+tech:
+  enabled: false

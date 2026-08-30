@@ -1,0 +1,13 @@
+# S5's control at generational length: the same world with no tribe over the
+# households.
+#
+# One key. Stage 1's tribe result did not survive its control -- partitioning
+# households into the same four angular quarters with and without tribes gave
+# 0.27 against 0.23, +0.04 +- 0.03, i.e. most of the inequality was the ground.
+# The question stage 2 gets to ask is whether that changes once lineages persist:
+# a tribe whose households breed passes on how they behave, and a hundred
+# generations is where a small advantage could compound into a large one.
+extends: village_gen.yaml
+
+tribes:
+  enabled: false

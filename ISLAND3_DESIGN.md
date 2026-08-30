@@ -588,3 +588,280 @@ taught, or selected for, so there is nothing for a long run to be long *for*.
   geographic-quarter control that killed the first version of this claim. *This
   is the question the whole stage exists for*, and the first-stage answer
   (+0.04 ± 0.03, i.e. nothing) is the number to beat.
+
+---
+
+# Stage 2 — results
+
+Same discipline as stage 1: scripted arbiter, paired seed blocks, one config key
+between each arm and its control.
+
+## S1 — slot reuse removes the horizon, and R6 was right about what was killing them. CONFIRMED.
+
+`village_gen.yaml` against `village_gen_noreuse.yaml`, 3 paired episodes of
+**20,000 ticks**, everything identical but whether a dead agent's row can be
+lived in again.
+
+| tick | 1,000 | 5,000 | 7,000 | 9,000 | 13,000 | 19,000 |
+|---|---|---|---|---|---|---|
+| rows recycled | 60 | 76 | 96 | 84 | 85 | **76** |
+| rows used once | 60 | 76 | 54 | 13 | — | **extinct** |
+
+| | reuse | no reuse | paired |
+|---|---|---|---|
+| **alive at tick 20,000** | **82.7** | **0.0** | +82.7 ± 7.5 (3/3) |
+| lives lived (in 200 rows) | **605.7** | 200.0 | +405.7 ± 30.9 (3/3) |
+| rows lived in twice or more | 405.7 | 0 | — |
+| berries gathered | 24,283 | 8,802 | +15,481 ± 1,441 (3/3) |
+| deaths of old age | 236.7 | 120.3 | +116.3 ± 16.3 (3/3) |
+
+**200 rows now hold 606 lives, and the village is still there at tick 20,000
+where the same village without reuse is gone by 11,000.** R6's diagnosis is
+confirmed exactly: nothing was wrong with the island, the array was full.
+
+*Two caveats that ride with it.* `mean_lifespan` is 2,508 against 2,678 — lower
+with reuse, because the reuse arm keeps producing newborns whose lives are still
+running when the episode ends, and the no-reuse arm's last agents simply grow
+old. And the tribe-Gini row in this comparison reads 0.27 against 0.00, which is
+not a result: the control has nobody left to be unequal.
+
+**A second cause of R6's extinction, found by a test rather than a run:** every
+founder was created at the same age, so with `max_age` the entire first
+generation died on the *same tick*. `stagger_founders` spreads them over
+[maturity, max_age); it is off by default, so R6's own world still reproduces,
+and it is on in every stage-2 world.
+
+## S3 — technology spreads by contact, and teaching beats inventing. CONFIRMED.
+
+`village_gen.yaml` against `village_gen_noteach.yaml`, 5 paired episodes of
+8,000 ticks. One key: whether a household can learn a technology from a
+neighbour who has it.
+
+| | teaching on | teaching off | paired |
+|---|---|---|---|
+| **farming households (of 20)** | **14.2** | **10.8** | +3.4 ± 0.8 (5/5) |
+| ...invented it | 4.6 | 10.8 | −6.2 ± 0.8 (0/5) |
+| ...**were taught it** | **9.6** | **0.0** | +9.6 ± 1.2 (5/5) |
+| **granary households** | **13.0** | **6.4** | **+6.6 ± 0.8 (5/5)** |
+| ...invented / taught | 4.0 / 9.0 | 6.4 / 0.0 | — |
+| fields planted | 27.2 | 20.8 | +6.4 ± 1.5 (5/5) |
+| berries off fields | 1,465 | 970 | +495 ± 146 (5/5) |
+| median household's adoption tick | 2,744 | 3,367 | −623 ± 280 (0/5) |
+
+**Two thirds of the farming households never invented anything — they were
+taught.** And note the mechanism in the row that goes the *other* way:
+independent invention falls from 10.8 to 4.6, because a household taught before
+it gets desperate never has to invent. That is diffusion doing exactly what
+diffusion does, and it is the reason `_tech_source` exists: a single has-it flag
+would have shown 14.2 against 10.8 and said nothing about why.
+
+**The second technology is where it matters most.** A granary needs farming
+*and* a full larder, so its adoption is gated twice — and teaching **doubles**
+it (13.0 against 6.4, 5/5). The deeper a ladder gets, the more it depends on
+being taught rather than rediscovered, which is the realistic result and not one
+this world was tuned to produce.
+
+**What diffusion does not buy is population.** +2.0 ± 3.9 agents (2/5), inside
+noise, over 8,000 ticks. The technology spreads; the island is still the island.
+
+## S2 — heredity produces persistent lineages, and the direction is suggestive. CONFIRMED, with a stated limit.
+
+`village_gen.yaml` against `village_gen_nohered.yaml` — a newborn gets a fresh
+draw from the founding distribution instead of its parents' traits, and
+everything else, mutation included, is identical. **10 paired episodes** of 8,000
+ticks, because 5 was not enough to test a direction.
+
+| | heredity | fresh draw | paired |
+|---|---|---|---|
+| **mean absolute trait drift** | **0.08** | **0.05** | **+0.04 ± 0.01 (10/10)** |
+| population at the end | 86.6 | 85.1 | +1.5 ± 5.7 (6/10) |
+| agents turned away from a full house | 2,586 | 1,880 | +707 ± 302 (9/10) |
+| quarter-population Gini | 0.28 | 0.21 | +0.06 ± 0.04 (7/10) |
+
+**The magnitude is decisive: heritable variation produces 1.6× the drift the same
+world produces with fresh draws, on every one of ten seeds.** That is what
+inheritance is *for* — a lineage's preferences persist instead of being
+re-rolled — and it is the only number here that is outside noise by a wide
+margin.
+
+**The direction is interpretable and not statistically established.** The largest
+drifts, with the share of seeds agreeing on their sign:
+
+| | drift | seeds agreeing |
+|---|---|---|
+| `explore` | **−10%** | 8/10 |
+| `forage` | **+9%** | 8/10 |
+| `raid` | **−8%** | 9/10 |
+| `draw_food` | **+7%** | 8/10 |
+| `steal` | **−6%** | 7/10 |
+| the control's largest | ±3% | similar rates |
+
+Four of the five point the same way as a fitness story would: **the village
+drifts toward feeding itself (forage, draw_food) and away from wandering and
+fighting (explore, raid, steal)** — and stage 1's R5 measured that raiding costs
+lifespan, so "away from raiding" is the direction survival should favour. At
+20,000 ticks (the S1 arm, 3 seeds) the same five move further and agree 100%.
+
+**The honest limit, and it is why the control's row is in the table.** Ten seeds
+give P(≥8 agreeing) ≈ 0.11 per goal under pure drift, and there are 18 goals, so
+two such goals are expected by chance. The *agreement* is not significant on its
+own. What is significant is that A's drifts are three times the size of B's on
+the same island and the same seeds. **The claim this run supports is "heredity
+makes lineages persist and the population's preferences move"; the claim it does
+not yet support is "and they move because of selection rather than drift."**
+Settling that needs many more seeds or an explicit fitness measurement, and it is
+in "What is left".
+
+**A five-seed version of this run reported the quarter Gini at +0.14 ± 0.04
+(5/5); at ten seeds it is +0.06 ± 0.04 (7/10).** The first number was optimistic
+and is retracted — which is exactly why S5 below is run at its own length rather
+than read off this table.
+
+## S5 — tribes still do not produce a winner, now tested across generations. REFUTED again.
+
+`village_gen.yaml` against `village_gen_notribes.yaml`, 5 paired episodes of
+**12,000 ticks** — long enough for four or five generations to turn over, which
+is the condition stage 1's version of this read did not have.
+
+| | tribes | no tribes | paired |
+|---|---|---|---|
+| **quarter-population Gini** | **0.31** | **0.27** | **+0.03 ± 0.08 (3/5)** |
+| raids across a border | 1,116 | — | — |
+| raids within a group | 611 | 5,968 | −5,357 ± 1,337 (0/5) |
+| **total raids** | **1,727** | **5,968** | **−71%** |
+| population at the end | 80.6 | 87.6 | −7.0 ± 7.5 (2/5) |
+| mean lifespan | 2,301 | 2,396 | −95 ± 52 (1/5) |
+| rooms added | 62.6 | 69.8 | −7.2 ± 1.9 (0/5) |
+
+**+0.03 ± 0.08 is nothing** — 0.4 of a standard error, and the sign flips on two
+of five islands. Making a spatial group a social group still does not make the
+island's quarters diverge, and now that has been tested with lineages persisting
+across 350 births rather than 160. Worth noting the episode-0 detail, which
+points the other way from the hypothesis: with tribes the four quarters held
+17/18/16/11 and *without* them the same quarters held 19/31/29/6. **If anything a
+tribe equalises the ground it sits on**, because the people you may not rob are
+the people next to you.
+
+What tribes do, they do to the fighting, and at generational length it is larger
+than stage 1 measured: **raiding falls 71%**. The cost is a little of everything —
+7 fewer people, 95 ticks of life, 7 fewer rooms — with only the rooms outside
+noise.
+
+**So the answer to "who will survive and reproduce and be the strongest tribe" is
+that nobody does, and the reason is geographic rather than social.** A quarter of
+this island is unequal to the others by about 0.27 of a Gini whatever you call
+its households, and belonging to a tribe adds nothing measurable on top.
+
+## S4 — a technology with a prerequisite, and it pays. CONFIRMED, after the first pair was thrown away.
+
+**The first version of this read had no control and is discarded.**
+`village_seasons.yaml` against `village.yaml` differs in **two** keys — the shock
+ramp and the granary — so it could only say that a seasons world is harder
+(population 17.6 against 64.8), which is a fact about the ramp. It also extends
+`village.yaml` rather than `village_gen.yaml`, so it has neither teaching nor
+slot reuse: the granary could appear and never spread, and the village could not
+outlive its array. Both are why `village_gen_seasons.yaml` exists.
+
+`village_gen_seasons.yaml` against `village_gen_seasons_notech.yaml` — one key,
+the granary — 5 paired episodes of 10,000 ticks:
+
+| | granary | none | paired |
+|---|---|---|---|
+| **alive at tick 10,000** | **34.4** | **23.8** | **+10.6 ± 3.1 (5/5)** |
+| births | 193.0 | 179.4 | +13.6 ± 5.6 (4/5) |
+| berries gathered | 8,003 | 7,706 | +297 ± 154 (4/5) |
+| **granary households (of 20)** | **9.8** | 0 | 3.4 invented, **6.4 taught** |
+| farming households | 15.2 | 15.8 | −0.6 ± 0.8 (1/5) |
+| mean lifespan | 2,106 | 2,176 | −69 ± 12 (0/5) |
+
+**A village with granaries ends the hard season 44% larger.** The mechanism is
+visible in the trace, and it is the one the sizing predicted: the two arms track
+each other exactly until tick ~6,000 and separate only as the ramped blights get
+long enough to matter.
+
+| tick | 2,000 | 4,000 | 6,000 | 8,000 | 10,000 |
+|---|---|---|---|---|---|
+| granary | 57 | 51 | 42 | **53** | **34** |
+| none | 57 | 53 | 42 | 44 | 24 |
+
+`sim.economy` sized it before the run: a full larder feeds a full house 56 ticks,
+112 with a granary, against a worst blight of 120. Neither bridges the season
+fully — the granary buys twice as far into it, and twice as far is worth ten
+people.
+
+**The prerequisite is doing real work, not decoration.** Farming households are
+the same in both arms (15.2 against 15.8), so the granary is not smuggling in
+extra agriculture: it is a second rung reached from the first, and **two thirds
+of the households that have it were taught rather than invented it**. Read that
+with S3: the deeper the ladder, the more it depends on being taught.
+
+*One number that goes the other way and is not a regression:* mean lifespan is 69
+ticks lower with granaries. More children are born and their lives are still
+running when the episode ends — the same bound that makes mean lifespan useless
+as a survival statistic in any world that grows.
+
+---
+
+# Stage 2 — corrections, and what is left
+
+## Corrections
+
+Each is pinned by a test named after it.
+
+1. **Every founder was the same age**, so with `max_age` the whole first
+   generation died on the same tick — a synchronised die-off no real population
+   has, and **a second, unnamed cause of R6's extinction**. `stagger_founders`
+   spreads them over [maturity, max_age); off by default, so R6's own world still
+   reproduces exactly.
+2. **The viewer drew every UNBORN row as a corpse** at its spawn point — up to
+   160 of them from the first frame — because death was derived from a row's
+   FIRST `alive: 0`, and an unborn row is dead from tick 0. With reuse it would
+   also have drawn a reused row as a corpse that walks. Death now comes from
+   every stretch a row was alive.
+3. **A reused row must not sum two lifespans.** `alive_ticks` is per row; a
+   finished life is pushed to a ledger and the counter zeroed, so `mean_lifespan`
+   and `born` are over LIVES. Getting this wrong would have understated every
+   stage-2 lifespan by roughly the reuse rate.
+4. **A newborn owes nothing and is owed nothing** — the grudge matrix's row AND
+   column are cleared. Clearing only the row would leave the village avenging a
+   robbery on a child.
+5. **A runner given no world raises** rather than silently handing newborns their
+   row's founding traits. That failure would have produced a clean null on the
+   whole selection read with nothing in the output to explain it.
+6. **The blend is geometric.** Traits are lognormal about 1.0, so an arithmetic
+   mean of two parents is biased upward and the population would climb every
+   generation with no selection at all — and it would look exactly like evolution.
+7. **`sim.economy` sized the store against the wrong household.** Dividing the
+   larder by a FOUNDING pair reported 420 ticks of cover against a 60-tick
+   blight, so a granary could never have mattered and S4 would have measured
+   noise. Against a full house it is 56 — and that is what `village_seasons`
+   exists for.
+8. **S4's first pair had no control.** `village_seasons` against `village`
+   differs in two keys (the ramp and the granary) and in two more by inheritance
+   (no teaching, no reuse). Discarded and re-run one key apart.
+
+## What is left
+
+**1. Selection versus drift.** S2 establishes that heredity makes lineages
+persist (1.6× the trait drift, 10/10 seeds). It does not establish that the
+*direction* is selection: ten seeds give ~0.11 per goal under a drift null and
+there are 18 goals. The cheap discriminator is a fitness measurement rather than
+more seeds — regress a lineage's realised number of descendants on its trait
+vector, which the pedigree already in `world.last_births` makes possible without
+a single new run.
+
+**2. Households never split.** A family grows to its house's capacity and stops;
+twenty households is twenty households forever, because a household owns the site
+of its own index and there are no spare sites. Village fission — a grown
+household founding a new site — is what would let a successful lineage actually
+*expand territorially*, and it is the most likely reason S5 keeps coming back
+null: a tribe cannot win ground it has no way to occupy.
+
+**3. A learned arbiter, and now there are two things it would know that the
+scorer does not.** A birth is not a goal (stage 1's item), and neither is
+teaching: nothing in `RESTORE` values standing next to somebody who knows
+something. A chooser trained on a household or lineage reward has a term for both.
+
+**4. Do NOT re-run.** S1 (20,000 ticks, extinct control), S2 at 5 seeds (the
+quarter-Gini number there is retracted — use the 10-seed one) and at 10, S3, S4's
+first pair (no control) and S4b, S5 at 12,000 ticks.

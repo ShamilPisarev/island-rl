@@ -95,6 +95,70 @@ divide by the BORN; **the goal histogram was counting agents that did not exist*
 stops AT capacity); and the replay header emitted `Infinity`, so every village
 replay was unloadable in a browser. Full write-ups in ISLAND3_DESIGN.md.
 
+### Island 3.0 STAGE 2 is built too: generations, heredity, technology that spreads
+
+Four more config-gated mechanics, all off by default, with the five 2.0 AND six
+3.0 checksums reproducing exactly. Still no training.
+
+* **Slot reuse -- the horizon is gone, and R6 was right.** A birth may take the
+  row of an agent that died at least `reuse_delay` ticks ago, with per-LIFE
+  bookkeeping in a ledger. 20,000 ticks, 3 paired episodes: **82.7 alive with
+  reuse against 0.0 without** (+82.7 ± 7.5, 3/3), and **200 rows hold 606
+  lives**. The control is extinct by tick 11,000. R6's extinction was the array.
+* **Heritable traits -- lineages persist.** A child's arbiter traits are the
+  GEOMETRIC mean of its parents' plus lognormal mutation. Against a control where
+  a newborn gets a fresh draw, 10 paired episodes: **mean absolute trait drift
+  0.08 against 0.05, +0.04 ± 0.01 (10/10)**. The largest drifts are `explore`
+  −10%, `forage` +9%, `raid` −8%, `draw_food` +7%, `steal` −6% -- four of five
+  pointing the way a fitness story would, and the control's largest is ±3%.
+  **Honest limit, in every write-up: the MAGNITUDE is decisive, the DIRECTION is
+  not.** Ten seeds give P(≥8 agreeing) ≈ 0.11 per goal and there are 18 goals,
+  so "and they move because of selection rather than drift" is not yet earned.
+  (A 5-seed version reported the quarter Gini at +0.14 ± 0.04; at 10 seeds it is
+  +0.06 ± 0.04 -- the first number is retracted.)
+* **Technology spreads by contact, and teaching beats inventing.** 5 paired
+  episodes: farming reaches **14.2 of 20 households against 10.8**, and **9.6 of
+  those were TAUGHT** while independent invention FALLS 10.8 → 4.6 (a household
+  taught before it gets desperate never invents). The second technology is where
+  it matters most: **granaries 13.0 against 6.4, +6.6 ± 0.8 (5/5)** -- teaching
+  doubles adoption of the rung that needs another rung first. Diffusion buys no
+  population (+2.0 ± 3.9, inside noise).
+* **The granary -- a technology with a prerequisite, and it pays.** Needs farming
+  AND a full larder; doubles the household food store. Against a ONE-KEY control
+  in the seasons world, 5 paired episodes of 10,000 ticks: **34.4 alive against
+  23.8, +10.6 ± 3.1 (5/5)**, with the two traces identical until tick ~6,000 and
+  separating exactly as the ramped blights get long -- the mechanism
+  `sim.economy` predicted before the run (a full larder covers 56 ticks of a
+  full house, 112 with a granary, against a worst blight of 120).
+* **Tribes STILL do not produce a winner, now across generations.**
+  `village_gen` vs `village_gen_notribes`, 12,000 ticks: quarter-population Gini
+  **0.31 against 0.27, +0.03 ± 0.08 (3/5)** -- nothing, at 0.4 SE. What they do
+  is cut raiding **71%** (1,727 against 5,968), at a cost of ~95 ticks of life.
+  Episode 0 points the other way from the hypothesis: with tribes the quarters
+  held 17/18/16/11, without them 19/31/29/6, so **a tribe may equalise the
+  ground it sits on.**
+
+**Eight corrections, all pinned.** The two worth carrying: **every founder was
+the same age**, so with `max_age` the whole first generation died on the same
+tick -- a second, unnamed cause of R6's extinction (`stagger_founders`, off by
+default so R6 reproduces); and **the viewer drew every UNBORN row as a corpse**
+at its spawn point, because death was read off a row's first `alive: 0`. Also:
+`sim.economy` sized the food store against a FOUNDING pair (420 ticks of cover
+against a 60-tick blight) and would have made the granary unmeasurable, and S4's
+first pair differed in two keys and was discarded.
+
+New: `reuse_slots`/`stagger_founders`/`heritable_traits`/`trait_mutation`,
+`agriculture.teach_*`, `TechConfig`, one shared `inherit_traits`, **replay schema
+v8** (`u` = rows that changed occupant, `q` = granaries), `--set` on
+`sim.society`, eight configs under `config/island3/`, and
+`tests/test_island3_generations.py` (30 tests).
+
+```bash
+.venv/bin/python -m sim.society --config config/island3/village_gen.yaml --episodes 3 --ticks 20000
+.venv/bin/python -m sim.society --config config/island3/village_gen.yaml --ticks 6000 \
+    --set world.num_agents=90 --set reproduction.max_age=2200 --replay
+```
+
 **One correction reaches back into ISLAND2_DESIGN.md.** `OptionRunner.goal_ticks`
 counted dead agents. Every goal share already published is very slightly
 overstated for whichever goal a corpse defaulted to; the effect is small
