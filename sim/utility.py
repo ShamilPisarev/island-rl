@@ -39,8 +39,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from .agents import (BUILD, CHOP, CRAFT, DEPOSIT_FOOD, DEPOSIT_MATERIAL, GATHER,
-                     GIVE_FOOD, GIVE_MATERIAL, IDLE, MINE, N_MOVE_ACTIONS, RAID,
-                     STEAL, WITHDRAW_FOOD, WITHDRAW_MATERIAL, num_actions)
+                     GIVE_FOOD, GIVE_MATERIAL, IDLE, MINE, N_MOVE_ACTIONS, PLANT,
+                     RAID, STEAL, WITHDRAW_FOOD, WITHDRAW_MATERIAL, num_actions)
 from .config import Config
 from .obsview import ObsView
 
@@ -66,16 +66,21 @@ GOAL_NAMES: tuple[str, ...] = (
     "raid",            # take from ANOTHER household's stockpile
     # --- tech ladder rung 1
     "craft",           # make an axe at a site, out of wood and stone carried
+    # --- Island 3.0
+    "expand",          # add a room to my own finished house
+    "plant",           # put a field in, next to my own house
 )
 (FORAGE, HARVEST_WOOD, HARVEST_STONE, DELIVER, SHELTER, GOAL_STEAL,
  GOAL_GIVE_FOOD, GOAL_GIVE_MATERIAL, EXPLORE, REST,
  STORE_FOOD, STORE_MATERIAL, DRAW_FOOD, DRAW_MATERIAL, GOAL_RAID,
- CRAFT_AXE) = range(len(GOAL_NAMES))
+ CRAFT_AXE, EXPAND, PLANT_FIELD) = range(len(GOAL_NAMES))
 N_GOALS = len(GOAL_NAMES)
-# The goal count as of stage 4, frozen forever. `agent_traits` draws that many
-# columns first so appending a goal cannot perturb an existing world's traits;
-# see the comment there for the failure this prevents.
+# The goal count at each frozen rung. `agent_traits` draws each block in its own
+# call so appending a goal cannot perturb an existing world's traits, and
+# `goal_width` slices a learned head to the rung its world is at; see the comment
+# in `agent_traits` for the failure this prevents.
 N_GOALS_STAGE4 = 15
+N_GOALS_RUNG1 = 16   # + craft
 
 # --- needs ------------------------------------------------------------------
 NEED_NAMES: tuple[str, ...] = ("hunger", "food_stock", "safety", "shelter_stock", "wealth",
@@ -89,9 +94,16 @@ NEED_NAMES: tuple[str, ...] = ("hunger", "food_stock", "safety", "shelter_stock"
                                # this one is about being unable to do something
                                # well, and it stays at full deficit until the tool
                                # exists, then goes to zero forever.
-                               "tool")
+                               "tool",
+                               # Island 3.0: room in the family house, and land
+                               # to farm. Both are household needs like
+                               # house_food -- the first two needs in the project
+                               # that are about the family's PROPERTY rather than
+                               # its stores.
+                               "house_room", "land")
 (NEED_HUNGER, NEED_FOOD_STOCK, NEED_SAFETY, NEED_SHELTER_STOCK, NEED_WEALTH,
- NEED_HOUSE_FOOD, NEED_HOUSE_MATERIAL, NEED_TOOL) = range(8)
+ NEED_HOUSE_FOOD, NEED_HOUSE_MATERIAL, NEED_TOOL,
+ NEED_HOUSE_ROOM, NEED_LAND) = range(10)
 N_NEEDS = len(NEED_NAMES)
 
 # How much each goal restores each need, in [0, 1]. Rows are goals, columns
@@ -140,13 +152,29 @@ RESTORE[GOAL_RAID, NEED_HUNGER] = 0.9
 # what an unarmed agent lacks is the tool, not the material in its hands.
 RESTORE[CRAFT_AXE, NEED_TOOL] = 1.0
 RESTORE[CRAFT_AXE, NEED_WEALTH] = 0.5
+# Island 3.0. `expand` serves the family's need for ROOM and nothing else: it is
+# not a shelter for the builder (the builder already has one, that is what makes
+# the house expandable) and it is not wealth. Same shape as `store_*` -- a
+# household need, paid for by an individual -- which is deliberately the chain
+# stage 5 could never climb, now offered again with a recurring prize.
+RESTORE[EXPAND, NEED_HOUSE_ROOM] = 1.0
+# `plant` serves LAND, and it needs its own need for exactly the reason `craft`
+# did: planting costs a carried unit, so the wealth deficit is near zero at the
+# moment the goal becomes possible, and a field yields nothing at all on the tick
+# it goes in (`field_initial` is 0). A need is what you LACK, and what a hungry
+# household without a field lacks is the field.
+RESTORE[PLANT_FIELD, NEED_LAND] = 1.0
 
 # Maslow shaping: which tier each need sits in, lowest first. Only tiers that can
 # actually kill gate anything -- hunger, then night exposure. A half-empty
 # inventory is prudence, not an emergency, so food_stock/wealth/shelter_stock
 # contribute to scores without suppressing anything.
 NEED_TIER = np.array([0, 2, 1, 2, 2, 3, 3,
-                      2])   # tool: prudence, like every other stock need
+                      2,      # tool: prudence, like every other stock need
+                      3, 2])  # house_room with the other household needs; land
+                              # with the stock needs, because a field is how you
+                              # stop being hungry LATER and prudence is exactly
+                              # what that is
 # EXPLORE sits at tier 0, i.e. ungated, and that placement is a correction worth
 # recording. It was tier 4 first, which meant an agent whose inventory was empty
 # had tier-2 urgency at 1.0, which zeroed the gate on every tier above it --
@@ -162,7 +190,11 @@ NEED_TIER = np.array([0, 2, 1, 2, 2, 3, 3,
 # with the other tier-2 goals; a household larder is never an emergency.
 GOAL_TIER = np.array([0, 2, 2, 2, 1, 0, 3, 3, 0, 4,
                       2, 2, 0, 2, 0,
-                      2])   # craft: prudence, exactly like harvesting
+                      2,      # craft: prudence, exactly like harvesting
+                      2, 2])  # expand and plant: prudence too. Neither may sit
+                              # above the needs it serves -- the correction
+                              # EXPLORE's placement records, applied ahead of
+                              # time rather than after a measurement
 
 # A goal serving no need at all still has to be choosable, or an agent with
 # nothing visible would have no legal intention. These are the floors, and they
@@ -195,9 +227,12 @@ BASE_APPEAL[REST] = 0.02
 PERSIST_GOALS = np.zeros(N_GOALS, dtype=bool)
 PERSIST_GOALS[[FORAGE, HARVEST_WOOD, HARVEST_STONE, DELIVER, SHELTER,
                STORE_FOOD, STORE_MATERIAL, DRAW_FOOD, DRAW_MATERIAL]] = True
+PERSIST_GOALS[EXPAND] = True
 # `craft` is deliberately NOT persistent: its goal state is reached in the single
 # tick the axe is made, so a persisted craft is a commitment with nothing left to
-# commit to -- the `rest` failure mode above, at a workbench.
+# commit to -- the `rest` failure mode above, at a workbench. `plant` is the same
+# shape and is left out for the same reason; `expand` is a delivery and persists
+# exactly as `deliver` does.
 
 
 def commit_budget(acfg: ArbiterConfig, goals: np.ndarray) -> np.ndarray:
@@ -273,12 +308,17 @@ def agent_traits(num_agents: int, seed: int, cfg: ArbiterConfig) -> np.ndarray:
     # append-never-insert rule applies to the random stream as well as to the
     # index: the stage-4 block keeps the draw it always had, and each later rung
     # takes fresh numbers off the end.
-    base = np.exp(rng.normal(0.0, cfg.trait_spread, size=(num_agents, N_GOALS_STAGE4)))
-    if N_GOALS == N_GOALS_STAGE4:
-        return base
-    extra = np.exp(rng.normal(0.0, cfg.trait_spread,
-                              size=(num_agents, N_GOALS - N_GOALS_STAGE4)))
-    return np.concatenate([base, extra], axis=1)
+    blocks = [np.exp(rng.normal(0.0, cfg.trait_spread,
+                                size=(num_agents, N_GOALS_STAGE4)))]
+    # One call per RUNG, not one call for "everything after stage 4". Merging the
+    # later rungs into a single draw would reshuffle rung 1's column the moment
+    # Island 3.0 appended two more -- the identical row-major failure this
+    # splitting exists to prevent, one rung further along.
+    for width in (N_GOALS_RUNG1 - N_GOALS_STAGE4, N_GOALS - N_GOALS_RUNG1):
+        if width > 0:
+            blocks.append(np.exp(rng.normal(0.0, cfg.trait_spread,
+                                            size=(num_agents, width))))
+    return np.concatenate(blocks, axis=1) if len(blocks) > 1 else blocks[0]
 
 
 def compute_needs(view: ObsView, cfg: Config) -> np.ndarray:
@@ -367,6 +407,28 @@ def compute_needs(view: ObsView, cfg: Config) -> np.ndarray:
         # fill it, something the population does together without being told to.
         needs[:, NEED_HOUSE_FOOD] = np.clip(1.0 - view.stock_food, 0.0, 1.0)
         needs[:, NEED_HOUSE_MATERIAL] = np.clip(1.0 - view.stock_material, 0.0, 1.0)
+
+    # --- Island 3.0. Both read the family's PROPERTY off my own observation, the
+    # same allowance the stockpile channels take: I know how big my house is and
+    # whether we farm, because I live there.
+    if cfg.housing.enabled:
+        # How far over capacity the family is. Zero when everyone has a bed, and
+        # zero again when nothing can be done about it (the house is at
+        # `max_rooms`) -- wanting a room that cannot exist is the doomed action
+        # the M3 mask deletes, wearing a need's clothes.
+        needs[:, NEED_HOUSE_ROOM] = np.where(view.home_expandable,
+                                             np.clip(view.home_overflow, 0.0, 1.0), 0.0)
+    if cfg.agriculture.enabled:
+        # Full deficit while the household has farming and no fields, zero once
+        # it has all it may have. Note what this makes the adoption number MEAN,
+        # stated here rather than discovered later, exactly as the axe's row is:
+        # the scripted arbiter's planting rate is a consequence of this line. What
+        # the world can honestly measure is whether the UNLOCK fires more where
+        # food is short -- which nothing here scores, because the unlock is a
+        # fact about hunger in world.py -- and whether a field pays against a
+        # control on the same seeds.
+        needs[:, NEED_LAND] = np.where(view.farming,
+                                       np.clip(view.field_room, 0.0, 1.0), 0.0)
     return needs
 
 
@@ -604,6 +666,26 @@ def goal_availability(view: ObsView, cfg: Config, needs: np.ndarray,
     else:
         available[:, CRAFT_AXE] = False
 
+    # --- Island 3.0. Both are trips to my OWN house, so both take the home
+    # offset the stage-4 block already carries rather than a k-nearest slot: an
+    # extension goes on the family house or it is not an extension, and a field
+    # next to somebody else's larder is not this family's field.
+    if cfg.housing.enabled and cfg.society.enabled:
+        set_target(EXPAND, view.home_distance)
+        available[:, EXPAND] &= (view.home_expandable & (view.material_carried > 0.0)
+                                 & (view.home_overflow > 0.0))
+    else:
+        available[:, EXPAND] = False
+
+    if cfg.agriculture.enabled and cfg.society.enabled:
+        set_target(PLANT_FIELD, view.home_distance)
+        cap_m = max(cfg.construction.material_capacity, 1)
+        available[:, PLANT_FIELD] &= (
+            view.farming & (view.field_room > 0.0)
+            & (view.material_carried * cap_m >= cfg.agriculture.plant_material_cost - 1e-6))
+    else:
+        available[:, PLANT_FIELD] = False
+
     return available, discount, bonus
 
 
@@ -839,6 +921,19 @@ def goal_viable(view: ObsView, cfg: Config, goals: np.ndarray,
              & (view.wood * cap_m >= cfg.tools.axe_wood_cost - 1e-6)
              & (view.stone * cap_m >= cfg.tools.axe_stone_cost - 1e-6))
 
+    if cfg.housing.enabled:
+        # Ends when the family is housed, when the house can take no more rooms,
+        # or when the material is gone (spent, given, raided out of the pocket).
+        # Mirrors the availability test deliberately: a termination test looser
+        # than the availability test is how a committed option outlives its
+        # reason, which is the correction `explore` and the store goals both
+        # record.
+        when(EXPAND, view.home_expandable & (view.home_overflow > 0.0)
+             & (view.material_carried > 0.0))
+    if cfg.agriculture.enabled:
+        when(PLANT_FIELD, view.farming & (view.field_room > 0.0)
+             & (view.material_carried > 0.0))
+
     when(EXPLORE, ~(view.loaded_bushes.any(axis=1) & room_food))
     # The gifts are single-tick by nature and `rest` never fails.
     when(GOAL_GIVE_FOOD, np.zeros(n, dtype=bool))
@@ -953,6 +1048,16 @@ def execute_goals(goals: np.ndarray, view: ObsView, cfg: Config,
                   WITHDRAW_MATERIAL, sc.stockpile_radius)
         walk_then(GOAL_RAID, view.raid_distance, view.raid_dx, view.raid_dz,
                   RAID, sc.stockpile_radius)
+        # --- Island 3.0. Both are walk-home-then-act, like the store goals.
+        # `expand` uses BUILD at the family site and `plant` uses PLANT near it,
+        # and neither decides WHETHER -- that is the arbiter's job, and one day a
+        # learned chooser's.
+        if cfg.housing.enabled:
+            walk_then(EXPAND, view.home_distance, view.home_dx, view.home_dz,
+                      BUILD, cfg.construction.build_radius)
+        if cfg.agriculture.enabled:
+            walk_then(PLANT_FIELD, view.home_distance, view.home_dx, view.home_dz,
+                      PLANT, cfg.agriculture.plant_radius)
 
     # explore: hold a heading. Ballistic travel rather than a fresh random step
     # each tick, which is the one thing `nav-commit` showed is worth real ticks

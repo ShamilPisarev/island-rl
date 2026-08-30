@@ -19,7 +19,7 @@ from sim.agents import CRAFT, action_names, num_actions, observation_layout
 from sim.config import load_config
 from sim.economy import materials
 from sim.society import make_runner, run_episodes
-from sim.utility import (CRAFT_AXE, NEED_TOOL, N_GOALS, N_GOALS_STAGE4,
+from sim.utility import (CRAFT_AXE, NEED_TOOL, N_GOALS, N_GOALS_RUNG1, N_GOALS_STAGE4,
                          ArbiterConfig, agent_traits, compute_needs)
 from sim.world import World
 
@@ -92,7 +92,12 @@ def test_a_toolless_arbiter_keeps_the_stage4_goal_width(cfg):
     would change every from-scratch stage-5 number in a world with no tools."""
     from sim.arbiter import goal_width
     assert goal_width(cfg) == N_GOALS_STAGE4
-    assert goal_width(load_config(AXE)) == N_GOALS
+    # ...and the AXE world keeps the width IT had, which is the same guarantee
+    # one rung along: Island 3.0 appended two more goals, and if this read
+    # `N_GOALS` it would have silently widened every axe-world net rather than
+    # failing. The frozen constant is the assertion; `N_GOALS` is a moving target.
+    assert goal_width(load_config(AXE)) == N_GOALS_RUNG1
+    assert N_GOALS_RUNG1 == N_GOALS_STAGE4 + 1
 
 
 # Taken from the code as it stood BEFORE tools existed (`git archive HEAD` into a

@@ -38,6 +38,7 @@ from .agents import (
     MINE,
     MOVE_VECTORS,
     N_MOVE_ACTIONS,
+    PLANT,
     RAID,
     DEPOSIT_FOOD,
     DEPOSIT_MATERIAL,
@@ -46,6 +47,7 @@ from .agents import (
     STEAL,
     AgentPool,
     ConstructionView,
+    Island3View,
     PredatorView,
     SocietyView,
     action_mask,
@@ -144,6 +146,32 @@ class EpisodeStats:
     attacks: int = 0
     attacks_per_agent: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     hunger_lost_to_predators: float = 0.0
+    # --- Island 3.0
+    births: int = 0
+    births_by_household: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    deaths_of_age: int = 0
+    born: int = 0            # slots that ever lived; == num_agents without 3.0
+    population_final: int = 0
+    house_expansions: int = 0
+    rooms_final: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    # Night ticks spent outside for want of a BED, as distinct from for want of a
+    # house. Two numbers because they ask different questions of the same
+    # shortfall: `roofless` says build one, `bed_denied` says build it bigger.
+    bed_denied: int = 0
+    roofless: int = 0
+    fields_planted: int = 0
+    fields_per_household: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    farming_households: int = 0
+    berries_from_fields: int = 0
+    wood_regrown: int = 0
+    stone_regrown: int = 0
+    # Per-tribe population, births and deaths -- the only way to ask which tribe
+    # won, and a population mean cannot answer it (rule 6).
+    tribe_population: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    tribe_births: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    tribe_ever: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    raids_cross_tribe: int = 0
+    raids_within_tribe: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -247,14 +275,52 @@ class World:
         if self._bush_layout is None or cfg.bushes.resample_each_episode:
             self._bush_layout = self._place_bushes()
         self.bush_x, self.bush_z = (arr.copy() for arr in self._bush_layout)
-        n_bushes = self.bush_x.shape[0]
-        self.bush_berries = np.full(n_bushes, cfg.bushes.initial_berries, dtype=np.int64)
+        n_wild = self.bush_x.shape[0]
+        # --- Island 3.0: FIELDS ARE BUSHES. Their slots are preallocated here,
+        # inactive, and parked at infinity: `_k_nearest` treats a non-finite
+        # distance as absent, every gather and mask test already reads
+        # `berries > 0`, and so an unplanted field is invisible to the whole
+        # engine without one extra branch anywhere. Parking them at (0, 0)
+        # instead -- the obvious version -- would have put a phantom bush in the
+        # middle of the island inside every agent's k-nearest list.
+        ac = cfg.agriculture
+        n_fields = (max(cfg.society.num_households, 1) * ac.max_fields_per_household
+                    if ac.enabled else 0)
+        if n_fields:
+            park = np.full(n_fields, np.inf)
+            self.bush_x = np.concatenate([self.bush_x, park])
+            self.bush_z = np.concatenate([self.bush_z, park])
+        n_bushes = n_wild + n_fields
+        self.bush_berries = np.zeros(n_bushes, dtype=np.int64)
+        self.bush_berries[:n_wild] = cfg.bushes.initial_berries
         self.bush_timer = np.zeros(n_bushes, dtype=np.int64)
+        self.bush_active = np.zeros(n_bushes, dtype=bool)
+        self.bush_active[:n_wild] = True
+        self.bush_cap = np.full(n_bushes, cfg.bushes.capacity, dtype=np.int64)
+        self.bush_regrow = np.full(n_bushes, cfg.bushes.regrow_ticks, dtype=np.int64)
+        self.n_wild_bushes = n_wild
+        if n_fields:
+            self.bush_cap[n_wild:] = ac.field_capacity
+            self.bush_regrow[n_wild:] = ac.field_regrow_ticks
+            self.bush_berries[n_wild:] = ac.field_initial
 
         self.pool = AgentPool.create(cfg.world.num_agents, cfg.hunger.max)
         self.pool.x, self.pool.z = self._sample_in_disc(
             cfg.world.island_radius * cfg.world.spawn_radius_frac, cfg.world.num_agents
         )
+        # --- Island 3.0: `world.num_agents` becomes a SLOT CAPACITY once
+        # reproduction is on. The unborn are inert rows -- not alive, so they
+        # never act, never observe and never appear as anyone's neighbour -- and
+        # `born` is what keeps them out of every per-agent statistic. Note the
+        # spawn positions above are drawn for ALL slots whether or not they are
+        # used: that keeps the rng stream identical to a world without
+        # reproduction, and a newborn is placed at its house anyway.
+        rc = cfg.reproduction
+        if rc.enabled and rc.initial_agents is not None:
+            start = int(np.clip(rc.initial_agents, 1, cfg.world.num_agents))
+            self.pool.born[:] = False
+            self.pool.born[:start] = True
+            self.pool.alive[:] = self.pool.born
 
         cc = cfg.construction
         if cc.enabled:
@@ -300,6 +366,16 @@ class World:
             self.site_x = self.site_z = empty
             self.tree_wood = self.rock_stone = empty_i
             self.site_wood_needed = self.site_stone_needed = empty_i
+        # --- Island 3.0: material nodes grow back, and a finished house takes
+        # extensions. `tree_cap` is whatever the node started with, so a regrown
+        # forest is exactly the forest that was there -- regrowth is a repair,
+        # not a multiplier, and a world with `tree_regrow_ticks: 0` never
+        # touches any of it.
+        self.tree_cap = self.tree_wood.copy()
+        self.rock_cap = self.rock_stone.copy()
+        self.tree_timer = np.zeros(self.tree_wood.shape[0], dtype=np.int64)
+        self.rock_timer = np.zeros(self.rock_stone.shape[0], dtype=np.int64)
+        self.site_extra = np.zeros(self.site_x.shape[0], dtype=np.int64)
 
         self.tick = 0
         self._alive_ticks = np.zeros(cfg.world.num_agents, dtype=np.int64)
@@ -356,6 +432,39 @@ class World:
             self.household = np.zeros(cfg.world.num_agents, dtype=np.int64)
             self.stock_x = np.zeros(1, dtype=np.float64)
             self.stock_z = np.zeros(1, dtype=np.float64)
+        # --- Island 3.0: tribes. A TRIBE IS A PLACE -- households are grouped by
+        # the ANGLE of their site around the island, so a tribe is a contiguous
+        # arc of coast and a raid across its border is a raid on a neighbour.
+        # Round-robin (what households themselves use) would have made every
+        # tribe live everywhere, and "the strongest tribe" would have meant
+        # nothing spatial at all.
+        tc = cfg.tribes
+        if tc.enabled and sc.enabled:
+            ang = np.arctan2(self.stock_z, self.stock_x)
+            frac = (ang + np.pi) / (2.0 * np.pi)
+            self.tribe_of_household = np.minimum(
+                (frac * tc.num_tribes).astype(np.int64), tc.num_tribes - 1)
+        else:
+            self.tribe_of_household = np.zeros(n_house, dtype=np.int64)
+        self.tribe = self.tribe_of_household[self.household]
+
+        # --- Island 3.0: agriculture is unlocked per household by hunger, and
+        # reproduction is throttled per household by a cooldown.
+        self.household_farming = np.zeros(n_house, dtype=bool)
+        self.household_hunger_ticks = np.zeros(n_house, dtype=np.int64)
+        self.household_fields = np.zeros(n_house, dtype=np.int64)
+        self.household_birth_tick = np.full(n_house, -10**9, dtype=np.int64)
+        self._births = 0
+        self._births_by_household = np.zeros(n_house, dtype=np.int64)
+        self._deaths_of_age = 0
+        self._expansions = 0
+        self._fields_planted = 0
+        self._field_berries = 0
+        self._bed_denied = 0
+        self._roofless = 0
+        self._wood_regrown = 0
+        self._stone_regrown = 0
+        self._planted = np.zeros(cfg.world.num_agents, dtype=np.int64)
         self.stock_food = np.zeros(n_house, dtype=np.int64)
         # Material is tracked BY KIND even though the observation reports the sum.
         # With fungible sites the split is cosmetic; without them it is
@@ -445,6 +554,47 @@ class World:
             grudge=self.grudge, blight=self.blight_active,
         )
 
+    @property
+    def household_size(self) -> np.ndarray:
+        """Living members per household -- the number a house has to be big for."""
+        n_house = self.stock_x.shape[0]
+        return np.bincount(self.household[self.pool.alive], minlength=n_house)
+
+    @property
+    def site_rooms(self) -> np.ndarray:
+        """Extra rooms built onto each finished house."""
+        if not self.cfg.housing.enabled:
+            return np.zeros(self.site_x.shape[0], dtype=np.int64)
+        return np.minimum(self.site_extra // max(self.cfg.housing.expand_units, 1),
+                          self.cfg.housing.max_rooms)
+
+    @property
+    def site_capacity(self) -> np.ndarray:
+        """Beds per site: the base house plus `occupants_per_room` a room.
+
+        An UNFINISHED site has no beds -- a roof you have not built does not
+        sleep anyone -- which is what keeps the capacity rule from quietly
+        rewarding half-built walls that `partial_shelter` already pays for.
+        """
+        hc = self.cfg.housing
+        n_sites = self.site_x.shape[0]
+        if not hc.enabled or not n_sites:
+            return np.full(n_sites, 10**6, dtype=np.int64)
+        done = (self.site_wood_needed == 0) & (self.site_stone_needed == 0)
+        cap = hc.base_occupants + self.site_rooms * hc.occupants_per_room
+        return np.where(done, cap, 0).astype(np.int64)
+
+    def island3_view(self) -> Island3View:
+        return Island3View(
+            tribe=self.tribe,
+            tribe_of_household=self.tribe_of_household,
+            site_extra=self.site_extra,
+            site_capacity=self.site_capacity,
+            household_size=self.household_size,
+            farming=self.household_farming,
+            fields=self.household_fields,
+        )
+
     def predator_view(self) -> PredatorView | None:
         if not self.cfg.predators.enabled:
             return None
@@ -465,6 +615,7 @@ class World:
         return build_observations(
             self.pool, self.bush_x, self.bush_z, self.bush_berries, self.cfg,
             self.construction_view(), self.society_view(), self.predator_view(),
+            self.island3_view(),
         )
 
     def action_mask(self) -> np.ndarray:
@@ -475,7 +626,8 @@ class World:
         if not self.cfg.competition.mask_invalid_actions:
             return np.ones((self.pool.n, num_actions(self.cfg)), dtype=bool)
         return action_mask(self.pool, self.bush_x, self.bush_z, self.bush_berries,
-                           self.cfg, self.construction_view(), self.society_view())
+                           self.cfg, self.construction_view(), self.society_view(),
+                           self.island3_view())
 
     def step(self, actions: np.ndarray) -> StepResult:
         cfg = self.cfg
@@ -549,6 +701,11 @@ class World:
                 contested[i] = 1
                 continue
             claimed.add(target)
+            if target >= self.n_wild_bushes:
+                # Island 3.0: a berry taken off a planted field rather than a
+                # wild bush. Counted here because a field IS a bush everywhere
+                # else, so this is the only place the two can be told apart.
+                self._field_berries += 1
             self.bush_berries[target] -= 1
             pool.food[i] += 1
             rewards[i] += cfg.reward.gather
@@ -576,6 +733,12 @@ class World:
                             & (pool.food > 0))
                 if sc.enabled and sc.household_theft_immunity:
                     eligible &= self.household != self.household[i]
+                if cfg.tribes.enabled and cfg.tribes.tribe_theft_immunity:
+                    # The household rule, one grain coarser. Same correction it
+                    # was made for at stage 4 (spawning a group together packs it
+                    # inside steal_radius permanently), and the same reading of
+                    # the mechanic: you do not feed yourself by robbing your own.
+                    eligible &= self.tribe != self.tribe[i]
                 victims = np.flatnonzero(eligible)
                 victims = victims[victims != i]
                 if victims.size == 0:
@@ -633,11 +796,39 @@ class World:
             pool.stone += stone_got
             rewards += stone_got * cfg.reward.stone
 
+            hc = cfg.housing
+            if hc.enabled and self.site_x.size:
+                site_done = (self.site_wood_needed == 0) & (self.site_stone_needed == 0)
+                site_expandable = site_done & (self.site_rooms < hc.max_rooms)
+            else:
+                site_expandable = np.zeros(self.site_x.shape[0], dtype=bool)
             for i in np.flatnonzero(acted & (actions == BUILD)):
                 d2 = (self.site_x - pool.x[i]) ** 2 + (self.site_z - pool.z[i]) ** 2
                 near = np.flatnonzero(d2 <= cc.build_radius ** 2)
                 delivered = False
                 for s in near[np.argsort(d2[near])]:
+                    outstanding = self.site_wood_needed[s] + self.site_stone_needed[s]
+                    if outstanding == 0 and site_expandable[s]:
+                        # ISLAND 3.0: THE HOUSE GETS BIGGER. A finished site keeps
+                        # taking material, and every `expand_units` of it is a
+                        # room. No new action, because an extension is the same
+                        # act as the wall it is added to -- and no new reward,
+                        # for the same reason nothing else here pays: a bigger
+                        # house has to earn its material through the nights it
+                        # then covers.
+                        if pool.wood[i] > 0:
+                            pool.wood[i] -= 1
+                        elif pool.stone[i] > 0:
+                            pool.stone[i] -= 1
+                        else:
+                            continue
+                        before = int(self.site_rooms[s])
+                        self.site_extra[s] += 1
+                        if int(self.site_rooms[s]) > before:
+                            self._expansions += 1
+                        built[i] = 1
+                        rewards[i] += cfg.reward.build
+                        break
                     if cc.fungible_materials:
                         # A site takes whatever arrives. Spend the agent's wood
                         # first and retire the wood counter first, so the pair
@@ -844,7 +1035,17 @@ class World:
                     # living member of the victim household remembers the raider,
                     # which is what lets retaliation be collective without any
                     # scripted "war" logic -- the design doc's minimal reputation.
-                    victims = (self.household == raids[-1][1]) & pool.alive
+                    victim_house = raids[-1][1]
+                    victims = (self.household == victim_house) & pool.alive
+                    if cfg.tribes.enabled and cfg.tribes.collective_grudge:
+                        # Island 3.0: a raid across a border is remembered by the
+                        # whole TRIBE, not just the household whose pile it was.
+                        # That is the only thing tribes add to the war mechanics
+                        # -- no new action, no new target, just a wider memory --
+                        # and it is what turns two households' feud into
+                        # something a tribe can be said to be in.
+                        victims = (self.tribe == self.tribe_of_household[victim_house]) \
+                            & pool.alive
                     self.grudge[victims, i] = np.minimum(
                         self.grudge[victims, i] + sc.grudge_per_theft, 1.0)
 
@@ -888,9 +1089,51 @@ class World:
                 crafted[i] = 1
             self._crafted += crafted
 
+        # 1h. planting (Island 3.0 tech rung 3). A field is a bush: the slot
+        #     already exists, parked at infinity and inactive, and planting moves
+        #     it to where the planter stands and switches it on. Nothing pays for
+        #     it -- a field earns its material back through the berries it grows,
+        #     which is the same unpaid shape as everything else here (rule 1).
+        planted = np.zeros(n, dtype=np.int64)
+        ac = cfg.agriculture
+        if ac.enabled and sc.enabled:
+            n_wild = self.n_wild_bushes
+            for i in (int(v) for v in np.flatnonzero(acted & (actions == PLANT))):
+                h = int(self.household[i])
+                if not self.household_farming[h]:
+                    continue
+                if self.household_fields[h] >= ac.max_fields_per_household:
+                    continue
+                d2 = (self.stock_x[h] - pool.x[i]) ** 2 + (self.stock_z[h] - pool.z[i]) ** 2
+                if d2 > ac.plant_radius ** 2:
+                    continue
+                if pool.wood[i] > 0:
+                    pool.wood[i] -= ac.plant_material_cost
+                elif pool.stone[i] > 0:
+                    pool.stone[i] -= ac.plant_material_cost
+                else:
+                    continue
+                slot = n_wild + h * ac.max_fields_per_household + int(self.household_fields[h])
+                self.bush_x[slot] = pool.x[i]
+                self.bush_z[slot] = pool.z[i]
+                self.bush_active[slot] = True
+                self.bush_berries[slot] = ac.field_initial
+                self.bush_timer[slot] = 0
+                self.household_fields[h] += 1
+                self._fields_planted += 1
+                planted[i] = 1
+            self._planted += planted
+
         # 2. hunger drain -- multiplied at night for anyone not near a completed
         #    shelter. This is the hazard that makes shelter worth its materials.
         drain = np.full(n, cfg.hunger.drain_per_tick)
+        if cfg.reproduction.enabled:
+            # A child is a smaller mouth. Applied to the BASE drain, before the
+            # night multiplier, so a child left outside still pays the full
+            # exposure penalty on its smaller body -- an exposed child should be
+            # in more trouble than a sheltered adult, not less.
+            drain = np.where(pool.adult(cfg), drain,
+                             drain * cfg.reproduction.child_drain_frac)
         if cc.enabled:
             _, is_night = night_phase(self.tick, cfg)
             if is_night:
@@ -921,8 +1164,64 @@ class World:
                 if self.site_x.size:
                     d2 = ((self.site_x[None, :] - pool.x[:, None]) ** 2
                           + (self.site_z[None, :] - pool.z[:, None]) ** 2)
-                    protection = np.where(d2 <= cc.shelter_radius ** 2,
-                                          progress[None, :], 0.0).max(axis=1)
+                    near_site = d2 <= cc.shelter_radius ** 2
+                    if not cfg.housing.enabled:
+                        protection = np.where(near_site, progress[None, :], 0.0).max(axis=1)
+                    else:
+                        # ISLAND 3.0: A HOUSE HAS BEDS IN IT. Until now
+                        # `shelter_radius` was a disc that protected everyone
+                        # standing in it, so one hut could sleep a hundred.
+                        # A FINISHED house sleeps `base_occupants` plus its
+                        # rooms; the household that owns the site (each owns the
+                        # site of its own index) is admitted first, then whoever
+                        # is nearest. An UNFINISHED site keeps its stage-4
+                        # behaviour and admits everyone at `progress`.
+                        #
+                        # That last clause is rule 5 doing its job rather than a
+                        # softening. Capping an unfinished site too would put the
+                        # M4 cliff straight back: partial_shelter exists because
+                        # three quarters of a build bought nothing, and a
+                        # capacity of zero on a half-built wall buys nothing
+                        # again. The honest cost of the split is a boundary the
+                        # write-up states: a family larger than
+                        # capacity / last-step-progress would rather leave the
+                        # house unfinished than finish it. It cannot be reached
+                        # from a finished house (nothing un-builds one), and the
+                        # shipped `base_occupants` keeps it out of range at the
+                        # sizes these worlds start at.
+                        cap = self.site_capacity
+                        admitted = np.zeros_like(near_site)
+                        for sidx in range(self.site_x.shape[0]):
+                            if progress[sidx] <= 0.0:
+                                continue
+                            cand = np.flatnonzero(near_site[:, sidx] & pool.alive)
+                            if cand.size == 0:
+                                continue
+                            c = int(cap[sidx])
+                            if cand.size > c:
+                                if cfg.housing.kin_priority:
+                                    kin = self.household[cand] == sidx
+                                else:
+                                    kin = np.zeros(cand.size, dtype=bool)
+                                # Kin first, then nearest. lexsort takes the LAST
+                                # key as primary, so `~kin` sorts the family to
+                                # the front and distance breaks ties inside each
+                                # group. Deterministic and greedy per site: an
+                                # agent keeps the best protection any site admits
+                                # it to, so a greedy pass can only under-house,
+                                # never over-report.
+                                order = np.lexsort((d2[cand, sidx], ~kin))
+                                cand = cand[order[:max(c, 0)]]
+                            admitted[cand, sidx] = True
+                        protection = np.where(near_site & admitted,
+                                              progress[None, :], 0.0).max(axis=1)
+                        # Who was turned away for want of a BED rather than for
+                        # want of a house: in range of shelter, and not in it.
+                        turned = (near_site & (progress[None, :] > 0.0)).any(axis=1) & (
+                            protection <= 0.0) & pool.alive
+                        self._bed_denied += int(turned.sum())
+                        self._roofless += int((pool.alive & (protection <= 0.0)
+                                               & ~turned).sum())
                 drain = drain * (1.0 + (cc.night_drain_multiplier - 1.0) * (1.0 - protection))
                 sheltered = protection >= 0.5   # "indoors" for the stats
                 self._last_sheltered = protection >= cfg.predators.protection_safe
@@ -963,8 +1262,17 @@ class World:
             ate = eating.astype(np.int64)
             self._meals += ate
 
-        # 4. death
+        # 4. death -- starvation, and (Island 3.0) old age. Old age is folded
+        #    into the same phase rather than given its own so that `terminated`
+        #    stays one array and PPO's bootstrap rule needs no new case: an agent
+        #    that dies of age has genuinely zero future value, exactly as a
+        #    starved one does.
         died = acted & (pool.hunger <= 0.0)
+        rc_step = cfg.reproduction
+        if rc_step.enabled and rc_step.max_age > 0:
+            of_age = acted & ~died & (pool.age >= rc_step.max_age)
+            self._deaths_of_age += int(of_age.sum())
+            died = died | of_age
         if died.any():
             pool.alive = pool.alive & ~died
             pool.hunger = np.where(died, 0.0, pool.hunger)
@@ -974,6 +1282,10 @@ class World:
         survived = acted & pool.alive
         rewards += np.where(survived, cfg.reward.alive_per_tick, 0.0)
         self._alive_ticks += survived.astype(np.int64)
+        if cfg.reproduction.enabled:
+            # Only the living age. A newborn is created at age 0 AFTER this line
+            # in the same tick, so it is a child for its full `maturity_ticks`.
+            pool.age += survived.astype(np.int64)
         self._gathered += gathered
         self._stole += stole
         self._robbed += robbed
@@ -993,16 +1305,125 @@ class World:
             self._blight_ticks += 1
             ready = np.zeros_like(self.bush_berries, dtype=bool)
         else:
-            below = self.bush_berries < cfg.bushes.capacity
+            # Per-bush capacity and rate, because a planted field is a bush with
+            # different numbers on it. Wild bushes carry `bushes.capacity` and
+            # `bushes.regrow_ticks` in those arrays, so a world without
+            # agriculture takes exactly the old path.
+            below = self.bush_active & (self.bush_berries < self.bush_cap)
             self.bush_timer = np.where(below, self.bush_timer + 1, 0)
-            ready = below & (self.bush_timer >= cfg.bushes.regrow_ticks)
+            ready = below & (self.bush_timer >= self.bush_regrow)
         if ready.any():
             self.bush_berries = np.where(ready, self.bush_berries + 1, self.bush_berries)
             self.bush_timer = np.where(ready, 0, self.bush_timer)
 
+        # 6b. ISLAND 3.0: the forest grows back. A node refills one unit every
+        #     `*_regrow_ticks` up to the stock it started with, exactly as a bush
+        #     does -- a repair, not a multiplier. 0 disables it, which is every
+        #     world before 3.0, and which is the asymmetry section 15 measured
+        #     killing a society over 24,000 ticks.
+        #
+        #     A BLIGHT DOES NOT STOP IT. A blight is a failure of the berry crop;
+        #     having it halt the forest too would make one shock do two jobs and
+        #     make the seasons world unreadable.
+        if cc.enabled:
+            if cc.tree_regrow_ticks > 0 and self.tree_wood.size:
+                below = self.tree_wood < self.tree_cap
+                self.tree_timer = np.where(below, self.tree_timer + 1, 0)
+                ready_t = below & (self.tree_timer >= cc.tree_regrow_ticks)
+                if ready_t.any():
+                    self.tree_wood = np.where(ready_t, self.tree_wood + 1, self.tree_wood)
+                    self.tree_timer = np.where(ready_t, 0, self.tree_timer)
+                    self._wood_regrown += int(ready_t.sum())
+            if cc.rock_regrow_ticks > 0 and self.rock_stone.size:
+                below = self.rock_stone < self.rock_cap
+                self.rock_timer = np.where(below, self.rock_timer + 1, 0)
+                ready_r = below & (self.rock_timer >= cc.rock_regrow_ticks)
+                if ready_r.any():
+                    self.rock_stone = np.where(ready_r, self.rock_stone + 1, self.rock_stone)
+                    self.rock_timer = np.where(ready_r, 0, self.rock_timer)
+                    self._stone_regrown += int(ready_r.sum())
+
         self._deposits += deposited
         self._withdrawals += withdrew
         self._raids += raided
+
+        # 6c. ISLAND 3.0: THE INVENTION OF AGRICULTURE, and it is scored rather
+        #     than discovered -- every write-up has to say so. A household unlocks
+        #     farming once its living members have between them spent
+        #     `unlock_hunger_ticks` agent-ticks below `unlock_hunger`. Necessity
+        #     is the mother of invention BECAUSE WE WROTE THAT DOWN.
+        #
+        #     What is genuinely measured is a fact about the WORLD rather than
+        #     the rule: whether the unlock fires more in a hungry world than a
+        #     fed one, and whether a field, once available, is used and pays.
+        #     Same honesty rung 1 carries about the axe.
+        if cfg.agriculture.enabled and sc.enabled:
+            hungry = pool.alive & (pool.hunger < cfg.agriculture.unlock_hunger)
+            if hungry.any():
+                self.household_hunger_ticks += np.bincount(
+                    self.household[hungry], minlength=self.household_hunger_ticks.shape[0])
+            self.household_farming |= (self.household_hunger_ticks
+                                       >= cfg.agriculture.unlock_hunger_ticks)
+
+        # 6d. ISLAND 3.0: BIRTHS. Not an action, not a goal, and nothing is paid
+        #     for one -- see ReproductionConfig for why that is the whole point.
+        #     A household has a child when two grown, well-fed members of it are
+        #     standing at their own house, the house has a free bed, the family
+        #     larder can pay for the child, and the cooldown has elapsed. So a
+        #     birth is a MEASUREMENT of how well a household feeds and houses
+        #     itself, not a preference we typed into a scorer.
+        #
+        #     Deterministic: candidates are taken in agent order and no rng
+        #     stream is touched, so a replay of a 3.0 world reproduces exactly.
+        rc = cfg.reproduction
+        if rc.enabled and sc.enabled:
+            free = np.flatnonzero(~pool.born)
+            if free.size:
+                adult = pool.adult(cfg)
+                fit = pool.alive & adult & (pool.hunger >= rc.birth_hunger)
+                home_d2 = ((self.stock_x[self.household] - pool.x) ** 2
+                           + (self.stock_z[self.household] - pool.z) ** 2)
+                at_home = fit & (home_d2 <= rc.birth_radius ** 2)
+                sizes = self.household_size
+                caps = self.site_capacity
+                nh = self.stock_x.shape[0]
+                parents = np.bincount(self.household[at_home], minlength=nh)
+                cursor = 0
+                for h in range(nh):
+                    if cursor >= free.size:
+                        break
+                    if parents[h] < 2:
+                        continue
+                    if self.tick - self.household_birth_tick[h] < rc.birth_cooldown:
+                        continue
+                    if self.stock_food[h] < rc.birth_food_cost:
+                        continue
+                    cap_h = int(caps[h]) if h < caps.shape[0] else 10 ** 6
+                    if sizes[h] >= cap_h:
+                        continue
+                    slot = int(free[cursor])
+                    cursor += 1
+                    self.stock_food[h] -= rc.birth_food_cost
+                    self.household_birth_tick[h] = self.tick
+                    pool.born[slot] = True
+                    pool.alive[slot] = True
+                    pool.age[slot] = 0
+                    pool.hunger[slot] = cfg.hunger.max
+                    pool.food[slot] = 0
+                    pool.wood[slot] = 0
+                    pool.stone[slot] = 0
+                    pool.axe[slot] = 0
+                    pool.last_action[slot] = IDLE
+                    self.household[slot] = h
+                    self.tribe[slot] = self.tribe_of_household[h]
+                    # Placed at the house, offset by a fixed spiral on the slot
+                    # index. Deterministic on purpose: drawing the offset would
+                    # consume the layout rng and shift every later world event.
+                    ang = 2.0 * np.pi * (slot % 8) / 8.0
+                    pool.x[slot] = self.stock_x[h] + np.cos(ang)
+                    pool.z[slot] = self.stock_z[h] + np.sin(ang)
+                    self._births += 1
+                    self._births_by_household[h] += 1
 
         # 7. clock and termination
         self.tick += 1
@@ -1106,14 +1527,54 @@ class World:
 
     def stats(self) -> EpisodeStats:
         pool = self.pool
+        # ISLAND 3.0: every per-agent statistic divides by the agents that were
+        # BORN, not by the slots that exist. With reproduction off `born` is
+        # all-True and every number below is the one it always was; with it on,
+        # dividing by the slot count would report a lifespan halved by rows that
+        # never lived. This is rule 5 -- change a mechanic, re-derive the
+        # arithmetic around it -- caught at the point it would have poisoned
+        # every headline in the stage.
+        born = pool.born
+        n_born = max(int(born.sum()), 1)
+        n_house = self.stock_x.shape[0]
+        n_tribes = int(self.tribe_of_household.max()) + 1 if self.tribe_of_household.size else 1
+        tribe_pop = np.bincount(self.tribe[pool.alive], minlength=n_tribes)
+        tribe_ever = np.bincount(self.tribe[born], minlength=n_tribes)
+        tribe_births = np.zeros(n_tribes, dtype=np.int64)
+        if self._births_by_household.size:
+            for h in range(n_house):
+                tribe_births[self.tribe_of_household[h]] += int(self._births_by_household[h])
+        cross = sum(1 for _, rh, vh, _ in self.raid_ledger
+                    if self.tribe_of_household[rh] != self.tribe_of_household[vh])
+        n_wild = getattr(self, "n_wild_bushes", self.bush_x.shape[0])
         return EpisodeStats(
             ticks=self.tick,
-            deaths=int((~pool.alive).sum()),
+            deaths=int((born & ~pool.alive).sum()),
             berries_gathered=int(self._gathered.sum()),
             meals=int(self._meals.sum()),
-            mean_lifespan=float(self._alive_ticks.mean()),
-            mean_final_hunger=float(pool.hunger.mean()),
+            mean_lifespan=float(self._alive_ticks[born].sum() / n_born),
+            mean_final_hunger=float(pool.hunger[born].sum() / n_born),
             survivors=int(pool.alive.sum()),
+            births=self._births,
+            births_by_household=self._births_by_household.copy(),
+            deaths_of_age=self._deaths_of_age,
+            born=int(born.sum()),
+            population_final=int(pool.alive.sum()),
+            house_expansions=self._expansions,
+            rooms_final=self.site_rooms.copy(),
+            bed_denied=self._bed_denied,
+            roofless=self._roofless,
+            fields_planted=self._fields_planted,
+            fields_per_household=self.household_fields.copy(),
+            farming_households=int(self.household_farming.sum()),
+            berries_from_fields=self._field_berries,
+            wood_regrown=self._wood_regrown,
+            stone_regrown=self._stone_regrown,
+            tribe_population=tribe_pop,
+            tribe_births=tribe_births,
+            tribe_ever=tribe_ever,
+            raids_cross_tribe=cross,
+            raids_within_tribe=len(self.raid_ledger) - cross,
             steals=int(self._stole.sum()),
             contests_lost=int(self._contested.sum()),
             wood_gathered=int(self._wood.sum()),

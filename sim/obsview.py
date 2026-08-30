@@ -165,6 +165,31 @@ class ObsView:
             self.predator_dz = np.zeros(self.n)
             self.predator_hunting = np.zeros(self.n, dtype=bool)
 
+        # --- Island 3.0. Absent for every world without the block, and read as
+        # "grown up, housed, no farm", so an arbiter written for a 3.0 world runs
+        # unchanged in a 2.0 one and simply finds nothing new to want.
+        rc = cfg.reproduction
+        if rc.enabled and rc.observe_age:
+            self.age = obs[:, col["own.age"]]
+            self.adult = obs[:, col["own.adult"]] > 0.5
+        else:
+            self.age = np.zeros(self.n)
+            self.adult = np.ones(self.n, dtype=bool)
+        if cfg.housing.enabled and cfg.housing.observe_house:
+            self.beds_free = obs[:, col["home.beds_free"]]
+            self.home_overflow = obs[:, col["home.overflow"]]
+            self.home_expandable = obs[:, col["home.expandable"]] > 0.5
+        else:
+            self.beds_free = np.ones(self.n)
+            self.home_overflow = np.zeros(self.n)
+            self.home_expandable = np.zeros(self.n, dtype=bool)
+        if cfg.agriculture.enabled and cfg.agriculture.observe_agriculture:
+            self.farming = obs[:, col["own.farming"]] > 0.5
+            self.field_room = obs[:, col["home.field_room"]]
+        else:
+            self.farming = np.zeros(self.n, dtype=bool)
+            self.field_room = np.zeros(self.n)
+
         self.edge_room = obs[:, col["edge.room"]]
         self.outward_x = obs[:, col["edge.outward_x"]]
         self.outward_z = obs[:, col["edge.outward_z"]]
@@ -272,6 +297,21 @@ class ObsView:
         if not (sc.enabled and sc.observe_grudge):
             return np.zeros((self.n, self.cfg.observation.k_agents))
         return self.neighbours.extra[self._neighbour_society_col(True)]
+
+    @property
+    def same_tribe(self) -> np.ndarray:
+        """Per neighbour slot: is that neighbour in my tribe?
+
+        All-false when the channel is off, for the same reason `same_household`
+        is: a goal that depends on who your people are must be unavailable rather
+        than treating everybody as kin.
+        """
+        tc = self.cfg.tribes
+        if not (tc.enabled and tc.observe_tribe):
+            return np.zeros((self.n, self.cfg.observation.k_agents), dtype=bool)
+        col = self._neighbour_society_col(True) + int(
+            self.cfg.society.enabled and self.cfg.society.observe_grudge)
+        return self.neighbours.extra[col] > 0.5
 
     @property
     def neighbour_material(self) -> np.ndarray:

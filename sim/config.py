@@ -91,6 +91,16 @@ class ConstructionConfig:
     tree_wood: int = 6              # units per tree; no regrowth within an episode
     num_rocks: int = 5
     rock_stone: int = 4
+    # Island 3.0: material nodes grow back. 0 is "never", which is every world
+    # before 3.0 -- and that asymmetry (bushes regrow forever, trees never) is
+    # what ISLAND2_DESIGN.md section 15 measured killing a society over 24,000
+    # ticks. A tree refills one unit every `tree_regrow_ticks` up to the stock
+    # it started with, exactly as a bush does. Deliberately NOT suspended by a
+    # blight: a blight is a failure of the berry crop, and having it stop the
+    # forest too would make one shock do two jobs and make the ramp world
+    # unreadable.
+    tree_regrow_ticks: int = 0
+    rock_regrow_ticks: int = 0
     harvest_radius: float = 2.0
     material_capacity: int = 2      # carried wood+stone combined
     # shelter sites
@@ -351,6 +361,145 @@ class PredatorConfig:
 
 
 @dataclass(frozen=True)
+class ReproductionConfig:
+    """Island 3.0: the population is born rather than cast.
+
+    Off by default, so every 1.0 and 2.0 world stays bit-identical -- and note
+    what "off" means here, because it is not the usual inert-block story. With
+    reproduction off, `world.num_agents` is the population, every slot is alive
+    at tick 0, and every statistic divides by it exactly as it always has. With
+    it on, `world.num_agents` becomes a SLOT CAPACITY: `initial_agents` are alive
+    at tick 0 and the rest are unborn, occupying inert rows so every array in the
+    engine stays rectangular (the same trick that lets a dead agent keep its
+    slot). Lifespan and death counts then divide by the agents that were actually
+    BORN, or a world with room to grow would report a lifespan halved by rows
+    that never lived.
+
+    A BIRTH IS NOT AN ACTION AND NOT A GOAL. It happens when two grown, well-fed
+    members of one household are at their own house, the house has a free bed,
+    the family larder can pay for the child, and the household's cooldown has
+    elapsed. This is the auto-eat decision applied to the thing the stage is
+    about: if `reproduce` were a goal, the utility scorer would set how badly a
+    family wants children and "the strongest tribe reproduces" would restate a
+    weight we typed. Automatic and conditioned on prosperity, a birth becomes a
+    MEASUREMENT of how well a household feeds and houses itself.
+
+    Deterministic, like everything else here: candidate parents are taken in
+    agent order, so a replay reproduces exactly and no rng stream is consumed.
+    """
+
+    enabled: bool = False
+    # How many of `world.num_agents` slots start alive. None = all of them, which
+    # is the pre-3.0 world and leaves no room to grow.
+    initial_agents: int | None = None
+    # Both parents must be above this. Well above `eat_threshold` (60) on
+    # purpose: a family that is merely not starving should not be breeding, or
+    # the mechanic stops discriminating between households.
+    birth_hunger: float = 80.0
+    birth_food_cost: int = 4        # taken from the household stockpile
+    birth_cooldown: int = 150       # ticks before that household may do it again
+    birth_radius: float = 3.0       # both parents within this of the home site
+    # A child is a mouth before it is a pair of hands. It cannot chop, mine,
+    # build, craft, plant, steal or raid until it grows up -- it can walk,
+    # gather, eat, and use the family store.
+    maturity_ticks: int = 200
+    child_drain_frac: float = 0.6   # ...and it eats less while it is one
+    max_age: int = 0                # 0 = nobody dies of old age
+    observe_age: bool = True
+
+
+@dataclass(frozen=True)
+class HousingConfig:
+    """Island 3.0: a house holds a family, and can be made bigger.
+
+    Until now `shelter_radius` was a disc that protected everyone inside it, so
+    one hut could shelter a hundred agents and a house was a place rather than a
+    thing with room in it. A finished house now shelters `base_occupants`, plus
+    `occupants_per_room` for each room built onto it, and when more agents stand
+    in range than there are beds the household that OWNS the site is admitted
+    first (each household owns the site of its own index) and the rest sleep out.
+
+    Expansion needs no new action: `build` at a finished site adds a unit to
+    `site_extra`, and every `expand_units` of those is a room. So a family whose
+    children have outgrown the house has somewhere for its labour to go, and the
+    material economy gains a recurring demand that stage 4 had to invent storms
+    to create.
+
+    Admission is greedy per site in a fixed order (kin first, then by distance),
+    which is deterministic and cheap. It is not a global optimal assignment, and
+    it does not need to be: an agent takes the best protection any site admits it
+    to, so a greedy pass can only under-house, never mis-report.
+    """
+
+    enabled: bool = False
+    base_occupants: int = 4
+    expand_units: int = 2          # delivered units per extra room
+    occupants_per_room: int = 2
+    max_rooms: int = 6
+    kin_priority: bool = True
+    observe_house: bool = True     # home.beds_free, home.occupancy
+
+
+@dataclass(frozen=True)
+class AgricultureConfig:
+    """Island 3.0 tech rung 3: a field, unlocked by going hungry.
+
+    A FIELD IS A BUSH. Planting appends nothing: field slots are preallocated
+    inactive at reset (position (0,0), zero berries, `bush_active` false) and
+    planting switches one on where the planter stands. Everything downstream --
+    the observation, the action mask, `gather`, the `forage` goal,
+    `sim.navigation` -- already tests `berries > 0`, so an unplanted slot is
+    invisible and a planted one is just a bush that refills faster. That is why
+    agriculture costs one action and no new machinery, and why the block being
+    off is bit-identical rather than merely inert.
+
+    THE INVENTION IS SCORED, NOT DISCOVERED, and every write-up has to say so. A
+    household unlocks farming once its living members have spent
+    `unlock_hunger_ticks` agent-ticks below `unlock_hunger` -- necessity is the
+    mother of invention because we wrote that down. What is genuinely measured is
+    whether the unlock fires more in a hungry world than a fed one (a fact about
+    the world, not the rule), and whether a field once available gets used and
+    pays. Same honesty the axe rung carries.
+    """
+
+    enabled: bool = False
+    unlock_hunger: float = 35.0        # "hungry" for the purposes of inventing
+    unlock_hunger_ticks: int = 300     # cumulative agent-ticks, per household
+    plant_material_cost: int = 1       # a unit of wood or stone becomes a field
+    plant_radius: float = 8.0          # ...within this of the household's own site
+    max_fields_per_household: int = 3
+    field_capacity: int = 8
+    field_regrow_ticks: int = 25       # much faster than a wild bush
+    field_initial: int = 0             # a new field starts empty and has to grow
+    observe_agriculture: bool = True
+
+
+@dataclass(frozen=True)
+class TribeConfig:
+    """Island 3.0: households group into tribes, and a tribe is a PLACE.
+
+    Households are assigned to tribes by the ANGLE of their site around the
+    island, so a tribe is a contiguous arc of coast and inter-tribe raiding is a
+    border phenomenon. Round-robin tribes -- the obvious implementation, and the
+    one households themselves use -- would have produced tribes that are
+    everywhere and therefore nowhere, and "the strongest tribe" would have meant
+    nothing spatial at all.
+
+    Nothing new is added to stealing or raiding. What a tribe changes is who is
+    immune and who remembers: theft immunity widens from the household to the
+    tribe, and a raid is remembered by every living member of the victim's tribe
+    rather than only the victim's household. A war that appears here is the
+    stage-4 grudge economy at a larger grain, not a new capability.
+    """
+
+    enabled: bool = False
+    num_tribes: int = 4
+    tribe_theft_immunity: bool = True
+    collective_grudge: bool = True
+    observe_tribe: bool = True    # per-neighbour same_tribe flag
+
+
+@dataclass(frozen=True)
 class MixConfig:
     """Train on TWO worlds at once: a share of the envs run a second config.
 
@@ -464,6 +613,10 @@ class Config:
     society: SocietyConfig = field(default_factory=SocietyConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     predators: PredatorConfig = field(default_factory=PredatorConfig)
+    reproduction: ReproductionConfig = field(default_factory=ReproductionConfig)
+    housing: HousingConfig = field(default_factory=HousingConfig)
+    agriculture: AgricultureConfig = field(default_factory=AgricultureConfig)
+    tribes: TribeConfig = field(default_factory=TribeConfig)
     mix: MixConfig = field(default_factory=MixConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
@@ -521,6 +674,10 @@ _SECTIONS: dict[str, type] = {
     "society": SocietyConfig,
     "tools": ToolsConfig,
     "predators": PredatorConfig,
+    "reproduction": ReproductionConfig,
+    "housing": HousingConfig,
+    "agriculture": AgricultureConfig,
+    "tribes": TribeConfig,
     "mix": MixConfig,
     "observation": ObservationConfig,
     "reward": RewardConfig,

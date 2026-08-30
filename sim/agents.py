@@ -53,6 +53,10 @@ SOCIETY_ACTION_NAMES: tuple[str, ...] = EXCHANGE_ACTION_NAMES + (
 # `tools` implies the whole society block is present, so `craft` is a fixed index
 # in every tool world and no earlier checkpoint's action head is disturbed.
 TOOL_ACTION_NAMES: tuple[str, ...] = SOCIETY_ACTION_NAMES + ("craft",)
+# Island 3.0 appends ONE action, and only one. Reproduction is automatic (see
+# ReproductionConfig) and expanding a house reuses `build`, so agriculture is the
+# only thing in the whole stage that an agent has to be able to *choose* to do.
+AGRICULTURE_ACTION_NAMES: tuple[str, ...] = TOOL_ACTION_NAMES + ("plant",)
 N_MOVE_ACTIONS = 8
 IDLE = 8
 GATHER = 9
@@ -68,6 +72,7 @@ WITHDRAW_FOOD = 18
 WITHDRAW_MATERIAL = 19
 RAID = 20
 CRAFT = 21
+PLANT = 22
 N_ACTIONS = len(BASE_ACTION_NAMES)
 
 # Item codes for the transfer ledger and the replay's per-tick transfer list.
@@ -76,6 +81,8 @@ ITEM_NAMES: tuple[str, ...] = ("food", "wood", "stone")
 
 
 def action_names(cfg: Config) -> tuple[str, ...]:
+    if cfg.agriculture.enabled:
+        return AGRICULTURE_ACTION_NAMES
     if cfg.tools.enabled:
         return TOOL_ACTION_NAMES
     if cfg.society.enabled:
@@ -115,10 +122,23 @@ class AgentPool:
     # one array of zeros costs nothing and keeps every world's pool one shape,
     # which is what stops the construction/exchange/society branches multiplying.
     axe: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    # Island 3.0. `born` separates "has not been born yet" from "is dead": both
+    # are `alive == False` and both must be inert, but only the second one lived,
+    # and every per-agent statistic (lifespan, deaths, the Gini) divides by the
+    # agents that lived. Always allocated, all-True and all-zero in a world
+    # without reproduction, for the same reason `axe` is: one shape of pool.
+    age: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    born: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))
 
     @property
     def n(self) -> int:
         return int(self.x.shape[0])
+
+    def adult(self, cfg: Config) -> np.ndarray:
+        """Who may do adult work. Everyone, in a world without reproduction."""
+        if not cfg.reproduction.enabled:
+            return np.ones(self.n, dtype=bool)
+        return self.age >= cfg.reproduction.maturity_ticks
 
     @staticmethod
     def create(num_agents: int, max_hunger: float) -> "AgentPool":
@@ -132,6 +152,8 @@ class AgentPool:
             alive=np.ones(num_agents, dtype=bool),
             last_action=np.full(num_agents, IDLE, dtype=np.int64),
             axe=np.zeros(num_agents, dtype=np.int64),
+            age=np.zeros(num_agents, dtype=np.int64),
+            born=np.ones(num_agents, dtype=bool),
         )
 
 
@@ -197,11 +219,63 @@ class PredatorView:
     hunting: bool
 
 
+@dataclass
+class Island3View:
+    """The slice of Island 3.0 state observations and masks read.
+
+    Same bundle-of-arrays shape as the three views above, and for the same
+    reason: agents.py never imports world.py, and a test builds one in two lines.
+    Every field is sized so a world with the relevant block off can pass zeros
+    rather than None -- branching on four more Nones inside the mask was the
+    alternative and it is how the M4 observation bug happened.
+    """
+
+    tribe: np.ndarray            # (A,) tribe index per agent
+    tribe_of_household: np.ndarray   # (H,)
+    site_extra: np.ndarray       # (S,) units delivered beyond completion
+    site_capacity: np.ndarray    # (S,) beds, base + rooms
+    household_size: np.ndarray   # (H,) living members
+    farming: np.ndarray          # (H,) has this household invented agriculture
+    fields: np.ndarray           # (H,) fields planted so far
+
+
 def neighbour_society_channels(cfg: Config) -> int:
-    """Stage-4 additions to a neighbour slot: same-household, and a grudge."""
+    """Stage-4 additions to a neighbour slot: same-household, and a grudge.
+
+    Island 3.0 adds a third: is this neighbour in my TRIBE. Same argument as
+    same-household before it -- a tribe is who you do not rob and who avenges
+    you, and an agent has no way to infer that from offsets.
+    """
+    tribe = int(cfg.tribes.enabled and cfg.tribes.observe_tribe)
     if not cfg.society.enabled:
-        return 0
-    return int(cfg.society.observe_household) + int(cfg.society.observe_grudge)
+        return tribe
+    return (int(cfg.society.observe_household) + int(cfg.society.observe_grudge)
+            + tribe)
+
+
+def reproduction_channels(cfg: Config) -> int:
+    """Island 3.0: how old am I, and am I grown."""
+    return 2 * int(cfg.reproduction.enabled and cfg.reproduction.observe_age)
+
+
+def housing_channels(cfg: Config) -> int:
+    """Island 3.0: free beds at my own house, and how far it is over capacity.
+
+    Three channels rather than one occupancy number, because they answer three
+    different questions and a single ratio clipped to [0, 1] would throw away the
+    two that drive behaviour: `beds_free` says the family is housed, `overflow`
+    says how much bigger the house needs to be, and `expandable` says whether
+    making it bigger is a thing that can be done at all (the house is finished
+    and under `max_rooms`). Without the third, an agent at a maxed-out house
+    would keep wanting a room it can never add, which is precisely the doomed
+    action the M3 mask exists to delete.
+    """
+    return 3 * int(cfg.housing.enabled and cfg.housing.observe_house)
+
+
+def agriculture_channels(cfg: Config) -> int:
+    """Island 3.0: has my household invented farming, and may it plant again."""
+    return 2 * int(cfg.agriculture.enabled and cfg.agriculture.observe_agriculture)
 
 
 def society_channels(cfg: Config) -> int:
@@ -241,6 +315,20 @@ def neighbour_channels(cfg: Config) -> int:
     return (3 + int(cfg.competition.observe_neighbour_food)
             + 2 * int(cfg.exchange.observe_neighbour_materials)
             + neighbour_society_channels(cfg))
+
+
+def berry_scale(cfg: Config) -> int:
+    """What a bush's berry count is normalised by.
+
+    A planted field holds more than a wild bush, so with agriculture on the
+    divisor is the larger of the two -- otherwise a full field reads above 1.0
+    and breaks the [-1, 1] invariant every observation test enforces. With
+    agriculture off it is `bushes.capacity` exactly, so no earlier world moves.
+    """
+    cap = max(cfg.bushes.capacity, 1)
+    if cfg.agriculture.enabled:
+        cap = max(cap, cfg.agriculture.field_capacity)
+    return cap
 
 
 def bush_channels(cfg: Config) -> int:
@@ -283,6 +371,9 @@ def observation_dim(cfg: Config) -> int:
     dim += society_channels(cfg)
     dim += tool_channels(cfg)
     dim += predator_channels(cfg)
+    dim += reproduction_channels(cfg)
+    dim += housing_channels(cfg)
+    dim += agriculture_channels(cfg)
     return dim
 
 
@@ -304,6 +395,7 @@ def action_mask(
     cfg: Config,
     construction: "ConstructionView | None" = None,
     society: "SocietyView | None" = None,
+    island3: "Island3View | None" = None,
 ) -> np.ndarray:
     """Which actions can possibly do anything, per agent. Shape ``(A, n_actions)``.
 
@@ -344,6 +436,9 @@ def action_mask(
             # world then refuses is the doomed action masking exists to delete.
             assert society is not None, "society world state missing"
             victims &= society.household[None, :] != society.household[:, None]
+        if cfg.tribes.enabled and cfg.tribes.tribe_theft_immunity:
+            assert island3 is not None, "island3 world state missing"
+            victims &= island3.tribe[None, :] != island3.tribe[:, None]
         mask[:, STEAL] = has_room & victims.any(axis=1)
 
     if cfg.construction.enabled and construction is not None:
@@ -365,18 +460,31 @@ def action_mask(
             d2 = ((construction.site_x[None, :] - pool.x[:, None]) ** 2
                   + (construction.site_z[None, :] - pool.z[:, None]) ** 2)
             near = d2 <= cc.build_radius ** 2
+            # Island 3.0: a FINISHED house still takes material, as an
+            # extension, until it has `max_rooms`. So `build` stops being an
+            # action that expires the moment the village is up, and the material
+            # economy acquires the recurring demand stage 4 needed storms for.
+            expandable = np.zeros(construction.site_x.shape[0], dtype=bool)
+            if cfg.housing.enabled:
+                assert island3 is not None, "island3 world state missing"
+                complete = ((construction.site_wood_needed == 0)
+                            & (construction.site_stone_needed == 0))
+                rooms = island3.site_extra // max(cfg.housing.expand_units, 1)
+                expandable = complete & (rooms < cfg.housing.max_rooms)
             if cc.fungible_materials:
                 # Must mirror World.step's build rule exactly: any outstanding
                 # unit takes any carried material. A mask that promised more
                 # than the rule delivers would reintroduce the doomed actions
                 # masking exists to remove.
-                outstanding = (construction.site_wood_needed
-                               + construction.site_stone_needed)[None, :] > 0
-                can = near & outstanding & ((pool.wood + pool.stone)[:, None] > 0)
+                outstanding = ((construction.site_wood_needed
+                                + construction.site_stone_needed) > 0) | expandable
+                can = near & outstanding[None, :] & ((pool.wood + pool.stone)[:, None] > 0)
                 mask[:, BUILD] = can.any(axis=1)
             else:
-                can_wood = near & (construction.site_wood_needed[None, :] > 0) & (pool.wood[:, None] > 0)
-                can_stone = near & (construction.site_stone_needed[None, :] > 0) & (pool.stone[:, None] > 0)
+                can_wood = near & ((construction.site_wood_needed[None, :] > 0)
+                                   | expandable[None, :]) & (pool.wood[:, None] > 0)
+                can_stone = near & ((construction.site_stone_needed[None, :] > 0)
+                                    | expandable[None, :]) & (pool.stone[:, None] > 0)
                 mask[:, BUILD] = (can_wood | can_stone).any(axis=1)
 
     if cfg.exchange.enabled:
@@ -454,6 +562,34 @@ def action_mask(
                           & (pool.wood >= tc.axe_wood_cost)
                           & (pool.stone >= tc.axe_stone_cost))
 
+    if cfg.agriculture.enabled:
+        # Plant: my household has invented farming, has a field slot left, I am
+        # carrying a unit to spend, and I am near my OWN house. Near home rather
+        # than anywhere, for the reason an axe is made at a site: a field you can
+        # put down while standing in someone else's berry patch is not
+        # agriculture, it is a bush dispenser.
+        assert island3 is not None and society is not None, "island3 world state missing"
+        ac = cfg.agriculture
+        mine = society.household
+        home_d2 = ((society.stock_x[mine] - pool.x) ** 2
+                   + (society.stock_z[mine] - pool.z) ** 2)
+        mask[:, PLANT] = (island3.farming[mine]
+                          & (island3.fields[mine] < ac.max_fields_per_household)
+                          & (home_d2 <= ac.plant_radius ** 2)
+                          & ((pool.wood + pool.stone) >= ac.plant_material_cost))
+
+    if cfg.reproduction.enabled:
+        # A child is a mouth before it is a pair of hands. It walks, gathers,
+        # eats and uses the family store; it does not chop, mine, build, craft,
+        # plant, steal or raid. Masked rather than merely scored, because the
+        # mask is where "what is reachable" lives and a child cannot swing an
+        # axe -- and because a scored version would be a weight we typed.
+        child = ~pool.adult(cfg)
+        if child.any():
+            for a in (CHOP, MINE, BUILD, STEAL, RAID, CRAFT, PLANT):
+                if a < n_act:
+                    mask[child, a] = False
+
     mask[~pool.alive] = False
     mask[~pool.alive, IDLE] = True
     return mask
@@ -489,6 +625,8 @@ def observation_layout(cfg: Config) -> tuple[str, ...]:
             names.append(f"neighbour{j}.same_household")
         if cfg.society.enabled and cfg.society.observe_grudge:
             names.append(f"neighbour{j}.grudge")
+        if cfg.tribes.enabled and cfg.tribes.observe_tribe:
+            names.append(f"neighbour{j}.same_tribe")
     if cfg.construction.enabled:
         cc = cfg.construction
         for j in range(cc.k_trees):
@@ -518,6 +656,14 @@ def observation_layout(cfg: Config) -> tuple[str, ...]:
         # needs the closest one, and the fixed-width rule is what keeps the
         # observation independent of how many predators a world has.
         names += ["predator.dx", "predator.dz", "predator.hunting"]
+    # --- Island 3.0, appended in block order after everything before it, so a
+    # 2.0 checkpoint carries into a 3.0 world with the new columns zeroed.
+    if cfg.reproduction.enabled and cfg.reproduction.observe_age:
+        names += ["own.age", "own.adult"]
+    if cfg.housing.enabled and cfg.housing.observe_house:
+        names += ["home.beds_free", "home.overflow", "home.expandable"]
+    if cfg.agriculture.enabled and cfg.agriculture.observe_agriculture:
+        names += ["own.farming", "home.field_room"]
     names += ["edge.room", "edge.outward_x", "edge.outward_z"]
     return tuple(names)
 
@@ -588,6 +734,7 @@ def build_observations(
     construction: "ConstructionView | None" = None,
     society: "SocietyView | None" = None,
     predators: "PredatorView | None" = None,
+    island3: "Island3View | None" = None,
 ) -> np.ndarray:
     """Egocentric fixed-size observation for every agent, shape ``(A, obs_dim)``.
 
@@ -653,7 +800,7 @@ def build_observations(
         rows = np.arange(n)
         out[:, col + 0] = np.where(ok, np.clip(bush_dx[rows, take] / scale, -1.0, 1.0), 0.0)
         out[:, col + 1] = np.where(ok, np.clip(bush_dz[rows, take] / scale, -1.0, 1.0), 0.0)
-        out[:, col + 2] = np.where(ok, bush_berries[take] / cfg.bushes.capacity, 0.0)
+        out[:, col + 2] = np.where(ok, bush_berries[take] / berry_scale(cfg), 0.0)
         if bush_ch == 4:
             out[:, col + 3] = np.where(ok, blocked[rows, take], 0.0)
         col += bush_ch
@@ -695,6 +842,11 @@ def build_observations(
             if cfg.society.observe_grudge:
                 out[:, extra] = np.where(ok, society.grudge[np.arange(n), take], 0.0)
                 extra += 1
+        if cfg.tribes.enabled and cfg.tribes.observe_tribe:
+            assert island3 is not None, "island3 world state missing"
+            same_tribe = island3.tribe[take] == island3.tribe
+            out[:, extra] = np.where(ok, same_tribe.astype(np.float32), 0.0)
+            extra += 1
         col += channels
 
     # --- Milestone 4: material nodes, shelter sites, and the clock
@@ -811,6 +963,39 @@ def build_observations(
             # off the day, and that is the same answer for all of them.
             out[:, col + 2] = float(predators.hunting)
         col += 3
+
+    # --- Island 3.0: my age, my house, my household's farming
+    rc = cfg.reproduction
+    if rc.enabled and rc.observe_age:
+        assert island3 is not None, "island3 world state missing"
+        # Age against MATURITY, not against max_age: what an agent needs to know
+        # is whether it is grown, and in a world with no old age max_age is 0 and
+        # a ratio against it is undefined. Clipped, so a long-lived adult reads 1.
+        out[:, col + 0] = np.clip(pool.age / max(rc.maturity_ticks, 1), 0.0, 1.0)
+        out[:, col + 1] = pool.adult(cfg).astype(np.float32)
+        col += 2
+    if cfg.housing.enabled and cfg.housing.observe_house:
+        assert island3 is not None and society is not None, "island3 world state missing"
+        mine_h = society.household
+        cap = np.maximum(island3.site_capacity[mine_h], 1)
+        size = island3.household_size[mine_h]
+        out[:, col + 0] = np.clip((cap - size) / cap, 0.0, 1.0)
+        out[:, col + 1] = np.clip((size - cap) / cap, 0.0, 1.0)
+        if construction is not None and construction.site_x.size:
+            h = society.stock_x.shape[0]
+            done = ((construction.site_wood_needed[:h] == 0)
+                    & (construction.site_stone_needed[:h] == 0))
+            rooms = island3.site_extra[:h] // max(cfg.housing.expand_units, 1)
+            out[:, col + 2] = (done & (rooms < cfg.housing.max_rooms))[mine_h].astype(np.float32)
+        col += 3
+    if cfg.agriculture.enabled and cfg.agriculture.observe_agriculture:
+        assert island3 is not None and society is not None, "island3 world state missing"
+        mine_h = society.household
+        out[:, col + 0] = island3.farming[mine_h].astype(np.float32)
+        room = cfg.agriculture.max_fields_per_household - island3.fields[mine_h]
+        out[:, col + 1] = np.clip(room / max(cfg.agriculture.max_fields_per_household, 1),
+                                  0.0, 1.0)
+        col += 2
 
     # --- shoreline
     r = np.sqrt(pool.x**2 + pool.z**2)

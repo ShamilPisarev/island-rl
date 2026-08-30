@@ -62,7 +62,7 @@ from .agents import IDLE, num_actions, observation_dim, observation_layout
 from .config import Config, load_config
 from .obsview import ObsView
 from .policy import ActorCritic, column_map, grow_actor_critic
-from .utility import (GOAL_NAMES, N_GOALS, N_GOALS_STAGE4, NEED_SAFETY, REST, ArbiterConfig,
+from .utility import (GOAL_NAMES, N_GOALS, N_GOALS_RUNG1, N_GOALS_STAGE4, NEED_SAFETY, REST, ArbiterConfig,
                       agent_traits, commit_budget, compute_needs,
                       goal_availability, option_interrupted)
 from .world import World
@@ -83,7 +83,9 @@ def goal_width(cfg: Config) -> int:
     are global and appended, so a narrower menu is always a PREFIX -- which is
     the only reason slicing is safe, and the reason a rung must never insert.
     """
-    return N_GOALS if cfg.tools.enabled else N_GOALS_STAGE4
+    if cfg.housing.enabled or cfg.agriculture.enabled:
+        return N_GOALS
+    return N_GOALS_RUNG1 if cfg.tools.enabled else N_GOALS_STAGE4
 
 
 def goal_mask(view: ObsView, cfg: Config, acfg: ArbiterConfig) -> np.ndarray:
