@@ -10,16 +10,19 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createPopulation } from './biped.js';
 
 // --- replay schema this build can read (see sim/replay.py) ------------------
-const SUPPORTED_SCHEMA = [1, 2, 3, 4, 5, 6];   // v2 = M4 materials/shelters/night, v3 = M5 transfers,
+const SUPPORTED_SCHEMA = [1, 2, 3, 4, 5, 6, 7]; // v2 = M4 materials/shelters/night, v3 = M5 transfers,
                                               // v4 = island2 stage 4 households/stockpiles/raids,
                                               // v5 = goals (`o`), shocks (`n`), learned-agent flags,
-                                              // v6 = predator positions (`d`)
+                                              // v6 = predator positions (`d`),
+                                              // v7 = island3 children (`adult`), fields (`f`), rooms (`h`)
 // Column order inside each tick's `a` rows. Cross-checked against the file's
 // own tick_fields on load, so a schema change cannot silently shift a column.
 const A_X = 0, A_Z = 1, A_HUNGER = 2, A_FOOD = 3, A_ALIVE = 4, A_ACTION = 5;
 const A_WOOD = 6, A_STONE = 7;                      // v2 only
+const A_ADULT = 8;                                  // v7 only
 const EXPECTED_AGENT_FIELDS = ['x', 'z', 'hunger', 'food', 'alive', 'action'];
 const EXPECTED_AGENT_FIELDS_V2 = [...EXPECTED_AGENT_FIELDS, 'wood', 'stone'];
+const EXPECTED_AGENT_FIELDS_V7 = [...EXPECTED_AGENT_FIELDS_V2, 'adult'];
 
 const GATHER_COLOR = 0x6ec46e;
 const STEAL_COLOR = 0xe0563c;
@@ -153,6 +156,8 @@ const state = {
   learnCount: 0,
   learnRings: [],     // one ring mesh per learned agent (there are ~20, not 100)
   predators: [],      // one mesh per predator (schema v6)
+  fields: [],         // { group, crop, slot, plantedAt } -- schema v7
+  island3: false,
 };
 
 function fatal(title, message) {
@@ -181,7 +186,8 @@ function validate(replay, origin) {
   // The material columns follow whether the world had construction, not the
   // schema number: a v3 (exchange) replay from a world without construction
   // carries the v1 agent columns plus per-tick transfers.
-  const expected = hasMaterials(replay) ? EXPECTED_AGENT_FIELDS_V2 : EXPECTED_AGENT_FIELDS;
+  const expected = replay.schema_version >= 7 ? EXPECTED_AGENT_FIELDS_V7
+    : hasMaterials(replay) ? EXPECTED_AGENT_FIELDS_V2 : EXPECTED_AGENT_FIELDS;
   if (!Array.isArray(fields) || fields.length !== expected.length
       || expected.some((f, i) => fields[i] !== f)) {
     throw new Error(
@@ -263,6 +269,31 @@ function buildBush(x, z) {
   return { group, foliage };
 }
 
+// A planted FIELD (schema v7). Deliberately not a bush: it is a squared-off
+// tilled patch with rows on it, so "they cleared ground and put a crop in" reads
+// from across the island. Same yield channel as a bush (`b`), so the crop's
+// height tracks the berries exactly as a bush's foliage does.
+function buildField(x, z) {
+  const group = new THREE.Group();
+  group.position.set(x, ISLAND_TOP, z);
+  const soil = new THREE.Mesh(
+    new THREE.BoxGeometry(3.4, 0.18, 3.4),
+    new THREE.MeshStandardMaterial({ color: 0x5a4630, roughness: 1, flatShading: true }),
+  );
+  soil.position.y = 0.09;
+  soil.receiveShadow = true;
+  group.add(soil);
+  const crop = new THREE.Mesh(
+    new THREE.BoxGeometry(2.9, 1.0, 2.9),
+    new THREE.MeshStandardMaterial({ color: 0x8fae3a, roughness: 0.9, flatShading: true }),
+  );
+  crop.position.y = 0.6;
+  crop.castShadow = true;
+  group.add(crop);
+  group.visible = false;   // until the tick it is planted
+  return { group, crop };
+}
+
 function buildTree(x, z) {
   const group = new THREE.Group();
   group.position.set(x, ISLAND_TOP, z);
@@ -342,7 +373,36 @@ function buildSite(x, z, shelterRadius) {
   lamp.position.y = 2.2;
   group.add(lamp);
 
-  return { group, walls, roof, halo, lamp };
+  // Extra rooms (schema v7). One little annexe per room, pre-built and hidden,
+  // arranged round the main house -- so a family that has extended four times
+  // is visibly a compound and one that never did is visibly a single hut. Built
+  // up front rather than on demand because a replay can be scrubbed backwards
+  // and meshes created mid-playback would leak.
+  const rooms = [];
+  for (let r = 0; r < 8; r++) {
+    const ang = (r / 8) * Math.PI * 2 + 0.4;
+    const annexe = new THREE.Group();
+    annexe.position.set(Math.cos(ang) * 2.9, 0, Math.sin(ang) * 2.9);
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.0, 1.05, 1.1, 7),
+      new THREE.MeshStandardMaterial({ color: 0xb08d57, roughness: 0.95, flatShading: true }),
+    );
+    body.position.y = 0.55;
+    body.castShadow = true;
+    annexe.add(body);
+    const cap = new THREE.Mesh(
+      new THREE.ConeGeometry(1.35, 0.9, 7),
+      new THREE.MeshStandardMaterial({ color: 0x7a5230, roughness: 0.9, flatShading: true }),
+    );
+    cap.position.y = 1.55;
+    cap.castShadow = true;
+    annexe.add(cap);
+    annexe.visible = false;
+    group.add(annexe);
+    rooms.push(annexe);
+  }
+
+  return { group, walls, roof, halo, lamp, rooms };
 }
 
 // A household's stockpile: a crate whose lid rises with what is in it, ringed in
@@ -421,6 +481,25 @@ function loadReplay(replay, origin) {
     worldGroup.add(built.group);
     return built;
   });
+
+  // --- schema v7: fields. Scanned out of the whole tick list up front and built
+  // hidden, rather than created on the tick they appear: a replay can be
+  // scrubbed backwards, and meshes made mid-playback would leak on every pass.
+  state.island3 = replay.schema_version >= 7;
+  state.fields = [];
+  if (state.island3) {
+    const seen = new Map();
+    for (const tk of replay.ticks) {
+      if (!Array.isArray(tk.f)) continue;
+      for (const [slot, fx, fz] of tk.f) {
+        if (seen.has(slot)) continue;
+        seen.set(slot, true);
+        const built = buildField(fx, fz);
+        worldGroup.add(built.group);
+        state.fields.push({ ...built, slot, plantedAt: tk.t });
+      }
+    }
+  }
 
   state.construction = hasMaterials(replay);
   state.exchange = replay.schema_version >= 3;
@@ -610,6 +689,10 @@ function applyTick(t) {
       action,
       pipColor: ACTION_PIP[action],
       food: alive ? a0[A_FOOD] : 0,
+      // schema v7: a child is drawn at two thirds. Not interpolated between
+      // frames -- growing up is a step, and a body that creeps upward for 200
+      // ticks would read as a rendering artefact rather than a birthday.
+      scale: state.island3 && a0[A_ADULT] === 0 ? 0.66 : 1,
       dead,
       resting: nightNow && (action === 'idle' || speed <= 1e-3),
     });
@@ -660,6 +743,11 @@ function applyTick(t) {
       const protection = wcfg.partial_shelter ? progress : (done ? 1 : 0);
       site.halo.material.opacity = night * 0.35 * protection;
       site.lamp.intensity = night * 1.4 * protection;
+      // schema v7: one annexe per room built onto this house.
+      if (site.rooms) {
+        const built = cur.h?.[k] ?? 0;
+        for (let r = 0; r < site.rooms.length; r++) site.rooms[r].visible = r < built;
+      }
     }
     applyNight(night);
   } else {
@@ -680,6 +768,23 @@ function applyTick(t) {
       pile.food.position.y = fy * 1.5;
       pile.material.scale.y = my * 3.0;
       pile.material.position.y = my * 1.5;
+    }
+  }
+
+  // --- schema v7: the crops. A field's berry count sits in `b` after every wild
+  // bush, so `wild_bushes` is the offset -- the same array the bushes above read,
+  // which is what stops a field and a bush ever disagreeing about a berry.
+  if (state.fields.length) {
+    const wild = state.replay.world?.wild_bushes ?? state.bushes.length;
+    const fcap = state.replay.world?.field_capacity || 8;
+    for (const f of state.fields) {
+      const planted = cur.t >= f.plantedAt;
+      f.group.visible = planted;
+      if (!planted) continue;
+      const v = (cur.b?.[wild + f.slot] ?? 0) / fcap;
+      f.crop.scale.set(1, 0.25 + v * 1.5, 1);
+      f.crop.position.y = 0.18 + (0.25 + v * 1.5) * 0.5;
+      f.crop.material.color.setRGB(0.42 + (1 - v) * 0.18, 0.44 + v * 0.28, 0.16);
     }
   }
 
@@ -1151,6 +1256,18 @@ function renderLegend() {
     rows.push(item('round', '#ff3b30', 'red circle around it',
                    'the reach it actually takes hunger inside; shown only at night'));
   }
+  if (state.island3) {
+    rows.push('<div class="grp">the village (schema v7)</div>');
+    rows.push(item('', 'linear-gradient(90deg,#e05a7a,#5ac8e0)', 'a SMALL agent',
+                   'a child — it walks, eats and uses the family store, but it '
+                   + 'cannot chop, build, plant, steal or raid until it grows up'));
+    rows.push(item('', '#8fae3a', 'square green patch',
+                   'a planted FIELD — a bush the household put in next to its own '
+                   + 'house; it refills far faster than a wild one'));
+    rows.push(item('', '#b08d57', 'little huts round a shelter',
+                   'rooms built onto the family house — each one sleeps more of '
+                   + 'the family, and a family with no free bed cannot have a child'));
+  }
   if (state.society) {
     rows.push('<div class="grp">the weather (schema v5)</div>');
     rows.push(item('', '#7fb3ff', 'blue flash and banner',
@@ -1180,6 +1297,21 @@ function renderSummary() {
     if (s.storms) {
       html += ` · <b>${s.storms}</b> storms (${s.shelters_damaged ?? 0} shelters hit),`
             + ` <b>${s.blight_ticks ?? 0}</b> blighted ticks`;
+    }
+  }
+  // Island 3.0 (schema v7). The population LINE first, because in a world where
+  // agents are born a final head count is not the story: 40 -> 92 -> 65 and
+  // 40 -> 65 have the same endpoint and nothing else in common.
+  if (s.births !== undefined) {
+    html += ` · <b>${s.population_final ?? '?'}</b> alive at the end of `
+          + `<b>${s.born ?? '?'}</b> ever born (<b>${s.births}</b> births)`;
+    if (s.house_expansions) html += ` · <b>${s.house_expansions}</b> rooms added`;
+    if (s.fields_planted) {
+      html += ` · <b>${s.fields_planted}</b> fields planted by `
+            + `<b>${s.farming_households ?? 0}</b> households`;
+    }
+    if (Array.isArray(s.tribe_population) && s.tribe_population.length > 1) {
+      html += ` · tribes <b>${s.tribe_population.join(' / ')}</b>`;
     }
   }
   $('summary').innerHTML = html;

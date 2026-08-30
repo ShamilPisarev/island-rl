@@ -1,14 +1,21 @@
 # The generational world: agents die of old age.
 #
-# `village.yaml` plus `max_age`, so a founder is replaced rather than
-# accumulating forever, and a tribe's population at tick 20,000 is the product
-# of who kept reproducing rather than of who happened to be spawned. That is
-# what makes "the strongest tribe" a selection result instead of a head count.
+# `village_long.yaml` plus `max_age`, so a founder is replaced rather than
+# accumulating forever, and a tribe's population late in a run is the product of
+# who kept reproducing rather than of who happened to be spawned at tick 0.
 #
-# 4000 ticks is twenty day/night cycles and twenty times `maturity_ticks`, so a
-# lifetime holds many chances to breed and the cooldown (150) is not what
-# limits a family.
-extends: village.yaml
+# IT EXTENDS `village_long`, NOT `village`, AND THAT IS A CORRECTION. Run at 200
+# slots this world goes extinct by tick 12,000 -- and the extinction is the SLOT
+# CAP, not the mortality: 40 founders and 160 births exhaust the array, after
+# which nobody can be born and `max_age` kills everybody who is left. The first
+# version of this file extended `village.yaml` and its header claimed a
+# generational world it could not host. Read the paired run against
+# `village_long.yaml` (same slots, no old age) rather than against `village`.
+#
+# 4,000 ticks is twenty day/night cycles and twenty times `maturity_ticks`, so a
+# lifetime holds many chances to breed and the cooldown (150) is not what limits
+# a family.
+extends: village_long.yaml
 
 reproduction:
   max_age: 4000

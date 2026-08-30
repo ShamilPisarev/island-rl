@@ -1,0 +1,20 @@
+# R4's REAL control, and the first one was defeated by the mechanic it was
+# controlling for.
+#
+# `village_fed.yaml` gives the island twice the food and the village invents
+# farming anyway (16.4 households against the scarce world's 14.4 -- inside
+# noise). The reason is the thing 3.0 exists to model: THE POPULATION IS AN
+# OUTCOME. Fed twice as well, the village simply breeds to 144 agents and its
+# households are crowded and hungry again. You cannot make a village un-hungry
+# by giving it more food; it grows until it is hungry.
+#
+# So the control has to stop the population outgrowing the food, and the
+# cheapest way to do that is a slot cap well below the island's carrying
+# capacity. 60 slots on an island `sim.economy` sizes at 176 sheltered means the
+# village can never crowd itself, so hunger is genuinely rare and the unlock has
+# nothing to fire on. If farming still unlocks here, the trigger is not scarcity
+# and R4's claim is dead.
+extends: village_fed.yaml
+
+world:
+  num_agents: 60

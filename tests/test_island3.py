@@ -482,3 +482,67 @@ def test_the_learned_goal_head_keeps_each_rungs_width():
     assert goal_width(load_config(ISLAND2 / "society4_axe.yaml")) == N_GOALS_RUNG1
     assert goal_width(load_config(ISLAND3 / "village.yaml")) == N_GOALS
     assert EXPAND == N_GOALS_RUNG1 and PLANT_FIELD == N_GOALS_RUNG1 + 1
+
+
+# --- the replay (schema v7) --------------------------------------------------
+
+def _record(cfg, seed=10000, ticks=None):
+    from sim.replay import ReplayRecorder
+    if ticks:
+        cfg = cfg.replace(**{"world.max_ticks": ticks})
+    world = World(cfg, seed=seed)
+    runner = make_runner(cfg, "utility", seed, ArbiterConfig(), None)
+    rec = ReplayRecorder(world, cfg, label="t", source="test", seed=seed,
+                         goal_source=runner)
+    rec.snapshot()
+    obs = world.observations()
+    while True:
+        res = world.step(runner.act(obs, world.action_mask()))
+        obs = res.obs
+        rec.snapshot()
+        if res.episode_done:
+            break
+    return rec.to_dict(), world
+
+
+def test_a_village_replay_is_strict_json(village):
+    """The bug this catches shipped for one commit: unplanted field slots are
+    parked at infinity so the engine treats them as absent, `json.dump` writes
+    the literal `Infinity`, and `JSON.parse` rejects it -- so every village
+    replay was unloadable in the browser. The header carries wild bushes only."""
+    import json
+    blob, world = _record(village, ticks=300)
+    raw = json.dumps(blob)
+    assert "Infinity" not in raw and "NaN" not in raw
+    json.loads(raw)          # a strict parser, like the viewer's
+    assert len(blob["bushes"]) == world.n_wild_bushes
+    assert len(blob["ticks"][0]["b"]) > world.n_wild_bushes
+
+
+def test_the_village_replay_says_who_is_a_child_and_how_big_the_house_is(village):
+    from sim.replay import AGENT_FIELDS_V7, SCHEMA_VERSION_ISLAND3
+    blob, _ = _record(village, ticks=300)
+    assert blob["schema_version"] == SCHEMA_VERSION_ISLAND3
+    assert blob["tick_fields"]["agent"] == AGENT_FIELDS_V7
+    assert all("h" in t for t in blob["ticks"])          # rooms, every tick
+    assert all("tribe" in a for a in blob["agents"])
+    assert "births" in blob["summary"]
+
+
+def test_a_field_is_announced_once_on_the_tick_it_is_planted(village):
+    """`f` is an event key like `k` and `g`: repeating forty positions every tick
+    for 24,000 ticks is how an 11MB replay becomes a 200MB one."""
+    blob, _ = _record(village, ticks=300)
+    seen = []
+    for t in blob["ticks"]:
+        seen += [row[0] for row in t.get("f", [])]
+    assert len(seen) == len(set(seen))
+
+
+def test_a_world_without_island3_does_not_bump_the_schema():
+    from sim.replay import SCHEMA_VERSION_PREDATOR, SCHEMA_VERSION_VIEW
+    cfg = _shrink(load_config(ISLAND2 / "society4.yaml"))
+    blob, _ = _record(cfg, ticks=60)
+    assert blob["schema_version"] == SCHEMA_VERSION_VIEW
+    pred = _shrink(load_config(ISLAND2 / "society4_predator.yaml"))
+    assert _record(pred, ticks=60)[0]["schema_version"] == SCHEMA_VERSION_PREDATOR

@@ -198,6 +198,14 @@ export function createPopulation(count, colors, opts = {}) {
       R.makeRotationX(dead * Math.PI * 0.46);
       root.multiply(T).multiply(R);
     }
+    // A child is a smaller adult (schema v7). Composed into the root, so every
+    // part, pip and carried berry scales with it and no per-part branch is
+    // needed. A village whose children are drawn the same size as its parents
+    // is a village where the whole reproduction result is invisible.
+    if (p.scale && p.scale !== 1) {
+      S.makeScale(p.scale, p.scale, p.scale);
+      root.multiply(S);
+    }
 
     const anim = ANIM[p.action];
     const resting = p.resting && !anim;

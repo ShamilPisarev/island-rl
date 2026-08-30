@@ -1,0 +1,15 @@
+# The village with room for more than one generation of slots.
+#
+# `world.num_agents` is a SLOT CAPACITY and a slot is used ONCE -- a dead agent
+# keeps its row forever, which is what makes every per-agent statistic in this
+# repo (lifespan, the Gini, who raided whom) mean something. The cost is a hard
+# generational horizon: 40 founders plus 160 births exhausts 200 slots, and after
+# that a village can only shrink whatever it does.
+#
+# That horizon is invisible at 6,000 ticks and decides the whole run at 12,000,
+# which is how `village_mortal.yaml` first measured an extinction that was an
+# array bound wearing mortality's clothes. This file exists to separate the two.
+extends: village.yaml
+
+world:
+  num_agents: 300

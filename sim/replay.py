@@ -1,5 +1,30 @@
 """Replay recording, schema, and the manifest the viewer reads.
 
+REPLAY SCHEMA v1 ... v7
+=======================
+
+v7 (Island 3.0) extends v6 and is emitted for any world with a 3.0 block on.
+Three optional per-tick fields and one new agent column, all of them things a v6
+replay could not show at all:
+
+    agent row   : `adult` -- 0 while an agent is a child. A village whose
+                  children are drawn the same size as its parents is a village
+                  where the whole reproduction result is invisible.
+    per tick    : f = [[slot, x, z], ...] -- fields PLANTED on this tick. A field
+                  is a bush that did not exist when the header was written, so
+                  the static bush list cannot carry it; the viewer accumulates.
+                  `b` already covers every slot, wild bushes first, so a field's
+                  berry count needs nothing new.
+    per tick    : h = [rooms, ...] -- rooms per site. Without it a house that
+                  has been extended four times looks exactly like one that never
+                  was, and R3 is the difference between those two pictures.
+    agent block : `tribe`, plus a `tribes` array at top level
+
+Same rule as every bump before it: the tick encoding changed, so the version
+changes. A v6 reader shown a v7 file would draw children as adults and fields as
+nothing at all -- and the second of those is a berry patch appearing from
+nowhere, which is precisely what a version check exists to prevent.
+
 REPLAY SCHEMA v1 / v2 / v3 / v4 / v5 / v6
 =========================================
 
@@ -155,13 +180,29 @@ SCHEMA_VERSION_VIEW = 5
 # v5 reader shown a v6 file would draw a world with an invisible thing killing
 # people in it -- which is exactly the failure the version check exists for.
 SCHEMA_VERSION_PREDATOR = 6
-SUPPORTED_VERSIONS = frozenset({1, 2, 3, 4, 5, 6})
+# v7 adds a per-agent `adult` column, planted fields and per-site rooms. Bumped
+# for the usual reason and one specific to this stage: a v6 reader would draw a
+# field as nothing, i.e. a berry patch that appears out of thin air.
+SCHEMA_VERSION_ISLAND3 = 7
+SUPPORTED_VERSIONS = frozenset({1, 2, 3, 4, 5, 6, 7})
 
 AGENT_FIELDS = ["x", "z", "hunger", "food", "alive", "action"]
 AGENT_FIELDS_V2 = AGENT_FIELDS + ["wood", "stone"]
+AGENT_FIELDS_V7 = AGENT_FIELDS_V2 + ["adult"]
 BUSH_FIELDS = ["berries"]
 
 MANIFEST_NAME = "index.json"
+
+
+def island3_world(cfg: Config) -> bool:
+    """Does this config have any Island 3.0 block on?
+
+    One predicate, used by the version choice, the tick encoder and the header,
+    so the three cannot drift on what a v7 file is -- the same reason
+    `goal_viable` is one function.
+    """
+    return bool(cfg.reproduction.enabled or cfg.housing.enabled
+                or cfg.agriculture.enabled or cfg.tribes.enabled)
 
 
 class ReplaySchemaError(ValueError):
@@ -212,14 +253,25 @@ class ReplayRecorder:
         self.goal_source = goal_source
         self.learn_mask = None if learn_mask is None else np.asarray(learn_mask, dtype=bool)
         self.ticks: list[dict[str, Any]] = []
+        # Which field slots have already been announced. See `snapshot`.
+        self._seen_fields: set[int] = set()
+        # WILD BUSHES ONLY. Island 3.0 parks its unplanted field slots at
+        # infinity so the engine treats them as absent, and `float('inf')` is not
+        # representable in JSON -- python writes the literal `Infinity`, which
+        # `JSON.parse` rejects outright. So a village replay was unloadable, and
+        # would have been even if it had parsed: 40 phantom bushes at the edge of
+        # the universe. Fields arrive through the per-tick `f` key instead.
+        n_wild = getattr(world, "n_wild_bushes", world.bush_x.shape[0])
         self.bushes = [
             {"x": round(float(x), 2), "z": round(float(z), 2)}
-            for x, z in zip(world.bush_x, world.bush_z)
+            for x, z in zip(world.bush_x[:n_wild], world.bush_z[:n_wild])
         ]
 
     def snapshot(self) -> None:
         pool = self.world.pool
         construction = self.cfg.construction.enabled
+        island3 = island3_world(self.cfg)
+        adult = pool.adult(self.cfg) if island3 else None
         rows = []
         for i in range(pool.n):
             row = [
@@ -232,6 +284,8 @@ class ReplayRecorder:
             ]
             if construction:
                 row += [int(pool.wood[i]), int(pool.stone[i])]
+            if island3:
+                row.append(int(adult[i]))
             rows.append(row)
         tick: dict[str, Any] = {
             "t": int(self.world.tick),
@@ -278,6 +332,24 @@ class ReplayRecorder:
                          for x, z in zip(self.world.predator_x, self.world.predator_z)]
         if self.cfg.exchange.enabled and self.ticks and self.world.last_transfers:
             tick["g"] = [[int(g), int(r), int(item)] for g, r, item in self.world.last_transfers]
+        # v7. Fields are emitted ONLY on the tick they are planted, because a
+        # field never moves afterwards and repeating forty positions every tick
+        # for 24,000 ticks is how an 11MB replay becomes a 200MB one. The viewer
+        # accumulates, which is the same contract `k` and `g` already have for
+        # events.
+        if island3:
+            n_wild = self.world.n_wild_bushes
+            active = self.world.bush_active[n_wild:]
+            new_fields = [j for j in range(active.shape[0])
+                          if active[j] and j not in self._seen_fields]
+            if new_fields:
+                for j in new_fields:
+                    self._seen_fields.add(j)
+                tick["f"] = [[int(j), round(float(self.world.bush_x[n_wild + j]), 2),
+                              round(float(self.world.bush_z[n_wild + j]), 2)]
+                             for j in new_fields]
+            if self.cfg.housing.enabled and self.world.site_x.size:
+                tick["h"] = [int(v) for v in self.world.site_rooms]
         self.ticks.append(tick)
 
     def to_dict(self) -> dict[str, Any]:
@@ -288,7 +360,9 @@ class ReplayRecorder:
         exchange = cfg.exchange.enabled
         society = cfg.society.enabled
         version = SCHEMA_VERSION
-        if society:
+        if island3_world(cfg):
+            version = SCHEMA_VERSION_ISLAND3
+        elif society:
             # A society world always carries the shock channel, whether or not a
             # shock ever fires, so it is always v5 -- the version says what the
             # reader must be able to parse, not what this particular episode
@@ -318,7 +392,9 @@ class ReplayRecorder:
             "action_names": list(action_names(cfg)),
             "agents": [{"id": i, "color": agent_color(i, n)} for i in range(n)],
             "bushes": self.bushes,
-            "tick_fields": {"agent": AGENT_FIELDS_V2 if construction else AGENT_FIELDS,
+            "tick_fields": {"agent": (AGENT_FIELDS_V7 if island3_world(cfg)
+                                      else AGENT_FIELDS_V2 if construction
+                                      else AGENT_FIELDS),
                             "bush": BUSH_FIELDS},
             "ticks": self.ticks,
             "summary": {
@@ -399,6 +475,40 @@ class ReplayRecorder:
                 for agent, flag in zip(blob["agents"], self.learn_mask):
                     agent["learn"] = bool(flag)
             blob["world"]["shock_ramp"] = sc.shock_ramp
+            if island3_world(cfg):
+                # Static for the episode, so it belongs here rather than on
+                # every tick -- the same call `households` already makes. A
+                # newborn's tribe is its household's, and a household never
+                # changes tribe, so an agent born on tick 4000 is covered by a
+                # header written at the end.
+                blob["tribes"] = [
+                    {"id": t, "color": agent_color(t * 5 + 1,
+                                                   max(cfg.tribes.num_tribes, 1))}
+                    for t in range(max(cfg.tribes.num_tribes, 1)
+                                   if cfg.tribes.enabled else 1)]
+                for agent, t, h in zip(blob["agents"], self.world.tribe,
+                                       self.world.household):
+                    agent["tribe"] = int(t)
+                    agent["household"] = int(h)
+                blob["world"].update({
+                    "num_tribes": cfg.tribes.num_tribes if cfg.tribes.enabled else 1,
+                    "housing": cfg.housing.enabled,
+                    "base_occupants": cfg.housing.base_occupants,
+                    "occupants_per_room": cfg.housing.occupants_per_room,
+                    "max_rooms": cfg.housing.max_rooms,
+                    "wild_bushes": int(self.world.n_wild_bushes),
+                    "field_capacity": cfg.agriculture.field_capacity,
+                    "maturity_ticks": cfg.reproduction.maturity_ticks,
+                })
+                blob["summary"].update({
+                    "births": stats.births,
+                    "born": stats.born,
+                    "population_final": stats.population_final,
+                    "house_expansions": stats.house_expansions,
+                    "fields_planted": stats.fields_planted,
+                    "farming_households": stats.farming_households,
+                    "tribe_population": [int(v) for v in stats.tribe_population],
+                })
             if cfg.predators.enabled:
                 pc = cfg.predators
                 blob["world"].update({
