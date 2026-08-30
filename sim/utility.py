@@ -235,6 +235,36 @@ PERSIST_GOALS[EXPAND] = True
 # exactly as `deliver` does.
 
 
+def inherit_traits(traits: np.ndarray, rng: np.random.Generator, births,
+                   cfg: Config) -> None:
+    """Give each newborn its parents' traits, mutated. In place.
+
+    GEOMETRIC mean, not arithmetic: the traits are lognormal about 1.0, so
+    averaging them arithmetically walks the whole population upward for free and
+    would look like selection when it is only algebra.
+
+    One function, used by every arbiter that holds a trait vector, for the same
+    reason `goal_viable` is one function: a learned chooser carries the scripted
+    traits as an INPUT, and two implementations of the blend would let the two
+    halves of a mixed population disagree about who the same agent is.
+
+    WHAT CAN EVOLVE HERE IS BOUNDED, and every write-up says so. A trait is a
+    multiplier on a GOAL's score, so a lineage can become keener or cooler on
+    each of the goals that already exist -- never acquire a new one, and never
+    find a new way of pursuing one. "The village evolved a strategy" would be a
+    claim about weights inside a scorer somebody wrote.
+    """
+    rc = cfg.reproduction
+    if not (rc.enabled and rc.heritable_traits) or not births:
+        return
+    width = traits.shape[1]
+    for slot, pa, pb in births:
+        if slot >= traits.shape[0]:
+            continue
+        blend = np.sqrt(traits[pa] * traits[pb])
+        traits[slot] = blend * np.exp(rng.normal(0.0, rc.trait_mutation, size=width))
+
+
 def commit_budget(acfg: ArbiterConfig, goals: np.ndarray) -> np.ndarray:
     """Ticks each freshly-decided goal is committed for.
 
@@ -1100,6 +1130,13 @@ class UtilityArbiter:
         self.cfg = cfg
         self.acfg = acfg or ArbiterConfig()
         self.traits = agent_traits(cfg.world.num_agents, seed, self.acfg)
+        # HEREDITY GETS ITS OWN STREAM, for the reason shocks and predators have
+        # theirs: mutation draws must not shift the layout, the spawn positions
+        # or a softmax draw of an otherwise identical world.
+        self._birth_rng = np.random.default_rng(seed + 40507)
+
+    def on_births(self, births, cfg: Config | None = None) -> None:
+        inherit_traits(self.traits, self._birth_rng, births, cfg or self.cfg)
 
     def choose(self, view: ObsView, mask: np.ndarray,
                rng: np.random.Generator) -> np.ndarray:
@@ -1178,10 +1215,23 @@ class OptionRunner:
     its own diagnostics.
     """
 
-    def __init__(self, arbiter, cfg: Config, seed: int = 0) -> None:
+    def __init__(self, arbiter, cfg: Config, seed: int = 0, world=None) -> None:
         self.arbiter = arbiter
         self.cfg = cfg
         self.acfg = getattr(arbiter, "acfg", ArbiterConfig())
+        # HEREDITY NEEDS A PEDIGREE, and the pedigree lives in the world: the
+        # world records who the parents were, the arbiter owns the traits. The
+        # runner is the only object that sees both, so it is where the two meet
+        # -- and a driver that forgets to hand the world over would silently give
+        # every newborn its slot's founding traits, which is the failure this
+        # raise exists to make impossible rather than subtle.
+        self.world = world
+        rc = cfg.reproduction
+        if rc.enabled and rc.heritable_traits and world is None:
+            raise ValueError(
+                "reproduction.heritable_traits is on but OptionRunner was given "
+                "no world: newborns would silently inherit nothing. Pass "
+                "world=... (sim.society.make_runner does).")
         n = cfg.world.num_agents
         self.rng = np.random.default_rng(seed)
         self.goals = np.full(n, REST, dtype=np.int64)
@@ -1202,6 +1252,16 @@ class OptionRunner:
         self.decided_safe[:] = True
 
     def act(self, obs: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        # Births from the PREVIOUS step, before anything is scored. A newborn is
+        # created inside `World.step`, so the first tick it can act on is this
+        # one -- and its traits have to be in place before its first goal is
+        # chosen, not after.
+        if self.world is not None:
+            births = getattr(self.world, "last_births", None)
+            if births:
+                on_births = getattr(self.arbiter, "on_births", None)
+                if on_births is not None:
+                    on_births(births, self.cfg)
         """One tick: keep or re-decide each agent's goal, then execute it."""
         view = ObsView(obs, self.cfg)
         needs = compute_needs(view, self.cfg)
@@ -1242,6 +1302,7 @@ class OptionRunner:
 
 
 def utility_runner(cfg: Config, seed: int = 0,
-                   acfg: ArbiterConfig | None = None) -> OptionRunner:
+                   acfg: ArbiterConfig | None = None, world=None) -> OptionRunner:
     """The stage-2 population: scripted arbiter, scripted controllers."""
-    return OptionRunner(UtilityArbiter(cfg, acfg, seed=seed), cfg, seed=seed)
+    return OptionRunner(UtilityArbiter(cfg, acfg, seed=seed), cfg, seed=seed,
+                        world=world)

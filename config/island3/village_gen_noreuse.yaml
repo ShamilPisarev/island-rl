@@ -1,0 +1,9 @@
+# S1's control: the generational village with rows that are used ONCE.
+#
+# One key. 40 founders plus 160 births exhausts 200 rows, after which nobody can
+# be born while `max_age` keeps killing -- so if the horizon really is the array,
+# this arm decays toward zero and `village_gen.yaml` does not.
+extends: village_gen.yaml
+
+reproduction:
+  reuse_slots: false

@@ -1,0 +1,45 @@
+# THE GENERATIONAL VILLAGE -- Island 3.0 stage 2, all four mechanics on.
+#
+# `village.yaml` plus old age, slot reuse, heritable traits, technology that
+# spreads by contact, and a technology with a prerequisite. It is deliberately
+# still 200 slots, the same number `village_mortal.yaml` went extinct against at
+# tick 12,000: with rows recycled, 200 is enough forever, and demonstrating that
+# is the whole of read S1.
+#
+# WHAT EACH LINE IS FOR:
+#   max_age      -- a founder is replaced rather than accumulating, so late
+#                   population is the product of who kept reproducing.
+#   reuse_slots  -- removes the generational horizon. R6 measured an extinction
+#                   that was an ARRAY BOUND; this is the fix.
+#   heritable_traits -- the only mechanic here that can produce behaviour nobody
+#                   wrote. A child's goal preferences are the geometric mean of
+#                   its parents' plus mutation, so a lineage that breeds passes
+#                   on HOW IT BEHAVES. Bounded, and every write-up says so: a
+#                   trait is a multiplier on a goal that already exists.
+#   teach_ticks  -- adoption becomes social. Invention stays hunger-driven, and
+#                   `_tech_source` records which, so "it spread" is measurable.
+#   tech         -- the granary: farming AND a full larder, and it doubles the
+#                   store. The first thing here unreachable without another.
+#
+# The teaching numbers are a guess and the config says so: 300 agent-ticks of
+# contact within 4 units. The pre-registered failure mode is that households
+# never mix enough for it to fire at all, in which case the read is "this
+# geography does not diffuse", not "diffusion does not work".
+extends: village.yaml
+
+reproduction:
+  max_age: 4000
+  # A founding generation that all dies on the same tick is not a generation,
+  # it is an event -- and it was a second, unnamed cause of R6's extinction.
+  stagger_founders: true
+  reuse_slots: true
+  reuse_delay: 50
+  heritable_traits: true
+  trait_mutation: 0.15
+
+agriculture:
+  teach_ticks: 300
+  teach_radius: 4.0
+
+tech:
+  enabled: true

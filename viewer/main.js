@@ -10,11 +10,12 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createPopulation } from './biped.js';
 
 // --- replay schema this build can read (see sim/replay.py) ------------------
-const SUPPORTED_SCHEMA = [1, 2, 3, 4, 5, 6, 7]; // v2 = M4 materials/shelters/night, v3 = M5 transfers,
+const SUPPORTED_SCHEMA = [1, 2, 3, 4, 5, 6, 7, 8]; // v2 = M4 materials/shelters/night, v3 = M5 transfers,
                                               // v4 = island2 stage 4 households/stockpiles/raids,
                                               // v5 = goals (`o`), shocks (`n`), learned-agent flags,
                                               // v6 = predator positions (`d`),
-                                              // v7 = island3 children (`adult`), fields (`f`), rooms (`h`)
+                                              // v7 = island3 children (`adult`), fields (`f`), rooms (`h`),
+                                              // v8 = reused rows (`u`), granaries (`q`)
 // Column order inside each tick's `a` rows. Cross-checked against the file's
 // own tick_fields on load, so a schema change cannot silently shift a column.
 const A_X = 0, A_Z = 1, A_HUNGER = 2, A_FOOD = 3, A_ALIVE = 4, A_ACTION = 5;
@@ -133,7 +134,7 @@ const state = {
   follow: -1,
   population: null,   // instanced biped rig (viewer/biped.js)
   agentCount: 0,
-  deathTicks: null,   // Float64Array, one entry per agent
+  aliveSpans: null,   // per agent: every stretch that row was alive
   headings: null,     // last known facing, held while an agent stands still
   agentPos: null,     // interpolated x,z pairs, for the follow camera and picking
   bushes: [],         // { mesh, base }
@@ -158,6 +159,9 @@ const state = {
   predators: [],      // one mesh per predator (schema v6)
   fields: [],         // { group, crop, slot, plantedAt } -- schema v7
   island3: false,
+  agentHousehold: null,   // live identity, rewritten by `u` (schema v8)
+  agentTribe: null,
+  reuseAt: null,
 };
 
 function fatal(title, message) {
@@ -486,6 +490,16 @@ function loadReplay(replay, origin) {
   // hidden, rather than created on the tick they appear: a replay can be
   // scrubbed backwards, and meshes made mid-playback would leak on every pass.
   state.island3 = replay.schema_version >= 7;
+  // schema v8: a ROW can hold more than one person. Household and tribe are on
+  // the agent block as the identity that row STARTED with; `u` rewrites them
+  // when the row is reused, and the hover label reads these rather than the
+  // header, so it never names a dead man's family.
+  state.agentHousehold = replay.agents.map((a) => a.household ?? 0);
+  state.agentTribe = replay.agents.map((a) => a.tribe ?? 0);
+  state.reuseAt = new Map();
+  for (const tk of replay.ticks) {
+    if (Array.isArray(tk.u)) state.reuseAt.set(tk.t, tk.u);
+  }
   state.fields = [];
   if (state.island3) {
     const seen = new Map();
@@ -601,7 +615,7 @@ function loadReplay(replay, origin) {
     replay.agents.map((a) => a.color),
   );
   worldGroup.add(state.population.group);
-  state.deathTicks = deathTicks(replay);
+  state.aliveSpans = aliveSpans(replay);
   state.agentCount = replay.agents.length;
   state.headings = new Float64Array(state.agentCount);
   state.agentPos = new Float64Array(state.agentCount * 2);
@@ -624,20 +638,43 @@ function loadReplay(replay, origin) {
 
 // Every agent's death tick in ONE pass over the replay. The old version scanned
 // all ticks once per agent, which is fine at 6 and a visible load stall at 100.
-function deathTicks(replay) {
+// Every stretch each ROW was alive, in order. One pass, and it replaces a
+// first-death-only scan for two reasons that both arrived with Island 3.0:
+//
+//   * an UNBORN row is `alive: 0` from tick 0 with a real spawn position, so the
+//     old code drew a corpse for every slot the village had not filled yet --
+//     up to 160 of them, scattered over the island, from the first frame.
+//   * a REUSED row (schema v8) goes alive -> dead -> alive, and a single death
+//     tick leaves it drawn as a corpse for the rest of the episode while it
+//     walks around.
+//
+// From the spans: before the first one the row is HIDDEN, inside one it is
+// alive, after one it is a corpse fading from that span's end.
+function aliveSpans(replay) {
   const n = replay.agents.length;
-  const out = new Float64Array(n).fill(Infinity);
-  let remaining = n;
-  for (let t = 0; t < replay.ticks.length && remaining > 0; t++) {
+  const spans = Array.from({ length: n }, () => []);
+  const wasAlive = new Uint8Array(n);
+  for (let t = 0; t < replay.ticks.length; t++) {
     const rows = replay.ticks[t].a;
     for (let i = 0; i < n; i++) {
-      if (out[i] === Infinity && rows[i][A_ALIVE] === 0) {
-        out[i] = t;
-        remaining--;
-      }
+      const alive = rows[i][A_ALIVE] === 1 ? 1 : 0;
+      if (alive && !wasAlive[i]) spans[i].push([t, Infinity]);
+      else if (!alive && wasAlive[i]) spans[i][spans[i].length - 1][1] = t;
+      wasAlive[i] = alive;
     }
   }
-  return out;
+  return spans;
+}
+
+// (hidden, deadFraction) for one row at a (fractional) tick.
+function lifeState(spans, t) {
+  if (!spans.length || t < spans[0][0]) return [true, 0];
+  let last = null;
+  for (const [a, b] of spans) {
+    if (t >= a && t < b) return [false, 0];
+    if (t >= b) last = b;
+  }
+  return [false, Math.min(Math.max((t - last) / DEATH_FADE_TICKS, 0), 1)];
 }
 
 // ---------------------------------------------------------------------------
@@ -670,7 +707,14 @@ function applyTick(t) {
 
     // Corpses settle over a few ticks and then stay put, computed from the tick
     // index rather than accumulated over frames, so scrubbing stays consistent.
-    const dead = Math.min(Math.max((t - state.deathTicks[i]) / DEATH_FADE_TICKS, 0), 1);
+    const [hiddenRow, dead] = lifeState(state.aliveSpans[i], t);
+    if (hiddenRow) {
+      // Not born yet (or not born into this row yet). Hidden, not a corpse.
+      pop.setPose(i, { hidden: true });
+      state.agentPos[i * 2] = a0[A_X];
+      state.agentPos[i * 2 + 1] = a0[A_Z];
+      continue;
+    }
 
     const dx = a1[A_X] - a0[A_X], dz = a1[A_Z] - a0[A_Z];
     const speed = Math.hypot(dx, dz);
@@ -768,6 +812,36 @@ function applyTick(t) {
       pile.food.position.y = fy * 1.5;
       pile.material.scale.y = my * 3.0;
       pile.material.position.y = my * 1.5;
+    }
+  }
+
+  // --- schema v8: rows that changed occupant. Replayed from the start up to the
+  // current tick rather than incrementally, so scrubbing backwards is correct --
+  // an incremental apply would leave a scrubbed-back agent wearing a family it
+  // will not join for another three thousand ticks.
+  if (state.reuseAt && state.reuseAt.size) {
+    for (let i = 0; i < state.agentHousehold.length; i++) {
+      state.agentHousehold[i] = state.replay.agents[i].household ?? 0;
+      state.agentTribe[i] = state.replay.agents[i].tribe ?? 0;
+    }
+    for (const [tick, rows] of state.reuseAt) {
+      if (tick > cur.t) continue;
+      for (const [slot, house, tribe] of rows) {
+        state.agentHousehold[slot] = house;
+        state.agentTribe[slot] = tribe;
+      }
+    }
+  }
+
+  // --- schema v8: a granary is a bigger crate. A technology that changes what a
+  // household can hold has to be visible, or a store that quietly keeps twice as
+  // much reads as a rendering bug.
+  if (state.stockpiles.length && Array.isArray(cur.q)) {
+    for (let k = 0; k < state.stockpiles.length; k++) {
+      const pile = state.stockpiles[k];
+      const big = cur.q[k] ? 1.35 : 1.0;
+      pile.food.scale.x = big;
+      pile.food.scale.z = big;
     }
   }
 
@@ -1094,6 +1168,16 @@ function describeAgent(i) {
         + (goal ? `${goal} · ` : '') + `${act} · hunger ${a[A_HUNGER].toFixed(0)}`
         + ` · food ${a[A_FOOD]}/${world.food_capacity}`;
   if (state.construction) s += ` · w${a[A_WOOD]} s${a[A_STONE]}`;
+  if (state.island3) {
+    // The LIVE identity, not the header's: with schema v8 a row can hold more
+    // than one person over an episode, and naming a dead man's family is worse
+    // than naming none.
+    s += ` · household ${state.agentHousehold?.[i] ?? '?'}`;
+    if ((state.replay.world?.num_tribes ?? 1) > 1) {
+      s += `, tribe ${state.agentTribe?.[i] ?? '?'}`;
+    }
+    if (a[A_ADULT] === 0) s += ' · CHILD';
+  }
   return s;
 }
 
@@ -1264,6 +1348,14 @@ function renderLegend() {
     rows.push(item('', '#8fae3a', 'square green patch',
                    'a planted FIELD — a bush the household put in next to its own '
                    + 'house; it refills far faster than a wild one'));
+    if (state.replay.schema_version >= 8) {
+      rows.push(item('', '#8fae3a', 'a bigger food crate',
+                     'that household has a GRANARY -- the second technology, '
+                     + 'which needs farming first and doubles the store'));
+      rows.push(item('', 'transparent', 'an agent can be replaced in its slot',
+                     'a row holds one person at a time: when one dies, a child '
+                     + 'can be born into it, so a village outlives its array'));
+    }
     rows.push(item('', '#b08d57', 'little huts round a shelter',
                    'rooms built onto the family house — each one sleeps more of '
                    + 'the family, and a family with no free bed cannot have a child'));
@@ -1312,6 +1404,14 @@ function renderSummary() {
     }
     if (Array.isArray(s.tribe_population) && s.tribe_population.length > 1) {
       html += ` · tribes <b>${s.tribe_population.join(' / ')}</b>`;
+    }
+    if (s.slots_reused) html += ` · <b>${s.slots_reused}</b> rows lived in twice`;
+    if (Array.isArray(s.tech_taught)) {
+      const inv = s.tech_invented || [];
+      html += ` · farming <b>${(inv[0] ?? 0)}</b> invented / <b>${s.tech_taught[0] ?? 0}</b> taught`;
+      if (s.granary_households) {
+        html += ` · granary in <b>${s.granary_households}</b> households`;
+      }
     }
   }
   $('summary').innerHTML = html;

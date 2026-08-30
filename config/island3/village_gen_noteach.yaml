@@ -1,0 +1,11 @@
+# S3's control: the generational village where technology does not travel.
+#
+# One key. Every household must invent farming (and the granary) for itself out
+# of its own hunger, exactly as stage 1 did. If adoption is as fast and as
+# complete here as with teaching on, contact is not how technology moves in this
+# geography -- which is a fact about twenty households spread over twenty berry
+# clusters, and worth knowing before anyone tunes `teach_ticks`.
+extends: village_gen.yaml
+
+agriculture:
+  teach_ticks: 0

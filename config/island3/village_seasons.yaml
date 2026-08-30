@@ -1,0 +1,34 @@
+# The village with SEASONS, and the world the granary exists for.
+#
+# `village.yaml` plus `society.shock_ramp` -- the same escalation
+# `society4_ramp.yaml` introduced at stage 4, where a shock's severity scales
+# with episode progress so blights get long and storms level settlements. The
+# ramp is the only reason a food STORE can be worth anything: a store creates no
+# berries, it bridges a gap, and a world whose worst gap is shorter than the
+# store already covers has no use for a bigger one.
+#
+# SIZED BEFORE THE RUN (rule 5), and the first sizing killed the experiment.
+# `sim.economy` divided the larder by a FOUNDING household (two agents) and
+# reported 420 ticks of cover against a 60-tick blight -- a granary could never
+# matter and read S4 would have measured noise. Against a FULL HOUSE (15, which
+# is what a household eats at for most of a long run) the same larder covers
+# 56 ticks, and with the ramp:
+#
+#   a full larder feeds a full house    56 ticks
+#   ...with a granary                  112 ticks
+#   worst blight                       120 ticks   <- neither fully bridges it
+#
+# Note what that says and what it does not. A granary does NOT make a household
+# blight-proof here; it doubles how far into one the family can eat, which is a
+# difference a long run can measure and a claim nobody has to overstate. NOTE
+# ALSO that the ramp is a demand-side change on top of a world already sized at
+# 88 sheltered carrying capacity, so this island supports FEWER people than
+# `village.yaml` -- read population against this world's own control, never
+# against the flat one.
+extends: village.yaml
+
+society:
+  shock_ramp: 1.0
+
+tech:
+  enabled: true

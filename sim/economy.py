@@ -60,6 +60,15 @@ class Economy:
     field_supply_rate: float = 0.0
     child_drain_frac: float = 1.0
     initial_agents: int = 0
+    # --- stage 2: the granary. A store is a BUFFER, not supply -- it creates no
+    # berries -- so the number that decides whether the technology is worth
+    # anything is how long a full larder feeds the household that owns it,
+    # against how long the island's worst shock lasts. Sized before the world is
+    # written (rule 5), because a granary that bridges a blight and one that does
+    # not are two different mechanics wearing one name.
+    store_ticks: float = 0.0
+    store_ticks_granary: float = 0.0
+    worst_blight: float = 0.0
 
     @property
     def ratio_sheltered(self) -> float:
@@ -109,6 +118,14 @@ class Economy:
                     f"...plus {self.field_bushes} field slots at "
                     f"{self.field_supply_rate:.2f} berries/tick if every one is "
                     f"planted (+{self.field_supply_rate / max(1.0 / max(self.ticks_per_meal, 1e-9), 1e-9):.1f} agents)")
+            if self.store_ticks_granary > 0.0:
+                lines.append(
+                    f"...a full larder feeds a FULL HOUSE {self.store_ticks:.0f} "
+                    f"ticks, {self.store_ticks_granary:.0f} with a granary, "
+                    f"against a worst blight of {self.worst_blight:.0f}"
+                    + ("  <- the granary bridges it, the bare store does not"
+                       if self.store_ticks < self.worst_blight
+                       <= self.store_ticks_granary else ""))
             if self.child_drain_frac < 1.0:
                 lines.append(
                     f"...and a child eats {self.child_drain_frac:.0%} of an adult, "
@@ -238,7 +255,35 @@ def subsistence(cfg: Config) -> Economy:
         carrying_s = supply_rate / max(eat_rate, 1e-9)
         carrying_e = supply_rate / max(eat_rate_exposed, 1e-9)
 
+    # A full larder against a household's own demand. `initial_agents` per
+    # household is the founding size, which understates a grown household -- so
+    # this is an UPPER bound on how long the store lasts, and it is the
+    # optimistic direction, which is what a sizing check wants to be honest about.
+    store_ticks = store_ticks_g = 0.0
+    worst_blight = 0.0
+    if rc.enabled and sc.enabled:
+        # AGAINST A FULL HOUSE, not a founding pair. The first version of this
+        # divided by `initial_agents / num_households` (2 here) and reported a
+        # larder that lasts 420 ticks against a 60-tick blight -- so a granary
+        # could never be worth anything and the read it was built for would have
+        # measured noise. A household grows to its house's capacity, which is
+        # what it eats at for most of a long run, and that is the denominator
+        # this figure is about.
+        hc = cfg.housing
+        full_house = (hc.base_occupants + hc.max_rooms * hc.occupants_per_room
+                      if hc.enabled else max(
+                          w.num_agents / max(sc.num_households, 1), 1.0))
+        household_eat = max(float(full_house), 1.0) * eat_rate
+        store_ticks = sc.stockpile_food_capacity / max(household_eat, 1e-9)
+        mult = cfg.tech.granary_multiplier if cfg.tech.enabled else 1
+        store_ticks_g = store_ticks * mult
+        if sc.shock_interval > 0:
+            worst_blight = sc.blight_ticks * (1.0 + sc.shock_ramp)
+
     return Economy(
+        store_ticks=store_ticks,
+        store_ticks_granary=store_ticks_g,
+        worst_blight=worst_blight,
         carrying_sheltered=carrying_s,
         carrying_exposed=carrying_e,
         field_bushes=field_bushes,

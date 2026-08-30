@@ -498,3 +498,93 @@ It does make it a genuinely different question, and it costs one training run.
 `village_fed` control (it fails for the reason above) and with
 `village_fed_capped` (it works); R5 with the geographic-quarter control; R6 at
 200 slots (extinction is the array) and at 300 (both arms slot-bound).
+
+---
+
+# Stage 2 — generations, heredity, and technology that spreads
+
+Written 2026-08-30, before implementation, in the same shape as the first stage's
+criteria. It answers queue item 3.0-1 (slot reuse) and adds the three mechanics
+that turn a village that *lasts* into one that can *change*.
+
+## Why these four and not more
+
+R6 left this stage with one hard blocker and one soft one. The hard blocker is
+the array: a slot is used once, so no village here has ever run past its
+founders' great-grandchildren. The soft one is that **nothing in Island 3.0
+changes over a run except the numbers**. Households invent farming, build rooms,
+raid each other — and a household in generation four behaves exactly as its
+founders did, because its traits were drawn at reset and its technology arrives
+by a private clock. There is no channel through which anything can be inherited,
+taught, or selected for, so there is nothing for a long run to be long *for*.
+
+1. **Slot reuse** removes the horizon. A dead agent's row is recycled, with
+   per-LIFE bookkeeping so no statistic silently sums two lives.
+2. **Heritable traits** give selection something to act on. A child's arbiter
+   trait vector is the geometric mean of its parents' with lognormal mutation,
+   so a household that breeds passes on how it behaves. This is the one mechanic
+   here that can produce behaviour nobody wrote: **the population's mean
+   preferences at tick 20,000 are an outcome, not a config value.**
+3. **Technology spreads by contact.** A household adjacent to one that farms
+   learns to farm. Invention stays hunger-driven; adoption becomes social, which
+   is how technology actually moves, and it makes the tech front a thing you can
+   watch cross the island.
+4. **A technology with a prerequisite.** The granary needs farming *and* a full
+   larder, and doubles the household's food store. It exists to make the ladder a
+   ladder: the first thing in this project that cannot be reached at all until
+   something else has been.
+
+## The honest costs, stated before the run
+
+* **Selection acts on the arbiter's TRAIT VECTOR, not on its behaviour rules.**
+  A trait is a multiplier on a goal's score. So what can evolve is *how much a
+  lineage wants* each of the 18 goals — never a new goal, never a new way of
+  pursuing one. "The village evolved a strategy" would be a claim about
+  weightings inside a scorer somebody wrote, and every write-up has to say so.
+* **Both new unlock rules are still authored**, exactly as farming's was. What
+  the controls can establish is whether contact spreads a technology *faster than
+  independent invention would*, and whether a prerequisite actually gates.
+* **A reused row is a different person in the same slot.** Per-agent counters
+  that mean "this life" are reset (age, lifespan, the grudge row and column);
+  ones that mean "this row's contribution to the episode" are not (berries,
+  builds). The replay says when a row changed occupant. Anything that reads a
+  per-agent array across a reuse boundary without checking is wrong, and the
+  test suite pins the ones that exist.
+
+## Pre-registered acceptance criteria
+
+**Correctness**
+
+* **C1** — the five 2.0 checksums AND six new Island 3.0 checksums (taken from
+  the previous commit) reproduce exactly with every stage-2 block off.
+* **C2** — full suite green, new tests named after what they protect.
+* **C3** — the granary changes a household's food capacity, so `sim.economy` is
+  told about it before any world is sized (rule 5).
+
+**Behaviour** — each paired on the same seed block, one config key apart.
+
+* **S1 — slot reuse removes the generational horizon.** `village_mortal` with
+  reuse against the same world without it, 20,000 ticks. Prediction: the no-reuse
+  arm reaches `born == num_agents` and decays toward zero; the reuse arm sustains
+  a population near the carrying capacity. *Failure mode:* if the reuse arm also
+  decays, the horizon was never the array and R6's diagnosis was wrong.
+* **S2 — heredity produces selection.** Heritable traits against a control where
+  a newborn gets a fresh draw from the founding distribution. Reads: the
+  population's mean trait per goal at the end against 1.0 (the founding median);
+  whether the DIRECTION of the largest drifts is consistent across seeds; and
+  population/lifespan. *Failure mode:* drift that is large but seed-inconsistent
+  is drift, not selection, and must be reported as such.
+* **S3 — technology spreads by contact.** Teaching on against off. Reads: how
+  many households acquired farming by being TAUGHT against by INVENTING; ticks to
+  full adoption. *Failure mode:* if adoption is already complete before teaching
+  can act, the world is too hungry to test diffusion — read the invention count
+  first.
+* **S4 — a prerequisite gates.** Granaries appear only in farming households (by
+  construction, so the real reads are *when* and *how many*), and granary
+  households hold more food and produce more children than their neighbours on
+  the same island.
+* **S5 — the payoff read: do tribes differentiate across generations?** With
+  reuse and mortality over 20,000 ticks, tribe population share against the
+  geographic-quarter control that killed the first version of this claim. *This
+  is the question the whole stage exists for*, and the first-stage answer
+  (+0.04 ± 0.03, i.e. nothing) is the number to beat.

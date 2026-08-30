@@ -125,7 +125,13 @@ class LearnedArbiter:
         self.traits = agent_traits(cfg.world.num_agents, seed,
                                    self.acfg)[:, :goal_width(cfg)]
         self.deterministic = deterministic
+        self._birth_rng = np.random.default_rng(seed + 40507)
         torch.manual_seed(seed)
+
+    def on_births(self, births, cfg=None) -> None:
+        """Heredity, through the one shared blend. See `utility.inherit_traits`."""
+        from .utility import inherit_traits
+        inherit_traits(self.traits, self._birth_rng, births, cfg or self.cfg)
 
     def _inputs(self, view: ObsView) -> torch.Tensor:
         return torch.as_tensor(
@@ -156,6 +162,19 @@ class MixedArbiter:
         self.learn_mask = np.asarray(learn_mask, dtype=bool)
         self.acfg = scripted.acfg
 
+    def on_births(self, births, cfg=None) -> None:
+        """Forward heredity to whichever sub-chooser owns traits.
+
+        A learned arbiter carries the scripted trait vector as an INPUT, so a
+        newborn's traits have to reach both halves or the two would disagree
+        about who the same agent is. Forwarded rather than duplicated, so there
+        is one implementation of the geometric blend.
+        """
+        for sub in (self.scripted, self.learned):
+            hook = getattr(sub, "on_births", None)
+            if hook is not None:
+                hook(births, cfg)
+
     def choose(self, view: ObsView, mask: np.ndarray,
                rng: np.random.Generator) -> np.ndarray:
         g = self.scripted.choose(view, mask, rng)
@@ -176,6 +195,12 @@ class RandomGoalArbiter:
         self.cfg = cfg
         self.acfg = acfg or ArbiterConfig()
         self.traits = agent_traits(cfg.world.num_agents, seed, self.acfg)
+        self._birth_rng = np.random.default_rng(seed + 40507)
+
+    def on_births(self, births, cfg=None) -> None:
+        """Heredity, through the one shared blend. See `utility.inherit_traits`."""
+        from .utility import inherit_traits
+        inherit_traits(self.traits, self._birth_rng, births, cfg or self.cfg)
 
     def choose(self, view: ObsView, mask: np.ndarray,
                rng: np.random.Generator) -> np.ndarray:

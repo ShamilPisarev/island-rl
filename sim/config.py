@@ -407,6 +407,48 @@ class ReproductionConfig:
     max_age: int = 0                # 0 = nobody dies of old age
     observe_age: bool = True
 
+    # --- stage 2: the generational horizon, and heredity.
+    #
+    # A SLOT IS USED ONCE unless this is on, and that is a deliberate contract
+    # rather than an oversight: a dead agent keeps its row forever, which is what
+    # makes every per-agent statistic in this project mean something. The cost is
+    # a hard ceiling on how many LIVES an episode can hold -- 40 founders plus 160
+    # births exhausts 200 rows -- and R6 measured a village going extinct against
+    # that ceiling and nearly reported it as mortality.
+    #
+    # With reuse on, a birth may take the row of an agent that died at least
+    # `reuse_delay` ticks ago (oldest death first, so the choice is
+    # deterministic). Per-LIFE bookkeeping moves into a ledger: `alive_ticks` is
+    # pushed to it and zeroed, `age` resets, and the grudge matrix's ROW AND
+    # COLUMN are cleared, because a new person is owed nothing and owes nothing.
+    # Counters that mean "this row's contribution to the episode" -- berries,
+    # builds, steals -- are not reset, because they are population totals.
+    # EVERY FOUNDER IS THE SAME AGE unless this is on, and with `max_age` that
+    # means the entire first generation dies on the SAME TICK -- a synchronised
+    # die-off that a real population never has, and a second cause of R6's
+    # extinction that nobody named at the time. Staggering spreads the founding
+    # ages evenly over [maturity, max_age), deterministically and without
+    # touching any rng stream. Off by default, so every stage-1 world (R6
+    # included) reproduces exactly, and it does nothing at all when `max_age` is
+    # 0, because then nobody dies of age and a founder's age never matters.
+    stagger_founders: bool = False
+    reuse_slots: bool = False
+    # A row stays a corpse for this long before anyone can be born into it. Not
+    # cosmetic: the replay draws a corpse folding forward over several ticks, and
+    # a row that flips straight back to a walking newborn reads as a resurrection.
+    reuse_delay: int = 50
+    # A child's arbiter traits are the GEOMETRIC mean of its parents' times a
+    # lognormal mutation -- geometric because the traits are lognormal about 1.0,
+    # so the arithmetic mean would drift the population upward for free.
+    #
+    # This is the one mechanic in the stage that can produce behaviour nobody
+    # wrote. What it can produce is bounded and every write-up says so: a trait is
+    # a multiplier on a GOAL's score, so what evolves is how much a lineage wants
+    # each of the goals that already exist -- never a new goal and never a new way
+    # of pursuing one.
+    heritable_traits: bool = False
+    trait_mutation: float = 0.15
+
 
 @dataclass(frozen=True)
 class HousingConfig:
@@ -472,6 +514,52 @@ class AgricultureConfig:
     field_regrow_ticks: int = 25       # much faster than a wild bush
     field_initial: int = 0             # a new field starts empty and has to grow
     observe_agriculture: bool = True
+
+    # --- stage 2: technology spreads by CONTACT. A household that lacks a tech
+    # accumulates one tick of learning for every tick one of its living members
+    # stands within `teach_radius` of a member of a household that has it; at
+    # `teach_ticks` it adopts. 0 disables diffusion entirely, which is stage 1
+    # and is bit-identical.
+    #
+    # Invention stays hunger-driven and adoption becomes social, which is how
+    # technology actually moves and is also the only version that can be told
+    # apart from invention in the data: `taught` and `invented` are counted
+    # separately, so "it spread" is a measurement rather than a story.
+    teach_ticks: int = 0
+    teach_radius: float = 4.0
+
+
+@dataclass(frozen=True)
+class TechConfig:
+    """Island 3.0 stage 2: a technology that needs another technology first.
+
+    The granary. It requires FARMING and a larder that has been full for
+    `full_ticks` household-ticks, and it doubles that household's food store.
+    Off by default, so every world before it is bit-identical.
+
+    WHY A PREREQUISITE IS THE POINT. Every technology in this project so far --
+    the axe, farming -- is reachable from a standing start: gather two materials,
+    or go hungry. A granary cannot be reached at all until something else has
+    been, which is the first time the ladder is a ladder rather than a list. It
+    is also the realistic shape: storage is what a surplus is FOR, and a surplus
+    is what farming makes.
+
+    IT CHANGES A HOUSEHOLD'S FOOD CAPACITY, so it is a supply-side change to the
+    thing `sim.economy` sizes, and the tool is told about it before any world is
+    written (rule 5). Note what it does NOT do: it creates no berries. A granary
+    lets a household hold a bigger buffer across a blight, which is worth
+    something exactly when the seasons are hard and nothing at all when they are
+    not -- a prediction the ramp world can check.
+
+    It spreads by the same teaching rule farming does (`agriculture.teach_*`),
+    because a technology whose diffusion rule differed from its neighbour's would
+    make the two incomparable.
+    """
+
+    enabled: bool = False
+    granary_full_ticks: int = 200     # household-ticks with a full larder
+    granary_multiplier: int = 2       # stockpile_food_capacity x this
+    observe_tech: bool = True         # own.granary
 
 
 @dataclass(frozen=True)
@@ -616,6 +704,7 @@ class Config:
     reproduction: ReproductionConfig = field(default_factory=ReproductionConfig)
     housing: HousingConfig = field(default_factory=HousingConfig)
     agriculture: AgricultureConfig = field(default_factory=AgricultureConfig)
+    tech: TechConfig = field(default_factory=TechConfig)
     tribes: TribeConfig = field(default_factory=TribeConfig)
     mix: MixConfig = field(default_factory=MixConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
@@ -677,6 +766,7 @@ _SECTIONS: dict[str, type] = {
     "reproduction": ReproductionConfig,
     "housing": HousingConfig,
     "agriculture": AgricultureConfig,
+    "tech": TechConfig,
     "tribes": TribeConfig,
     "mix": MixConfig,
     "observation": ObservationConfig,

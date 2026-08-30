@@ -1,0 +1,13 @@
+# S2's control: the generational village where nothing is inherited.
+#
+# One key. A newborn keeps whatever traits its ROW was dealt at reset -- a fresh
+# draw from the founding distribution, uncorrelated with its parents -- so the
+# population mean cannot drift under selection however hard the island presses.
+# Everything else, mutation included, is identical.
+#
+# Read the two together: drift in `village_gen` that also appears here is not
+# selection, it is the sampling noise of a population turning over.
+extends: village_gen.yaml
+
+reproduction:
+  heritable_traits: false

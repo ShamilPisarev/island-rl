@@ -1,5 +1,23 @@
 """Replay recording, schema, and the manifest the viewer reads.
 
+REPLAY SCHEMA v1 ... v8
+=======================
+
+v8 (Island 3.0 stage 2) extends v7 and is emitted for any world with slot reuse
+or the second technology on. Two optional per-tick fields:
+
+    per tick    : u = [[slot, household, tribe], ...] -- rows whose OCCUPANT
+                  changed this tick. A reused row goes alive -> dead -> alive,
+                  and without this the viewer has no way to know that the agent
+                  now walking is a different person from the one that died
+                  there; it would also keep drawing the corpse.
+    per tick    : q = [granary, ...] -- one flag per household. A technology
+                  that changes what a household can hold has to be visible, or a
+                  store that quietly holds twice as much looks like a bug.
+
+Same rule as every bump before it: the tick encoding changed, so the version
+changes.
+
 REPLAY SCHEMA v1 ... v7
 =======================
 
@@ -184,7 +202,11 @@ SCHEMA_VERSION_PREDATOR = 6
 # for the usual reason and one specific to this stage: a v6 reader would draw a
 # field as nothing, i.e. a berry patch that appears out of thin air.
 SCHEMA_VERSION_ISLAND3 = 7
-SUPPORTED_VERSIONS = frozenset({1, 2, 3, 4, 5, 6, 7})
+# v8 adds reuse events and per-household granaries. Bumped rather than folded
+# into v7 because a v7 reader shown a v8 file would draw a village of corpses
+# that walk.
+SCHEMA_VERSION_GENERATIONS = 8
+SUPPORTED_VERSIONS = frozenset({1, 2, 3, 4, 5, 6, 7, 8})
 
 AGENT_FIELDS = ["x", "z", "hunger", "food", "alive", "action"]
 AGENT_FIELDS_V2 = AGENT_FIELDS + ["wood", "stone"]
@@ -203,6 +225,11 @@ def island3_world(cfg: Config) -> bool:
     """
     return bool(cfg.reproduction.enabled or cfg.housing.enabled
                 or cfg.agriculture.enabled or cfg.tribes.enabled)
+
+
+def generations_world(cfg: Config) -> bool:
+    """Does this config recycle rows or hold the second technology?"""
+    return bool(cfg.reproduction.reuse_slots or cfg.tech.enabled)
 
 
 class ReplaySchemaError(ValueError):
@@ -255,6 +282,10 @@ class ReplayRecorder:
         self.ticks: list[dict[str, Any]] = []
         # Which field slots have already been announced. See `snapshot`.
         self._seen_fields: set[int] = set()
+        # Rows that have held an occupant. A birth into one of these is a REUSE,
+        # which the viewer has to be told about; a birth into a fresh row is not.
+        self._occupied: set[int] = set(
+            int(i) for i in np.flatnonzero(world.pool.born))
         # WILD BUSHES ONLY. Island 3.0 parks its unplanted field slots at
         # infinity so the engine treats them as absent, and `float('inf')` is not
         # representable in JSON -- python writes the literal `Infinity`, which
@@ -350,6 +381,23 @@ class ReplayRecorder:
                              for j in new_fields]
             if self.cfg.housing.enabled and self.world.site_x.size:
                 tick["h"] = [int(v) for v in self.world.site_rooms]
+        # v8. `u` is an event key like `k`, `g` and `f`: a row changes occupant
+        # rarely, so repeating an identity table every tick would be pure waste.
+        if generations_world(self.cfg):
+            if self.ticks and self.world.last_births:
+                # A row is REBORN when it had an occupant before. The first birth
+                # into a never-used row is an ordinary birth and the `alive`
+                # column already says so.
+                rows_u = [[int(slot), int(self.world.household[slot]),
+                           int(self.world.tribe[slot])]
+                          for slot, _pa, _pb in self.world.last_births
+                          if int(slot) in self._occupied]
+                for slot, _pa, _pb in self.world.last_births:
+                    self._occupied.add(int(slot))
+                if rows_u:
+                    tick["u"] = rows_u
+            if self.cfg.tech.enabled:
+                tick["q"] = [int(v) for v in self.world.household_granary]
         self.ticks.append(tick)
 
     def to_dict(self) -> dict[str, Any]:
@@ -360,7 +408,9 @@ class ReplayRecorder:
         exchange = cfg.exchange.enabled
         society = cfg.society.enabled
         version = SCHEMA_VERSION
-        if island3_world(cfg):
+        if generations_world(cfg):
+            version = SCHEMA_VERSION_GENERATIONS
+        elif island3_world(cfg):
             version = SCHEMA_VERSION_ISLAND3
         elif society:
             # A society world always carries the shock channel, whether or not a
@@ -500,7 +550,13 @@ class ReplayRecorder:
                     "field_capacity": cfg.agriculture.field_capacity,
                     "maturity_ticks": cfg.reproduction.maturity_ticks,
                 })
+                blob["world"]["granary_multiplier"] = (
+                    cfg.tech.granary_multiplier if cfg.tech.enabled else 1)
                 blob["summary"].update({
+                    "slots_reused": stats.slots_reused,
+                    "granary_households": stats.granary_households,
+                    "tech_invented": [int(v) for v in stats.tech_invented],
+                    "tech_taught": [int(v) for v in stats.tech_taught],
                     "births": stats.births,
                     "born": stats.born,
                     "population_final": stats.population_final,

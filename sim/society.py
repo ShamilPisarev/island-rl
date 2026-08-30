@@ -30,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .agents import action_names, night_phase, num_actions
+from .agents import TECH_NAMES, action_names, night_phase, num_actions
 from .config import Config, load_config
 from .economy import subsistence
 from .replay import ReplayRecorder
@@ -127,6 +127,16 @@ class SocietyReport:
     raids_cross: list[int] = field(default_factory=list)
     raids_within: list[int] = field(default_factory=list)
     births_by_household: list[np.ndarray] = field(default_factory=list)
+    # --- stage 2
+    slots_reused: list[int] = field(default_factory=list)
+    tech_invented: list[np.ndarray] = field(default_factory=list)
+    tech_taught: list[np.ndarray] = field(default_factory=list)
+    granary_households: list[int] = field(default_factory=list)
+    # Mean arbiter trait per goal over the agents ALIVE at the end, against the
+    # founding mean. The only place selection can show up: a trait is a
+    # multiplier on a goal, so a lineage that breeds moves this vector.
+    trait_final: list[np.ndarray] = field(default_factory=list)
+    trait_founding: list[np.ndarray] = field(default_factory=list)
 
 
 def gini(values: np.ndarray) -> float:
@@ -238,7 +248,8 @@ def _warn_option_mismatch(arb, checkpoint: str) -> None:
 def make_runner(cfg: Config, policy: str, seed: int,
                 acfg: ArbiterConfig | None = None,
                 checkpoint: str | None = None,
-                learn_agents: int | None = None) -> "OptionRunner | None":
+                learn_agents: int | None = None,
+                world=None) -> "OptionRunner | None":
     """The arbiter zoo, one place. `None` means raw random actions (the floor).
 
     Every non-random entry is an `OptionRunner` over the SAME controllers and the
@@ -250,10 +261,11 @@ def make_runner(cfg: Config, policy: str, seed: int,
     if policy == "random":
         return None
     if policy == "utility":
-        return utility_runner(cfg, seed=seed, acfg=acfg)
+        return utility_runner(cfg, seed=seed, acfg=acfg, world=world)
     if policy == "randomgoal":
         from .arbiter import RandomGoalArbiter
-        return OptionRunner(RandomGoalArbiter(cfg, acfg, seed=seed), cfg, seed=seed)
+        return OptionRunner(RandomGoalArbiter(cfg, acfg, seed=seed), cfg,
+                            seed=seed, world=world)
     if policy == "learned":
         from .arbiter import load_arbiter
         if not checkpoint:
@@ -261,7 +273,7 @@ def make_runner(cfg: Config, policy: str, seed: int,
         arb = load_arbiter(checkpoint, cfg)
         arb.acfg = acfg or arb.acfg
         _warn_option_mismatch(arb, checkpoint)
-        return OptionRunner(arb, cfg, seed=seed)
+        return OptionRunner(arb, cfg, seed=seed, world=world)
     if policy == "mixed":
         from .arbiter import MixedArbiter, load_arbiter
         if not checkpoint:
@@ -277,7 +289,8 @@ def make_runner(cfg: Config, policy: str, seed: int,
         learn_mask = np.zeros(cfg.world.num_agents, dtype=bool)
         learn_mask[np.asarray(ids, dtype=np.int64)] = True
         scripted = UtilityArbiter(cfg, acfg or arb.acfg, seed=seed)
-        return OptionRunner(MixedArbiter(scripted, arb, learn_mask), cfg, seed=seed)
+        return OptionRunner(MixedArbiter(scripted, arb, learn_mask), cfg,
+                            seed=seed, world=world)
     if policy == "mixedrandom":
         # The mixed experiment's own floor: the same scripted 80 carrying a
         # RANDOM-goal minority in the same slots. If this minority already
@@ -293,7 +306,8 @@ def make_runner(cfg: Config, policy: str, seed: int,
         learn_mask[:n_learn] = True
         scripted = UtilityArbiter(cfg, acfg, seed=seed)
         rand = RandomGoalArbiter(cfg, acfg, seed=seed)
-        return OptionRunner(MixedArbiter(scripted, rand, learn_mask), cfg, seed=seed)
+        return OptionRunner(MixedArbiter(scripted, rand, learn_mask), cfg,
+                            seed=seed, world=world)
     raise ValueError(f"unknown arbiter {policy!r}")
 
 
@@ -314,7 +328,13 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
             # fall by half and the wood, the shelters and the lifespan do not
             # move (design doc section 12).
             world.pool.axe[:] = 1
-        runner = make_runner(cfg, policy, seed + e, acfg, checkpoint, learn_agents)
+        runner = make_runner(cfg, policy, seed + e, acfg, checkpoint, learn_agents,
+                             world=world)
+        # A COPY, taken before a single birth: `traits` is mutated in place by
+        # heredity, so reading "the founding distribution" off it at the end
+        # would read the evolved one and report no drift, ever.
+        _t0 = getattr(getattr(runner, "arbiter", None), "traits", None)
+        founding_traits = None if _t0 is None else _t0.copy()
         rng = np.random.default_rng(seed + e + 99991)
         learn_mask = (getattr(getattr(runner, "arbiter", None), "learn_mask", None)
                       if runner is not None else None)
@@ -432,6 +452,21 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
             rep.raids_cross.append(stats.raids_cross_tribe)
             rep.raids_within.append(stats.raids_within_tribe)
             rep.births_by_household.append(stats.births_by_household.astype(np.float64))
+            rep.slots_reused.append(stats.slots_reused)
+            rep.tech_invented.append(stats.tech_invented.astype(np.float64))
+            rep.tech_taught.append(stats.tech_taught.astype(np.float64))
+            rep.granary_households.append(stats.granary_households)
+            traits = getattr(getattr(runner, "arbiter", None), "traits", None)
+            if traits is not None and world.pool.alive.any():
+                # THE LIVING ONLY, against the FOUNDERS ONLY. Averaging the whole
+                # array would mix in rows nobody ever occupied and rows whose
+                # occupant died twenty thousand ticks ago -- and selection is a
+                # statement about who is here now, compared with who started.
+                rep.trait_final.append(traits[world.pool.alive].mean(axis=0))
+                start = (cfg.reproduction.initial_agents
+                         if (cfg.reproduction.enabled and cfg.reproduction.initial_agents)
+                         else cfg.world.num_agents)
+                rep.trait_founding.append(founding_traits[:start].mean(axis=0))
         if cfg.predators.enabled:
             rep.attacks.append(stats.attacks)
             rep.hunger_lost.append(stats.hunger_lost_to_predators)
@@ -683,6 +718,33 @@ def _island3_section(cfg: Config, rep: SocietyReport) -> str:
             f"({100.0 * np.mean(rep.field_berries) / max(np.mean(rep.berries), 1e-9):.1f}%)",
         ]
 
+    # --- stage 2: generations, heredity, technology
+    if rep.slots_reused and max(rep.slots_reused) > 0:
+        out.append(f"generations       {np.mean(rep.slots_reused):.0f} rows lived in "
+                   f"twice or more (the array is no longer the ceiling)")
+    if rep.tech_invented:
+        inv = np.mean(np.stack(rep.tech_invented), axis=0)
+        tau = np.mean(np.stack(rep.tech_taught), axis=0)
+        n_house = max(cfg.society.num_households, 1)
+        for k, name in enumerate(TECH_NAMES):
+            if inv[k] + tau[k] == 0:
+                continue
+            out.append(f"tech: {name:<12} {inv[k] + tau[k]:.1f} of {n_house} households"
+                       f"   ({inv[k]:.1f} INVENTED it, {tau[k]:.1f} were TAUGHT)")
+    if rep.trait_final:
+        # The drift, largest first. This is the only place behaviour nobody
+        # wrote can show up -- and the control is the founding mean, not 1.0,
+        # because a finite draw of 40 founders is not centred on 1.0 either.
+        fin = np.mean(np.stack(rep.trait_final), axis=0)
+        f0 = np.mean(np.stack(rep.trait_founding), axis=0)
+        drift = (fin - f0) / np.maximum(f0, 1e-9)
+        order = np.argsort(-np.abs(drift))[:5]
+        moved = "  ".join(f"{GOAL_NAMES[g]} {100 * drift[g]:+.0f}%" for g in order)
+        out.append(f"heredity          trait drift vs the founders: {moved}")
+        out.append("                  (a trait is a MULTIPLIER on a goal that "
+                   "already exists -- what evolves is how much a lineage wants "
+                   "each one, never a new one)")
+
     if tc.enabled and rep.tribe_population:
         pop = np.mean(np.stack(rep.tribe_population), axis=0)
         ever = np.mean(np.stack(rep.tribe_ever), axis=0)
@@ -880,7 +942,8 @@ def record_replay(cfg: Config, seed: int, path: str, label: str,
                   learn_agents: int | None = None) -> str:
     """One episode, written as a replay the viewer can load."""
     world = World(cfg, seed=seed)
-    runner = make_runner(cfg, policy, seed, acfg, checkpoint, learn_agents)
+    runner = make_runner(cfg, policy, seed, acfg, checkpoint, learn_agents,
+                         world=world)
     assert runner is not None, "record_replay drives an arbiter, not raw random"
     # The runner IS the goal source (schema v5), and in a mixed population its
     # arbiter knows which slots it is driving. Read off the arbiter rather than

@@ -36,6 +36,11 @@ from .agents import (
     ITEM_STONE,
     ITEM_WOOD,
     MINE,
+    N_TECHS,
+    TECH_FARMING,
+    TECH_GRANARY,
+    TECH_INVENTED,
+    TECH_TAUGHT,
     MOVE_VECTORS,
     N_MOVE_ACTIONS,
     PLANT,
@@ -172,6 +177,15 @@ class EpisodeStats:
     tribe_ever: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     raids_cross_tribe: int = 0
     raids_within_tribe: int = 0
+    # --- Island 3.0 stage 2
+    slots_reused: int = 0
+    # Per tech: how many households INVENTED it against how many were TAUGHT it.
+    # Two arrays rather than one has-it count, because telling invention from
+    # adoption is the whole of the diffusion read and a single flag cannot.
+    tech_invented: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    tech_taught: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    granary_households: int = 0
+    stock_food_capacity: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -329,6 +343,15 @@ class World:
             # begins with a generation of infants and no parents is not a
             # village, and it took a masked `plant` to notice.
             self.pool.age[:start] = rc.maturity_ticks
+            if rc.stagger_founders and rc.max_age > 0 and start > 1:
+                # Spread evenly over [maturity, max_age), so the founding
+                # generation dies out gradually instead of all at once. Linear
+                # and deterministic: drawing it would consume the layout stream
+                # and shift every later event in the world.
+                span = max(rc.max_age - rc.maturity_ticks, 1)
+                self.pool.age[:start] = (
+                    rc.maturity_ticks
+                    + (np.arange(start) * span) // start).astype(np.int64)
 
         cc = cfg.construction
         if cc.enabled:
@@ -461,6 +484,14 @@ class World:
         self.household_farming = np.zeros(n_house, dtype=bool)
         self.household_hunger_ticks = np.zeros(n_house, dtype=np.int64)
         self.household_fields = np.zeros(n_house, dtype=np.int64)
+        # --- stage 2: a second technology, and how a technology TRAVELS.
+        # `_tech_source` is 0 nobody / 1 invented / 2 taught, per household per
+        # tech, which is the only way "it spread" can be a measurement rather
+        # than a story -- the alternative is one `has_it` flag and a guess.
+        self.household_granary = np.zeros(n_house, dtype=bool)
+        self.household_full_ticks = np.zeros(n_house, dtype=np.int64)
+        self.teach_progress = np.zeros((n_house, N_TECHS), dtype=np.int64)
+        self._tech_source = np.zeros((n_house, N_TECHS), dtype=np.int8)
         self.household_birth_tick = np.full(n_house, -10**9, dtype=np.int64)
         self._births = 0
         self._births_by_household = np.zeros(n_house, dtype=np.int64)
@@ -473,6 +504,14 @@ class World:
         self._wood_regrown = 0
         self._stone_regrown = 0
         self._planted = np.zeros(cfg.world.num_agents, dtype=np.int64)
+        # --- stage 2: the life ledger. `alive_ticks` is per ROW, and a reused row
+        # holds two lives, so a completed life's length is pushed here and the
+        # row's counter is zeroed. Every per-agent statistic reads
+        # `ledger + the living`, never the raw array.
+        self._life_ticks: list[int] = []
+        self._death_tick = np.full(cfg.world.num_agents, -1, dtype=np.int64)
+        self._reuses = 0
+        self.last_births: list[tuple[int, int, int]] = []
         self.stock_food = np.zeros(n_house, dtype=np.int64)
         # Material is tracked BY KIND even though the observation reports the sum.
         # With fungible sites the split is cosmetic; without them it is
@@ -563,6 +602,22 @@ class World:
         )
 
     @property
+    def stock_food_capacity(self) -> np.ndarray:
+        """Food a household's store can hold. A GRANARY doubles it.
+
+        Per household, not per config, which is the whole of the second
+        technology: two households on the same island now have different
+        larders. Everything that caps a deposit, masks one, or normalises the
+        observation reads this, so the three cannot disagree.
+        """
+        base = self.cfg.society.stockpile_food_capacity
+        n_house = self.stock_food.shape[0]
+        if not self.cfg.tech.enabled:
+            return np.full(n_house, base, dtype=np.int64)
+        return np.where(self.household_granary,
+                        base * self.cfg.tech.granary_multiplier, base).astype(np.int64)
+
+    @property
     def household_size(self) -> np.ndarray:
         """Living members per household -- the number a house has to be big for."""
         n_house = self.stock_x.shape[0]
@@ -601,6 +656,8 @@ class World:
             household_size=self.household_size,
             farming=self.household_farming,
             fields=self.household_fields,
+            granary=self.household_granary,
+            stock_food_capacity=self.stock_food_capacity,
         )
 
     def predator_view(self) -> PredatorView | None:
@@ -956,8 +1013,9 @@ class World:
                 if d2 > sc.stockpile_radius ** 2:
                     continue
                 a = actions[i]
+                food_cap_h = self.stock_food_capacity
                 if a == DEPOSIT_FOOD:
-                    if pool.food[i] > 0 and self.stock_food[h] < sc.stockpile_food_capacity:
+                    if pool.food[i] > 0 and self.stock_food[h] < food_cap_h[h]:
                         pool.food[i] -= 1
                         self.stock_food[h] += 1
                         deposited[i] = 1
@@ -1301,6 +1359,10 @@ class World:
             pool.alive = pool.alive & ~died
             pool.hunger = np.where(died, 0.0, pool.hunger)
             rewards += np.where(died, cfg.reward.death, 0.0)
+            # When each row fell empty, so `reuse_slots` can take the oldest
+            # corpse and honour `reuse_delay`. -1 means "has not died", which is
+            # also what a freshly reused row is reset to.
+            self._death_tick = np.where(died, self.tick, self._death_tick)
 
         # 5. survival bonus for anyone who made it through the tick
         survived = acted & pool.alive
@@ -1381,13 +1443,71 @@ class World:
         #     the rule: whether the unlock fires more in a hungry world than a
         #     fed one, and whether a field, once available, is used and pays.
         #     Same honesty rung 1 carries about the axe.
+        n_house_t = self.household_hunger_ticks.shape[0]
         if cfg.agriculture.enabled and sc.enabled:
             hungry = pool.alive & (pool.hunger < cfg.agriculture.unlock_hunger)
             if hungry.any():
                 self.household_hunger_ticks += np.bincount(
-                    self.household[hungry], minlength=self.household_hunger_ticks.shape[0])
-            self.household_farming |= (self.household_hunger_ticks
-                                       >= cfg.agriculture.unlock_hunger_ticks)
+                    self.household[hungry], minlength=n_house_t)
+            invented_f = ((self.household_hunger_ticks
+                           >= cfg.agriculture.unlock_hunger_ticks)
+                          & ~self.household_farming)
+            if invented_f.any():
+                self.household_farming |= invented_f
+                self._tech_source[invented_f, TECH_FARMING] = TECH_INVENTED
+
+        # 6e. ISLAND 3.0 STAGE 2: the granary -- the first technology here that
+        #     cannot be reached at all until another one has been. It needs
+        #     FARMING and a larder that has been full for `granary_full_ticks`,
+        #     and it doubles the household's food store. A prerequisite is what
+        #     makes the ladder a ladder rather than a list, and storage is what a
+        #     surplus is FOR, which is the realistic shape of the same fact.
+        if cfg.tech.enabled and sc.enabled:
+            full = self.stock_food >= self.stock_food_capacity
+            self.household_full_ticks += full.astype(np.int64)
+            invented_g = (self.household_farming
+                          & (self.household_full_ticks >= cfg.tech.granary_full_ticks)
+                          & ~self.household_granary)
+            if invented_g.any():
+                self.household_granary |= invented_g
+                self._tech_source[invented_g, TECH_GRANARY] = TECH_INVENTED
+
+        # 6f. ISLAND 3.0 STAGE 2: TECHNOLOGY SPREADS BY CONTACT. A household that
+        #     lacks a tech gains a tick of learning for every tick one of its
+        #     living members stands within `teach_radius` of a member of a
+        #     household that has it; at `teach_ticks` it adopts.
+        #
+        #     Invention stays hunger-driven and adoption becomes social, which is
+        #     how technology actually moves -- and, more usefully, it is the only
+        #     version that can be told apart from invention in the data.
+        #     `_tech_source` records WHICH, so "it spread" is a measurement.
+        if (cfg.agriculture.enabled and sc.enabled
+                and cfg.agriculture.teach_ticks > 0 and pool.alive.any()):
+            radius2 = cfg.agriculture.teach_radius ** 2
+            live = np.flatnonzero(pool.alive)
+            dx = pool.x[live][None, :] - pool.x[live][:, None]
+            dz = pool.z[live][None, :] - pool.z[live][:, None]
+            near = (dx ** 2 + dz ** 2) <= radius2
+            np.fill_diagonal(near, False)
+            house_live = self.household[live]
+            for tech, holder in ((TECH_FARMING, self.household_farming),
+                                 (TECH_GRANARY, self.household_granary)):
+                if tech == TECH_GRANARY and not cfg.tech.enabled:
+                    continue
+                knows = holder[house_live]
+                if not knows.any() or knows.all():
+                    continue
+                # For each learner, is ANY knower in reach this tick.
+                exposed = (near & knows[None, :]).any(axis=1) & ~knows
+                if not exposed.any():
+                    continue
+                self.teach_progress[:, tech] += np.bincount(
+                    house_live[exposed], minlength=n_house_t)
+                learned = ((self.teach_progress[:, tech]
+                            >= cfg.agriculture.teach_ticks) & ~holder)
+                if learned.any():
+                    holder |= learned
+                    self._tech_source[learned, tech] = TECH_TAUGHT
 
         # 6d. ISLAND 3.0: BIRTHS. Not an action, not a goal, and nothing is paid
         #     for one -- see ReproductionConfig for why that is the whole point.
@@ -1400,8 +1520,25 @@ class World:
         #     Deterministic: candidates are taken in agent order and no rng
         #     stream is touched, so a replay of a 3.0 world reproduces exactly.
         rc = cfg.reproduction
+        births_now: list[tuple[int, int, int]] = []
+        self.last_births = births_now
         if rc.enabled and sc.enabled:
             free = np.flatnonzero(~pool.born)
+            if rc.reuse_slots:
+                # STAGE 2: A ROW CAN BE LIVED IN TWICE. Never-used rows first, so
+                # a world that has not filled its array behaves exactly as it did
+                # before; then the OLDEST corpse that has lain there at least
+                # `reuse_delay` ticks. Oldest-first is what makes the choice
+                # deterministic, and the delay is not cosmetic -- the replay draws
+                # a corpse folding forward over several ticks, and a row that
+                # flips straight back to a walking newborn reads as a
+                # resurrection rather than a birth.
+                dead = np.flatnonzero(pool.born & ~pool.alive
+                                      & (self._death_tick >= 0)
+                                      & (self.tick - self._death_tick >= rc.reuse_delay))
+                if dead.size:
+                    dead = dead[np.argsort(self._death_tick[dead], kind="stable")]
+                    free = np.concatenate([free, dead])
             if free.size:
                 adult = pool.adult(cfg)
                 fit = pool.alive & adult & (pool.hunger >= rc.birth_hunger)
@@ -1427,8 +1564,29 @@ class World:
                         continue
                     slot = int(free[cursor])
                     cursor += 1
+                    # WHO THE PARENTS ARE, recorded so heredity has a pedigree to
+                    # work from. The two lowest-indexed qualifying members, which
+                    # is deterministic and consumes no rng -- and it is the only
+                    # thing in the birth rule that is arbitrary, so it is stated
+                    # rather than buried.
+                    kin = np.flatnonzero(at_home & (self.household == h))[:2]
                     self.stock_food[h] -= rc.birth_food_cost
                     self.household_birth_tick[h] = self.tick
+                    if pool.born[slot]:
+                        # A REUSED ROW. Everything that means "this life" is
+                        # retired here: the lifespan goes to the ledger and the
+                        # counter is zeroed, and the grudge matrix's ROW AND
+                        # COLUMN are cleared, because a new person is owed nothing
+                        # and owes nothing. Counters that mean "this row's
+                        # contribution to the episode" -- berries, builds, steals
+                        # -- are deliberately NOT reset: they are population
+                        # totals and resetting them would lose the dead agent's
+                        # work from every episode figure.
+                        self._life_ticks.append(int(self._alive_ticks[slot]))
+                        self._alive_ticks[slot] = 0
+                        self.grudge[slot, :] = 0.0
+                        self.grudge[:, slot] = 0.0
+                        self._reuses += 1
                     pool.born[slot] = True
                     pool.alive[slot] = True
                     pool.age[slot] = 0
@@ -1446,8 +1604,11 @@ class World:
                     ang = 2.0 * np.pi * (slot % 8) / 8.0
                     pool.x[slot] = self.stock_x[h] + np.cos(ang)
                     pool.z[slot] = self.stock_z[h] + np.sin(ang)
+                    self._death_tick[slot] = -1
                     self._births += 1
                     self._births_by_household[h] += 1
+                    births_now.append((slot, int(kin[0]) if kin.size else slot,
+                                       int(kin[1]) if kin.size > 1 else slot))
 
         # 7. clock and termination
         self.tick += 1
@@ -1559,7 +1720,13 @@ class World:
         # arithmetic around it -- caught at the point it would have poisoned
         # every headline in the stage.
         born = pool.born
-        n_born = max(int(born.sum()), 1)
+        # STAGE 2: LIVES, NOT ROWS. A reused row has held more than one life, and
+        # the finished ones are in the ledger with the row's counter zeroed -- so
+        # every per-agent figure is (the ledger + the rows currently occupied),
+        # and with `reuse_slots` off the ledger is empty and nothing moves.
+        ledger = self._life_ticks
+        n_born = max(int(born.sum()) + len(ledger), 1)
+        life_total = float(self._alive_ticks[born].sum() + sum(ledger))
         n_house = self.stock_x.shape[0]
         n_tribes = int(self.tribe_of_household.max()) + 1 if self.tribe_of_household.size else 1
         tribe_pop = np.bincount(self.tribe[pool.alive], minlength=n_tribes)
@@ -1573,16 +1740,23 @@ class World:
         n_wild = getattr(self, "n_wild_bushes", self.bush_x.shape[0])
         return EpisodeStats(
             ticks=self.tick,
-            deaths=int((born & ~pool.alive).sum()),
+            deaths=int((born & ~pool.alive).sum()) + len(ledger),
             berries_gathered=int(self._gathered.sum()),
             meals=int(self._meals.sum()),
-            mean_lifespan=float(self._alive_ticks[born].sum() / n_born),
-            mean_final_hunger=float(pool.hunger[born].sum() / n_born),
+            mean_lifespan=life_total / n_born,
+            # Over the rows that are occupied at the end, not over lives: a
+            # finished life has no final hunger to report.
+            mean_final_hunger=float(pool.hunger[born].sum() / max(int(born.sum()), 1)),
             survivors=int(pool.alive.sum()),
             births=self._births,
             births_by_household=self._births_by_household.copy(),
             deaths_of_age=self._deaths_of_age,
-            born=int(born.sum()),
+            born=int(born.sum()) + len(ledger),
+            slots_reused=self._reuses,
+            tech_invented=(self._tech_source == TECH_INVENTED).sum(axis=0).astype(np.int64),
+            tech_taught=(self._tech_source == TECH_TAUGHT).sum(axis=0).astype(np.int64),
+            granary_households=int(self.household_granary.sum()),
+            stock_food_capacity=self.stock_food_capacity.copy(),
             population_final=int(pool.alive.sum()),
             house_expansions=self._expansions,
             rooms_final=self.site_rooms.copy(),

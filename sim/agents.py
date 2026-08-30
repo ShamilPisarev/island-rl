@@ -79,6 +79,18 @@ N_ACTIONS = len(BASE_ACTION_NAMES)
 ITEM_FOOD, ITEM_WOOD, ITEM_STONE = 0, 1, 2
 ITEM_NAMES: tuple[str, ...] = ("food", "wood", "stone")
 
+# Island 3.0 stage 2: the technologies a HOUSEHOLD can hold. Appended, never
+# inserted, like everything else here. They live next to the item codes rather
+# than in world.py because the observation, the action mask and the engine all
+# need the same indices and there must be exactly one place they are defined.
+TECH_NAMES: tuple[str, ...] = ("farming", "granary")
+TECH_FARMING, TECH_GRANARY = 0, 1
+N_TECHS = len(TECH_NAMES)
+# How a household came by a technology, for the diffusion measurement. A single
+# has-it flag cannot tell invention from adoption, and telling them apart is the
+# whole of read S3.
+TECH_NONE, TECH_INVENTED, TECH_TAUGHT = 0, 1, 2
+
 
 def action_names(cfg: Config) -> tuple[str, ...]:
     if cfg.agriculture.enabled:
@@ -237,6 +249,8 @@ class Island3View:
     household_size: np.ndarray   # (H,) living members
     farming: np.ndarray          # (H,) has this household invented agriculture
     fields: np.ndarray           # (H,) fields planted so far
+    granary: np.ndarray          # (H,) stage 2: does it hold the second tech
+    stock_food_capacity: np.ndarray  # (H,) per household -- a granary doubles it
 
 
 def neighbour_society_channels(cfg: Config) -> int:
@@ -276,6 +290,16 @@ def housing_channels(cfg: Config) -> int:
 def agriculture_channels(cfg: Config) -> int:
     """Island 3.0: has my household invented farming, and may it plant again."""
     return 2 * int(cfg.agriculture.enabled and cfg.agriculture.observe_agriculture)
+
+
+def tech_channels(cfg: Config) -> int:
+    """Island 3.0 stage 2: does my household hold the second technology.
+
+    One channel, and it is separate from `own.stock_food` for the same reason
+    `own.axe` is separate from `own.wood`: the magnitude says how full the store
+    is, and nothing in it says what KIND of store it is.
+    """
+    return int(cfg.tech.enabled and cfg.tech.observe_tech)
 
 
 def society_channels(cfg: Config) -> int:
@@ -374,6 +398,7 @@ def observation_dim(cfg: Config) -> int:
     dim += reproduction_channels(cfg)
     dim += housing_channels(cfg)
     dim += agriculture_channels(cfg)
+    dim += tech_channels(cfg)
     return dim
 
 
@@ -514,7 +539,16 @@ def action_mask(
         home_d2 = ((society.stock_x[mine] - pool.x) ** 2
                    + (society.stock_z[mine] - pool.z) ** 2)
         at_home = home_d2 <= sc.stockpile_radius ** 2
-        food_room = society.stock_food[mine] < sc.stockpile_food_capacity
+        # THE HOUSEHOLD'S OWN capacity, not the config's: a granary makes two
+        # households on the same island differ, and a mask that promised a
+        # deposit the world then refuses is the doomed action masking exists to
+        # delete. `island3` carries it so a stage-1 world (where every household
+        # has the same larder) computes exactly the number it always did.
+        if island3 is not None and island3.stock_food_capacity.size:
+            food_cap_h = island3.stock_food_capacity[mine]
+        else:
+            food_cap_h = np.full(n, sc.stockpile_food_capacity, dtype=np.int64)
+        food_room = society.stock_food[mine] < food_cap_h
         mat_room = society.stock_material[mine] < sc.stockpile_material_capacity
         mask[:, DEPOSIT_FOOD] = at_home & (pool.food > 0) & food_room
         carrying = (pool.wood + pool.stone) > 0
@@ -664,6 +698,8 @@ def observation_layout(cfg: Config) -> tuple[str, ...]:
         names += ["home.beds_free", "home.overflow", "home.expandable"]
     if cfg.agriculture.enabled and cfg.agriculture.observe_agriculture:
         names += ["own.farming", "home.field_room"]
+    if cfg.tech.enabled and cfg.tech.observe_tech:
+        names.append("own.granary")
     names += ["edge.room", "edge.outward_x", "edge.outward_z"]
     return tuple(names)
 
@@ -895,7 +931,15 @@ def build_observations(
         sc = cfg.society
         mine = society.household
         rows = np.arange(n)
-        food_cap = max(sc.stockpile_food_capacity, 1)
+        # Normalised by the household's OWN larder, so "my store is full" reads
+        # 1.0 whether the household has a granary or not -- which is the fact the
+        # scorer needs. That a granary exists at all is a separate channel
+        # (`own.granary`), for the same reason `own.axe` is separate: what the
+        # magnitude cannot say is what KIND of thing is holding it.
+        if island3 is not None and island3.stock_food_capacity.size:
+            food_cap = np.maximum(island3.stock_food_capacity[society.household], 1)
+        else:
+            food_cap = max(sc.stockpile_food_capacity, 1)
         mat_cap_s = max(sc.stockpile_material_capacity, 1)
         out[:, col + 0] = society.stock_food[mine] / food_cap
         # Wood and stone separately, not a blended count. In a fungible world the
@@ -937,7 +981,15 @@ def build_observations(
             j = np.argmin(d2, axis=1)
             out[:, col + 0] = np.clip(dx[rows, j] / scale, -1.0, 1.0)
             out[:, col + 1] = np.clip(dz[rows, j] / scale, -1.0, 1.0)
-            out[:, col + 2] = society.stock_food[j] / food_cap
+            # The foreign pile against ITS OWN larder, not mine. With granaries
+            # the two differ, and "that store is full" is a fact about that
+            # store -- dividing it by my capacity would report a full small pile
+            # as half empty to a raider who has a granary.
+            if island3 is not None and island3.stock_food_capacity.size:
+                out[:, col + 2] = society.stock_food[j] / np.maximum(
+                    island3.stock_food_capacity[j], 1)
+            else:
+                out[:, col + 2] = society.stock_food[j] / food_cap
             out[:, col + 3] = society.stock_material[j] / mat_cap_s
         col += 4
         if sc.observe_shock:
@@ -996,6 +1048,10 @@ def build_observations(
         out[:, col + 1] = np.clip(room / max(cfg.agriculture.max_fields_per_household, 1),
                                   0.0, 1.0)
         col += 2
+    if cfg.tech.enabled and cfg.tech.observe_tech:
+        assert island3 is not None and society is not None, "island3 world state missing"
+        out[:, col] = island3.granary[society.household].astype(np.float32)
+        col += 1
 
     # --- shoreline
     r = np.sqrt(pool.x**2 + pool.z**2)
