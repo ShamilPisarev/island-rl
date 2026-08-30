@@ -35,7 +35,9 @@ and size of each goal's fitness coefficient, against the drift directions
 (`explore` -10%, `forage` +9%, `raid` -8%, `draw_food` +7%, `steal` -6%). If they
 agree, the drift IS selection and the write-ups can say so.
 
-### 3.1-2. Village fission (the most likely reason S5 keeps coming back null)
+### 3.1-2. Village fission -- DONE 2026-08-30 (stage 3). Result: 20 households become 32 and the population reaches 107.2 against 85.2 without it -- but S7 refutes the tribe claim a THIRD time (quarter Gini 0.24 vs 0.25). Expansion is symmetric, so nobody pulls ahead; conquest is the missing ingredient. Original item below.
+
+### 3.1-2-orig. Village fission (the most likely reason S5 keeps coming back null)
 
 **What**: let a household at capacity found a NEW household at a new site.
 **Why**: twenty households is twenty households forever -- a household owns the
@@ -50,7 +52,9 @@ that does not exist yet, so this is a real change to the world's layout, not a
 config knob. **Reads**: households at the end; quarter-population Gini against
 the same geographic control (0.27-0.31 is the number to beat); tribe share.
 
-### 3.1-3. A learned arbiter in the generational village
+### 3.1-3. A learned arbiter -- DONE 2026-08-30 (`arb7-village`). Result: learned slots +20.3 +- 3.6 (10/10) against a -28.9 floor, and a SPILLOVER of +21.1 +- 3.5 (10/10) -- the largest the project has measured, where arb5-mix's was nil. Construction still exactly 0.0% for the fifth time. The chooser never met agriculture or teaching, because a 600-tick episode is too short to unlock either. Original item below.
+
+### 3.1-3-orig. A learned arbiter in the generational village
 
 **What**: `sim.arbiter` on `config/island3/village_gen.yaml`, mixed, household
 reward. **Why**: there are now TWO things a learned chooser would face that no
@@ -62,7 +66,42 @@ moving.
 
 ---
 
-## The stage-1 queue (item 1 is DONE; 2 and 3 stand)
+### 3.2-1. Conquest, the thing S7 has now shown is missing three times
+
+**What**: let a raid take a SITE, not just a berry -- burn a house back to
+incomplete, or claim an emptied household's site. **Why**: S5 (twice) and S7 all
+return null on tribe inequality, and S7 names the reason: expansion is symmetric,
+so every tribe grows at the rate its ground supports and the ratios never move.
+Raiding moves food; nothing in this world moves TERRITORY. Until something does,
+"the strongest tribe" is not expressible, however long the run.
+**Reads**: quarter-population Gini against the same geographic control
+(0.24-0.31 is the number to beat, three times over now); households per tribe;
+whether a conquered site is rebuilt or abandoned. **Pre-registered failure
+mode**: mutual destruction -- everyone burns everyone and the island loses its
+housing stock, which would show as nights indoors collapsing while the Gini
+stays flat.
+
+### 3.2-2. Train on episodes long enough to contain a technology
+
+**What**: `arb7-village` was trained and evaluated on 600-tick episodes, and
+farming needs 300 cumulative hungry household-ticks -- so `0.0 of 20 households`
+invented anything and the learned chooser never met agriculture, teaching or the
+granary. **Why**: those were two of the three things a learned chooser was
+supposed to know that no scorer scores. **Design care**: PPO needs episodes that
+end, so this is a trainer question (truncation and bootstrapping at a longer
+horizon), not a config change.
+
+### 3.2-3. Per-env traits in the trainer, so heredity can be trained through
+
+`ArbiterTrainer` holds ONE trait vector per agent row shared across all
+environments, so heredity cannot be on during training. Making it per-env would
+let the learned chooser be trained in a world where lineages persist -- and
+would let selection act on a LEARNED policy's inputs, which is the closest this
+project could get to evolving behaviour rather than weights.
+
+---
+
+## The stage-1 queue (item 1 is DONE; 2 and 3 are DONE too)
 
 Read `ISLAND3_DESIGN.md` first, then CLAUDE.md's Island 3.0 section. Do NOT
 re-run any of R1, R1b, R2, R3, R4 (either control), R5 or R6 -- the do-not-re-run

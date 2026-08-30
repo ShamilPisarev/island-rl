@@ -84,6 +84,10 @@ class SocietyReport:
     # per-subset splits of the numbers the free-ride-or-contribute question
     # turns on. None/empty unless the runner is a MixedArbiter.
     learn_mask: np.ndarray | None = None
+    # Full-width per-ROW lifespans, for the questions that are about a slot
+    # rather than about a life. `lifespans` is the born-only vector and its
+    # length now varies by episode, so it cannot be stacked.
+    lifespans_agent: list[np.ndarray] = field(default_factory=list)
     night_in_agent: list[np.ndarray] = field(default_factory=list)
     night_out_agent: list[np.ndarray] = field(default_factory=list)
     goal_ticks_learned: np.ndarray = field(
@@ -511,6 +515,7 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
         # would report a village of 90 well-fed agents as having a mean lifespan
         # near zero. Every 2.0 world has `born` all-True, so nothing moves there.
         rep.lifespans.append(world.alive_ticks[world.pool.born])
+        rep.lifespans_agent.append(world.lifespan_by_row)
         rep.deaths.append(stats.deaths)
         rep.berries.append(stats.berries_gathered)
         rep.shelters.append(stats.shelters_completed)
@@ -866,7 +871,7 @@ def _mixed_section(cfg: Config, rep: SocietyReport) -> str:
     and did it put anything in -- build/deliver/store shares -- or only draw out.
     """
     m = rep.learn_mask
-    lives = np.stack(rep.lifespans)                     # (episodes, agents)
+    lives = np.stack(rep.lifespans_agent)               # (episodes, agent ROWS)
     ni = np.stack(rep.night_in_agent).sum(axis=0).astype(np.float64)
     no = np.stack(rep.night_out_agent).sum(axis=0).astype(np.float64)
 
@@ -876,9 +881,23 @@ def _mixed_section(cfg: Config, rep: SocietyReport) -> str:
 
     gl, gs = rep.goal_ticks_learned, rep.goal_ticks_scripted
     tl, ts = max(int(gl.sum()), 1), max(int(gs.sum()), 1)
+    # A WORLD THAT GROWS BREAKS THIS COMPARISON, and quietly. Rows are filled in
+    # order, so the learned rows (0..19) are all FOUNDERS while the scripted
+    # subset is mostly rows that begin unborn and are filled late -- their totals
+    # are lower because they started later, not because they did worse.
+    # Measured on the generational village: 598.9 against 236.9, which says
+    # nothing at all. The paired diffs at the bottom of a `--vs` run are the
+    # honest comparison (same rows, both arbiters, same seeds), so the raw means
+    # carry a warning rather than being deleted -- somebody will read an old log.
+    grows = bool(rep.born and float(np.mean(rep.born)) < cfg.world.num_agents)
     out = [f"\n-- mixed population: {int(m.sum())} learned among "
-           f"{int((~m).sum())} scripted --",
-           f"  {'':<16} {'learned':>9} {'scripted':>9}",
+           f"{int((~m).sum())} scripted --"]
+    if grows:
+        out.append("  WARNING: the two mean-lifespan figures are NOT comparable in a "
+                   "world that GROWS --\n           rows fill in order, so the "
+                   "learned rows are founders and most scripted rows\n           "
+                   "start unborn. Read the PAIRED diffs at the end of a --vs run.")
+    out += [f"  {'':<16} {'learned':>9} {'scripted':>9}",
            f"  {'mean lifespan':<16} {lives[:, m].mean():9.1f} {lives[:, ~m].mean():9.1f}",
            f"  {'nights indoors':<16} {night_share(m):8.1f}% {night_share(~m):8.1f}%",
            "  goal shares (% of the subset's own goal-ticks):"]
@@ -1098,15 +1117,19 @@ def main() -> None:
             # near-identical in both runs. The learned SLOTS are the experiment:
             # same agent indices under the other arbiter, same seeds, so the
             # comparison is what those twenty lives cost or gained.
+            # PER ROW, not per life: `lifespans` is the born-only vector and its
+            # length varies by episode, and a learned SLOT is a slot -- with row
+            # reuse it has held several people and the question is what those
+            # lives totalled.
             m = rep.learn_mask
-            a = np.array([float(np.mean(l[m])) for l in rep.lifespans])
-            b = np.array([float(np.mean(l[m])) for l in other.lifespans])
+            a = np.array([float(np.mean(l[m])) for l in rep.lifespans_agent])
+            b = np.array([float(np.mean(l[m])) for l in other.lifespans_agent])
             d = a - b
             se = d.std(ddof=1) / np.sqrt(len(d)) if len(d) > 1 else float("nan")
             print(f"paired at the LEARNED slots only: {d.mean():+.1f} +- {se:.1f} "
                   f"ticks (better on {int((d > 0).sum())}/{len(d)} islands)")
-            a = np.array([float(np.mean(l[~m])) for l in rep.lifespans])
-            b = np.array([float(np.mean(l[~m])) for l in other.lifespans])
+            a = np.array([float(np.mean(l[~m])) for l in rep.lifespans_agent])
+            b = np.array([float(np.mean(l[~m])) for l in other.lifespans_agent])
             d = a - b
             se = d.std(ddof=1) / np.sqrt(len(d)) if len(d) > 1 else float("nan")
             print(f"paired at the SCRIPTED slots (spillover): {d.mean():+.1f} "

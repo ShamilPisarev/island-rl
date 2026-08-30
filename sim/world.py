@@ -558,6 +558,12 @@ class World:
         # row's counter is zeroed. Every per-agent statistic reads
         # `ledger + the living`, never the raw array.
         self._life_ticks: list[int] = []
+        # ...and the same totals kept PER ROW, which is what a per-slot
+        # comparison needs (the learned twenty against the scripted rest). A
+        # row's `alive_ticks` is only its CURRENT occupant's life, so a mixed
+        # population in a reuse world would otherwise compare whoever happens to
+        # be living in each slot at the end.
+        self._life_ticks_row = np.zeros(cfg.world.num_agents, dtype=np.int64)
         self._death_tick = np.full(cfg.world.num_agents, -1, dtype=np.int64)
         self._reuses = 0
         self.last_births: list[tuple[int, int, int]] = []
@@ -1632,6 +1638,7 @@ class World:
                         # totals and resetting them would lose the dead agent's
                         # work from every episode figure.
                         self._life_ticks.append(int(self._alive_ticks[slot]))
+                        self._life_ticks_row[slot] += int(self._alive_ticks[slot])
                         self._alive_ticks[slot] = 0
                         self.grudge[slot, :] = 0.0
                         self.grudge[:, slot] = 0.0
@@ -1844,6 +1851,18 @@ class World:
     def alive_ticks(self) -> np.ndarray:
         """Ticks each agent survived this episode, per agent."""
         return self._alive_ticks.copy()
+
+    @property
+    def lifespan_by_row(self) -> np.ndarray:
+        """Total ticks lived in each ROW, across every occupant it has had.
+
+        `alive_ticks` is the current occupant's life alone -- correct for a
+        lifespan distribution, wrong for any question asked of a SLOT ("did the
+        learned twenty do better than the scripted rest"), because with reuse the
+        slot has held several people. Identical to `alive_ticks` in every world
+        without reuse.
+        """
+        return self._life_ticks_row + self._alive_ticks
 
     def stats(self) -> EpisodeStats:
         pool = self.pool

@@ -159,6 +159,57 @@ v8** (`u` = rows that changed occupant, `q` = granaries), `--set` on
     --set world.num_agents=90 --set reproduction.max_age=2200 --replay
 ```
 
+### Island 3.0 STAGE 3: a frontier to expand into, and a learned chooser
+
+* **Village fission -- 20 households become 32, and the population grows past a
+  village that cannot expand.** A household whose house is full to its last room
+  sends three grown members to claim a dormant site; they become a household
+  carrying the parent's technologies and its TRIBE. Against the same 40-cluster
+  island with claiming off, 5 paired episodes of 12,000 ticks: **107.2 alive
+  against 85.2 (+22.0 ± 7.0, 4/5)**, 406 births against 343, **24.8 farming
+  households against 13.4**. The technology row is the one to read twice --
+  invented and taught are IDENTICAL in both arms (4.0/10.0 vs 4.2/9.2), so every
+  extra farming household got it **by SETTLING**. Migration is now the largest of
+  the three channels, which is why `TECH_SETTLED` is its own code.
+* **And a tribe STILL does not win -- refuted a third time, now with the
+  mechanism it was missing.** Quarter-population Gini **0.24 with fission against
+  0.25 without (−0.02 ± 0.04, 1/5)** -- identical. Giving tribes a way to take
+  ground did not make any tribe take more of it, because **expansion here is
+  SYMMETRIC**: every household that fills its house founds a daughter, so the
+  ratios between tribes never move. Raiding doubles and moves berries; it cannot
+  move a site. **Conquest is the missing ingredient** and nothing in this world
+  expresses it.
+* **The learned arbiter in the generational village (`arb7-village`): the largest
+  spillover the project has measured.** 20 learned among 100 scripted, household
+  reward, gamma 0.997, 150 updates. Learned slots **+20.3 ± 3.6 (10/10)** against
+  a random-goal floor of −28.9 ± 12.8; **spillover to the scripted slots
+  +21.1 ± 3.5 (10/10)** against a floor of −51.9 ± 6.4. In `arb5-mix` spillover
+  was nil (−0.5 ± 4.7); here twenty learned agents are worth +21 ticks to every
+  other row. Population 64.4 against the all-scripted 55.4 and the random 45.5.
+  They **shelter 69.1% of their goal-ticks against 33.0%**, never fight at all
+  (steal and raid both **0.0%** against 11.4%/2.2%), and bank food.
+  **The construction wall stands for the FIFTH time**: harvest_wood, deliver,
+  store_material and `expand` are all exactly 0.0%, in the world built to make
+  the prize RECURRING (storms take the roof down, families grow, `expand` is on
+  the menu all episode). Making the prize recurring rather than one-off does not
+  move it.
+  **Two caveats and the first is large: the episode is 600 ticks, so this chooser
+  never met agriculture, teaching or the granary** (farming needs 300 hungry
+  household-ticks; `0.0 of 20 households` in both arms). And heredity is off in
+  both arms because `ArbiterTrainer` shares one trait vector per row across
+  environments.
+
+**Three more corrections, all pinned.** Field slots were sized to the households
+that exist at tick 0 while `plant` indexes them BY HOUSEHOLD, so the first
+daughter settlement to plant indexed off the end of the bush array. Dormancy
+derived from `num_sites > num_households` alone broke two stage-1 checksums the
+moment a TEST shrank a household count without shrinking the site count, so it
+has its own key (`reserve_sites`) -- which also makes S6's control a genuine
+one-key pair. And `_mixed_section`'s two mean lifespans are NOT comparable in a
+world that grows (rows fill in order, so the learned rows are founders and most
+scripted rows begin unborn): it read **598.9 against 236.9**, which says nothing,
+and the section now says so in the output.
+
 **One correction reaches back into ISLAND2_DESIGN.md.** `OptionRunner.goal_ticks`
 counted dead agents. Every goal share already published is very slightly
 overstated for whichever goal a corpse defaulted to; the effect is small

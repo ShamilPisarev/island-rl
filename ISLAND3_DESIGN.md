@@ -1018,3 +1018,71 @@ times over, and the missing ingredient is now named:** conquest. Raiding takes
 food; it cannot take a house, a field or a site. A tribe would need to be able to
 *hold ground* — to destroy or capture a household's site — before territorial
 dominance is even expressible in this world.
+
+## S8 — the learned arbiter in the generational village: the biggest spillover the project has measured, and the construction wall stands for the fifth time.
+
+`arb7-village`: 20 learned among 100 scripted on `village_learn.yaml`, household
+reward, gamma 0.997, 150 updates from scratch. Evaluated on 10 paired episodes
+against the scripted arbiter in the same world, and against a size-matched
+random-goal minority in the same slots.
+
+| paired against the all-scripted run | learned 20 | random-goal 20 (the floor) |
+|---|---|---|
+| **at the learned slots** | **+20.3 ± 3.6 (10/10)** | **−28.9 ± 12.8 (4/10)** |
+| **at the scripted slots (spillover)** | **+21.1 ± 3.5 (10/10)** | **−51.9 ± 6.4 (0/10)** |
+| population at the end | **64.4** | 45.5 (scripted alone: 55.4) |
+| people ever born | 73.7 | 56.7 (scripted alone: 65.4) |
+
+**The spillover is as large as the direct effect, and that is new.** In
+`arb5-mix` the learned minority's effect on its scripted neighbours was
+−0.5 ± 4.7 — nil. Here twenty learned agents are worth **+21 ticks to every
+other row on the island**, on ten islands out of ten. The village ends with 64.4
+people against 55.4, and 73.7 have been born against 65.4.
+
+**What they do.** Goal shares, each as a percentage of its own subset's
+goal-ticks:
+
+| | learned 20 | scripted 100 |
+|---|---|---|
+| `shelter` | **69.1%** | 33.0% |
+| `forage` | 17.3% | 10.4% |
+| `store_food` | 5.5% | 2.7% |
+| `explore` | 7.1% | 14.9% |
+| `steal` | **0.0%** | 11.4% |
+| `raid` | **0.0%** | 2.2% |
+| `harvest_wood` / `deliver` / `store_material` / `expand` | **0.0% / 0.0% / 0.0% / 0.0%** | 14.4% / 3.0% / 2.3% / 0.2% |
+
+They shelter twice as much as anyone else, never fight at all, and bank food.
+Under a household reward, keeping yourself and your kin alive and indoors is
+what pays — and it pays the neighbours too, which is where the spillover comes
+from.
+
+**The construction wall stands for the fifth time.** `harvest_wood`, `deliver`,
+`store_material` and `expand` are all exactly 0.0%, in the world built to give
+the prize a *recurring* form — storms take the roof down, families grow, and
+`expand` is on the menu for the whole episode. ISLAND2_DESIGN.md §10 spent three
+levers on this and the learned-share sweep spent six points; making the prize
+recurring rather than one-off does not move it either.
+
+**Two caveats, and the first is large.**
+
+* **The episode is 600 ticks, so this chooser never met agriculture, teaching or
+  the granary.** Farming unlocks on 300 cumulative hungry household-ticks and no
+  household reaches it inside 600 — the report says `0.0 of 20 households` in
+  both arms. The two things a learned chooser was supposed to know that no
+  scorer scores were *a birth* and *teaching*; it met the first and not the
+  second. Training on longer episodes is a PPO question (episodes must end), not
+  a config change, and it is the obvious follow-up.
+* **Heredity is off in both arms**, because `ArbiterTrainer` holds one trait
+  vector per row shared across all environments and heredity makes traits
+  env-specific. The pairing is still one key; the trainer's per-env traits are
+  future work.
+
+**A reporting correction this run forced.** `_mixed_section` prints the two
+subsets' mean lifespans side by side, and in a world that GROWS they are not
+comparable: rows fill in order, so the learned rows (0..19) are all founders
+while most scripted rows begin unborn and are filled late. It read
+**598.9 against 236.9**, which says nothing except that founders start earlier.
+The section now carries that warning, and the honest numbers are the paired
+diffs above. Per-row lifespans are also now totalled across every occupant a row
+has had (`lifespan_by_row`), because with reuse a slot has held several people.
