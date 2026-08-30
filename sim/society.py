@@ -728,6 +728,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default="config/island2/society100.yaml")
     ap.add_argument("--episodes", type=int, default=3)
+    ap.add_argument("--ticks", type=int, default=None,
+                    help="override world.max_ticks. 600 is a TRAINING length, "
+                         "not a property of the world: PPO needs episodes that "
+                         "end. Nothing stops a watched run going further, and "
+                         "what happens when it does is its own result -- see "
+                         "ISLAND2_DESIGN.md on the long run.")
     ap.add_argument("--seed", type=int, default=10000)
     ap.add_argument("--commit", type=int, default=None, help="option commitment in ticks")
     ap.add_argument("--softmax", type=float, default=None, help="goal sampling temperature")
@@ -763,6 +769,8 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = load_config(args.config)
+    if args.ticks is not None:
+        cfg = cfg.replace(**{"world.max_ticks": args.ticks})
     overrides = {}
     if args.commit is not None:
         overrides["commit_ticks"] = args.commit

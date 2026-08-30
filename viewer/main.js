@@ -1296,13 +1296,29 @@ async function populateManifest() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const manifest = await res.json();
     const entries = manifest.replays || [];
-    for (const e of entries) {
-      const opt = document.createElement('option');
-      opt.value = e.file;
-      const life = e.summary?.mean_lifespan;
-      opt.textContent = `${e.label} — ${e.ticks} ticks` + (life != null ? `, lifespan ${life}` : '');
-      select.appendChild(opt);
-    }
+    // GROUPED, because a flat list does not survive its own success: there are
+    // 300-odd training snapshots in here and five worlds anybody wants to look
+    // at, and a dropdown that buries the second set in the first is a dropdown
+    // nobody scrolls. The split is the recorder's own `source` field, so it
+    // cannot drift from what actually wrote the file.
+    const islands = entries.filter((e) => e.source === 'sim.society');
+    const rest = entries.filter((e) => e.source !== 'sim.society');
+    const addGroup = (label, list) => {
+      if (!list.length) return;
+      const g = document.createElement('optgroup');
+      g.label = label;
+      for (const e of list) {
+        const opt = document.createElement('option');
+        opt.value = e.file;
+        const life = e.summary?.mean_lifespan;
+        opt.textContent = `${e.label} — ${e.ticks} ticks`
+                        + (life != null ? `, lifespan ${life}` : '');
+        g.appendChild(opt);
+      }
+      select.appendChild(g);
+    };
+    addGroup(`the island — ${islands.length} worlds worth watching`, islands);
+    addGroup(`older milestone runs (${rest.length}) — training snapshots`, rest);
     if (!entries.length) {
       $('pickerHint').textContent = 'No replays yet. Run sim/make_fake_replay.py or train.py.';
       $('loading').style.display = 'none';
@@ -1312,7 +1328,10 @@ async function populateManifest() {
     // usually a diagnostic probe world with most mechanics switched off. Honour
     // an explicit ?replay= first so a link can point at a specific run.
     const asked = new URLSearchParams(location.search).get('replay');
-    const wanted = entries.some((e) => e.file === asked) ? asked : entries[0].file;
+    // Default to an ISLAND rather than to whatever finished last, which for
+    // months has been a diagnostic probe world with most mechanics switched off.
+    const fallback = (islands[0] || entries[0]).file;
+    const wanted = entries.some((e) => e.file === asked) ? asked : fallback;
     select.value = wanted;
     await loadFromUrl(`replays/${wanted}`);
   } catch (err) {

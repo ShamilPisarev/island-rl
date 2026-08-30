@@ -269,6 +269,22 @@ each:
   as dark red spikes with their reach ring at night), `tests/test_predators.py`
   (12 tests).
 
+* **The long run (design doc §15): 600 ticks was hiding a collapse.** `max_ticks`
+  is a TRAINING length -- PPO needs episodes that end -- and `sim.society
+  --ticks N` now overrides it. Run society4 for 24,000 ticks and the population
+  goes **100 → 46 (t=2000) → 30 (t=6000) → 16 (t=24000)**, still declining. The
+  mechanism is a resource asymmetry no run was ever long enough to meet: bushes
+  regrow forever, **trees and rocks do not regrow at all**, so the material is
+  gone by tick 500 and after ~tick 2000 there is nothing left to rebuild the
+  shelters storms keep destroying. Every night is then an exposed night, forever.
+  **Every headline in this file is measured inside the window before the material
+  runs out** -- which invalidates no comparison (they are all paired inside that
+  window against their own controls) but does mean nothing here has measured
+  sustainability. They are not starving: 264 berries sit unpicked at tick 24,000.
+  The obvious next mechanic is slowly-regrowing trees, which would turn a
+  collapse into a carrying-capacity question. Replay: `society4_long.json`
+  (3000 ticks, 11.8MB, loads and scrubs fine).
+
 * **Replay schema v5 (design doc §13): goals, shocks, and who is learned.**
   Three things a stage-4 replay could not answer, added as optional per-tick keys
   so a world without them writes a v4-sized file. `o` = one arbiter goal id per

@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store">
 <title>Island — replay viewer</title>
 
 <!-- Three.js from CDN via import map: no build step, no bundler.
@@ -35,15 +36,30 @@
     background: var(--bg); color: var(--text);
     font: 13px/1.45 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
-  #app { display: grid; grid-template-columns: 1fr 310px; grid-template-rows: 1fr auto; height: 100%; }
-  #stage { position: relative; grid-column: 1; grid-row: 1; }
+  #app {
+    display: grid; grid-template-columns: minmax(0, 1fr) 310px;
+    grid-template-rows: minmax(0, 1fr) auto;
+    height: 100%; max-height: 100%; overflow: hidden;
+  }
+  /* min-height/min-width 0 is load-bearing, not tidying. A grid track sized
+     `1fr` has `min-height: auto`, so it cannot shrink below its content -- and
+     the content here is a <canvas>, whose intrinsic size is its drawing buffer.
+     The buffer is set from the track's height, so once the window shrinks the
+     two feed each other and the row stays as tall as the largest size the
+     window was ever at. Measured on a 2560x1440 screen: the transport bar ended
+     up 109px BELOW the bottom of the viewport, with play and the speed buttons
+     unreachable. */
+  #stage {
+    position: relative; grid-column: 1; grid-row: 1;
+    min-height: 0; min-width: 0; overflow: hidden;
+  }
   #stage canvas { display: block; width: 100%; height: 100%; }
 
   /* ---- side panel ---- */
   #panel {
     grid-column: 2; grid-row: 1 / span 2;
     background: var(--panel); border-left: 1px solid var(--line);
-    display: flex; flex-direction: column; min-height: 0;
+    display: flex; flex-direction: column; min-height: 0; overflow: hidden;
   }
   #panel header { padding: 14px 14px 10px; border-bottom: 1px solid var(--line); }
   #panel h1 { margin: 0 0 2px; font-size: 15px; letter-spacing: .04em; }
@@ -234,6 +250,12 @@
   </div>
 </div>
 
-<script type="module" src="./main.js"></script>
+<!-- Cache-busted on load. This is a local static page that gets edited and
+     reloaded constantly, and a browser that caches the ES module happily serves
+     yesterday's viewer against today's replay -- which looks exactly like the
+     new feature not working. Costs one extra request on a localhost server. -->
+<script type="module">
+  import(`./main.js?v=${Date.now()}`);
+</script>
 </body>
 </html>

@@ -1581,3 +1581,54 @@ separate; nobody has been driven into one hut.
 * A hazard that is real, measurable, and produces no adaptation is still a
   result. It is the same shape as 1.0's oldest finding -- the world's incentives
   were never the missing piece.
+
+## 15. The long run: what 600 ticks was hiding
+
+`world.max_ticks: 600` is a TRAINING length. PPO needs episodes that end, and
+every number in this document is "of 600" because that is the box the training
+loop runs in. Nothing about the world requires it, and `sim.society --ticks N`
+now says so out loud.
+
+Run the standard `society4.yaml` island for 24,000 ticks -- forty normal
+episodes back to back -- and it does not reach the equilibrium the 600-tick
+numbers imply. It collapses, and then it hangs on:
+
+| tick | alive | wood left | stone left | finished huts | berries on bushes |
+|---|---|---|---|---|---|
+| 500 | 96 | 3 | 0 | 0 | 34 |
+| 1000 | 85 | 0 | 0 | 12 | 120 |
+| 2000 | 46 | 0 | 0 | 4 | 86 |
+| 3000 | 39 | 0 | 0 | **0** | 203 |
+| 6000 | 30 | 0 | 0 | 0 | 235 |
+| 12000 | 23 | 0 | 0 | 0 | 268 |
+| 24000 | **16** | 0 | 0 | 0 | 264 |
+
+**The mechanism is a resource asymmetry nobody had to design and nobody had
+noticed, because no run was ever long enough to meet it.** Bushes regrow
+forever; trees and rocks do not regrow at all (`tree_wood`, `rock_stone`, "no
+regrowth within an episode" -- and the episode used to be the whole world). The
+material is gone by tick 500. Storms keep arriving every ~200 ticks and keep
+knocking finished shelters down, and after about tick 2000 there is nothing left
+to rebuild them with. From then on every night is an exposed night for everyone,
+at 3x drain, forever.
+
+Three things worth taking from it:
+
+* **The 600-tick world is the first 600 ticks of a collapse, not a steady
+  state.** Every headline in this document -- 579 of 600 lifespan, 88% of nights
+  indoors, 59 completions -- is measured inside the window where the material has
+  not run out yet. That does not invalidate any comparison (every one of them is
+  paired, in the same window, against its own control) but it does mean nothing
+  here has ever measured sustainability.
+* **It does not go extinct, and it does not settle either.** Sixteen agents are
+  still alive at 24,000 ticks with 264 berries sitting unpicked -- food is
+  abundant for a population this small. They are dying of nights, not of hunger,
+  at roughly one agent per 3,000 ticks. Whether that asymptotes or bleeds to zero
+  is not known; 24,000 ticks was not long enough to say and the honest statement
+  is that it is still declining.
+* **The obvious fix is a mechanic, and it should be sized before it is added.**
+  Trees that regrow (slowly, like bushes) would turn this from a collapse into a
+  genuine carrying-capacity question -- how many agents can this island support
+  indefinitely -- which is a better question than any this project has asked so
+  far. `sim.economy`'s material block already computes the stock/demand ratio it
+  would need.
