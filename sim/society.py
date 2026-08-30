@@ -619,7 +619,12 @@ def _island3_section(cfg: Config, rep: SocietyReport) -> str:
     econ = subsistence(cfg)
     out = ["", "--- Island 3.0 ---"]
 
-    start = rep.population_trace[0][0][1] if rep.population_trace[0] else 0
+    # The CONFIGURED start, not the first sample: the trace is sampled every
+    # max_ticks/60 ticks, so on a long run its first row is already dozens of
+    # births in and labelling it "tick 0" understates the growth by exactly the
+    # thing being measured.
+    start = (rc.initial_agents if (rc.enabled and rc.initial_agents)
+             else cfg.world.num_agents)
     out.append(f"population        {start} at tick 0 -> "
                f"{np.mean(rep.population_final):.1f} at the end"
                f"   ({np.mean(rep.born):.1f} ever born, "
@@ -640,8 +645,14 @@ def _island3_section(cfg: Config, rep: SocietyReport) -> str:
             rows.append(f"t{t}:{np.mean(vals):.0f}" if vals else f"t{t}:-")
         out.append("  trace           " + "  ".join(rows))
     if rc.enabled and rc.max_age > 0:
+        # Old age against ALL deaths, because the question is what killed the
+        # village: a run where every death is starvation and one where every
+        # death is age look identical in a total.
+        total_d = max(float(np.mean(rep.deaths)), 1e-9)
         out.append(f"  deaths of old age {np.mean(rep.deaths_of_age):.1f} of "
-                   f"{np.mean(rep.deaths_of_age) + 0:.0f} + starvation")
+                   f"{total_d:.1f} deaths "
+                   f"({100.0 * np.mean(rep.deaths_of_age) / total_d:.0f}%; "
+                   f"the rest starved)")
 
     if cc.tree_regrow_ticks or cc.rock_regrow_ticks:
         out.append(f"forest            {np.mean(rep.wood_regrown):.0f} wood + "

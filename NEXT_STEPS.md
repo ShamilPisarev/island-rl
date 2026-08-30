@@ -15,8 +15,64 @@ Do NOT re-run: arb4/b/c/d (all four all-learned variants), arb5-mix, arb5-hh,
 the mixedrandom floor, anything on the §10 do-not-re-run list, the learned-share
 sweep (item 3), or the axe (item 4).
 
-**THIS QUEUE IS EMPTY.** Items 1-6 are all done as of 2026-08-29. What the two
-tech rungs left behind, as the next thing worth doing:
+## ISLAND 3.0 IS BUILT (2026-08-30). The queue below is its follow-ups.
+
+Read `ISLAND3_DESIGN.md` first, then CLAUDE.md's Island 3.0 section. Do NOT
+re-run any of R1, R1b, R2, R3, R4 (either control), R5 or R6 -- the do-not-re-run
+list is at the end of the design doc.
+
+### 3.0-1. Slot reuse (the biggest, ~1 session)
+
+**What**: recycle a dead agent's row so a village can run past its generational
+horizon. **Why**: R6 measured an extinction that was an ARRAY BOUND -- 40
+founders plus 160 births exhausts 200 slots and nobody can be born again, so
+nothing in 3.0 has measured a village sustaining itself across generations, which
+is the whole question the stage set out to ask. **The cost, which is why it was
+not done casually**: `alive_ticks` is per slot and would sum two lives; the
+replay's agent ids would revive mid-episode; `night_sheltered_agent`,
+`attacks_per_agent` and the grudge matrix's row AND column all assume one life
+per row. It needs a per-life ledger, a `generation` column, and a replay that
+says a row changed occupant. **Reads**: population trace over 40,000 ticks
+against the same world without reuse; tribe population share at the end, which
+is the first time "the strongest tribe" can mean a selection result.
+
+    Build slot reuse from NEXT_STEPS.md item 3.0-1: recycle a dead agent's row
+    for a new birth, behind a config flag so every existing result stays
+    bit-identical (pin it with the ISLAND3 checksums). Keep per-LIFE lifespan
+    bookkeeping (a ledger of completed lives, not a per-slot counter), give the
+    replay a way to say a row changed occupant, and pin both with tests. Then
+    run village_mortal for 40,000 ticks against the same world without reuse and
+    read the population trace and the tribe share. Pre-register the failure mode:
+    if the population still falls, the horizon was never the array.
+
+### 3.0-2. A learned arbiter in the village (~1 session)
+
+**What**: `sim.arbiter` on `config/island3/village.yaml`, mixed 20 learned among
+the scripted rest, household reward (the `arb5-hh` recipe). **Why**: this is the
+first world where a learned chooser faces something no scorer scores -- **a birth
+is not a goal**, so nothing in `RESTORE` decides to have a child, and a policy
+trained on its HOUSEHOLD's reward has a term for the next generation that a
+selfish one does not. **Reads**: births in learned households against scripted
+ones; store_food share (arb5-hh's provisioner was 8.8%); nights indoors; and
+construction share, where any sustained nonzero `expand`/`deliver` is the
+headline -- see 3.0-3.
+
+### 3.0-3. The construction wall, offered a RECURRING prize (folds into 3.0-2)
+
+**What**: read `expand` uptake off the same run. **Why**: ISLAND2_DESIGN.md §10
+spent three levers on learned agents refusing to build, with `deliver` on their
+menu at 3.9% of decision points and taken **zero times of ~2,700**. In 2.0 the
+prize was one-off -- twenty sites, finished before the first nightfall. In the
+village a house is never finished: storms take it down, the family grows, and
+`expand` is available all episode. That does not shorten the credit chain and
+nothing so far suggests it will work. It does make it a different question, and
+it costs nothing on top of 3.0-2.
+
+---
+
+## The 2.0 queue (all done, kept for the record)
+
+Items 1-6 were all done by 2026-08-29. What the two tech rungs left behind:
 
 **Run the learned arbiter in the predator world.** Rung 1 (the axe) attacked the
 COST of contributing and moved nothing, because cost was not what binds. Rung 2

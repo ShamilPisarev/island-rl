@@ -364,3 +364,137 @@ tribes, and that alone produces a Gini of 0.23. Making them social groups adds
 So the pre-registered read "the strongest tribe ends up biggest" is **not
 supported**. Tribes differentiate, and so does the ground under them by nearly
 as much. What tribes demonstrably do is change who fights whom.
+
+## R6 — old age, and the generational horizon that is an array bound
+
+Not pre-registered; run because "who survives and reproduces" is only a selection
+question once a founder can be replaced rather than simply accumulating.
+
+**The first run measured an extinction that was not mortality.**
+`village_mortal.yaml` (`max_age: 4000`) on the 200-slot village goes to **zero by
+tick 12,000**. The cause is in the engine's own contract, not in the mechanic:
+**`world.num_agents` is a slot capacity and a slot is used once.** A dead agent
+keeps its row forever, which is what makes every per-agent statistic in this repo
+mean something — and it puts a hard ceiling on how many lives an episode can
+contain. 40 founders plus 160 births exhausts 200 slots, and after that nobody
+can be born while `max_age` keeps killing.
+
+**Re-run against the same slot budget, the effect of old age is real and much
+smaller.** `village_mortal` against `village_long` (both 300 slots), 2 paired
+episodes of 10,000 ticks:
+
+| tick | 4,000 | 6,000 | 7,000 | 8,000 | 9,000 | 10,000 |
+|---|---|---|---|---|---|---|
+| with old age | 80 | 88 | **100** | 84 | 54 | **38** |
+| no old age | 94 | 96 | **115** | 92 | 71 | **66** |
+
+Old age costs 91 deaths and 28 of the final population (−28.0 ± 5.0, 0/2). But
+**both columns fall after tick 7,000**, and both worlds report `born: 300` of 300
+— they are both up against the slot cap, and the shared late decline is the
+array, not the island.
+
+**So the honest statement is that Island 3.0 has a generational horizon, and it
+is a property of the implementation.** Every result above is measured inside it
+(6,000 ticks, ≤200 of 200 slots used at the end), which invalidates none of them
+— they are paired inside that window against their own controls, exactly as
+ISLAND2_DESIGN.md §15's window works. What it does mean is that this stage has
+not measured a village sustaining itself across generations, and cannot until
+slots are recycled. See "What is left".
+
+---
+
+# Corrections this stage forced
+
+Each is pinned by a test named after the symptom, in the style the previous two
+stages use. Four of the six are the same shape: **a denominator that stopped
+meaning what it meant**, which is CLAUDE.md rule 6 arriving in a world where the
+population is an outcome.
+
+1. **The founders were born as infants.** `initial_agents` set `born` and `alive`
+   and left `age` at 0, so the whole starting population was children for
+   `maturity_ticks`. Nobody could chop, build or plant for the first 200 ticks of
+   every episode, so no house was ever finished — and because a birth needs a
+   bed, nobody could be born either. A world that starts with a generation of
+   infants and no parents. Found by a masked `plant` in a unit test, not by a run.
+2. **Capping an unfinished site deleted `partial_shelter`.** `site_capacity`
+   returns 0 for an incomplete house, because a birth needs a real bed in a real
+   house — and using that same 0 at night meant a half-built wall sheltered
+   nobody, which is the M4 cliff put straight back (`partial_shelter` exists
+   because three quarters of a build bought nothing). The two uses now compute
+   separately. This is rule 5 catching a mechanic before the run, which is the
+   only time it is cheap.
+3. **Every per-agent statistic had to divide by the BORN.** With 160 unborn rows
+   carrying a lifespan of 0, a mean over slots reports a thriving village as
+   nearly dead. Lifespan, deaths, the household Gini and `sim.society`'s headline
+   all changed denominator; every 2.0 world has `born` all-True, so none of them
+   moved.
+4. **The goal histogram was counting agents that did not exist** — and this one
+   is a correction to numbers this repo has already published. `OptionRunner`
+   accumulated `goal_ticks` over every row including the dead. At 2.0's death
+   rates that is a small bias; in a 200-slot village with 40 alive it put **80% of
+   all goal-ticks into `explore`** and reported it as what the population wanted.
+   It now counts the living only ("can I move" is an exact aliveness test off the
+   mask). **Every goal share in ISLAND2_DESIGN.md is very slightly overstated for
+   whichever goal dead agents defaulted to; the effect is small (society4 loses
+   ~12 of 100 agents by tick 600) and no comparison in that document is between
+   worlds with different death rates.**
+5. **`expand` keyed on overflow could never fire.** A birth needs a free bed, so a
+   household stops AT capacity and can only exceed it if a storm takes the roof
+   off. The need now rises as the beds fill and saturates when the last one goes.
+6. **The replay header emitted `Infinity`.** Unplanted field slots are parked at
+   infinity so the engine treats them as absent; the header was built from the
+   whole bush array, `json.dump` wrote the literal `Infinity`, and `JSON.parse`
+   rejects it — so every village replay was unloadable in a browser. Wild bushes
+   only, and the test now parses its own output strictly.
+
+Two more that are sizing rather than code, both `sim.economy` doing the job rule
+5 gives it, before any run:
+
+* **Three fields per household would have deleted the world.** The first sizing
+  added **168 agents** of carrying capacity to an island whose wild ceiling is 88
+  — agriculture would have solved everything and left nothing to fight over. Two
+  fields at a 60-tick clock adds ~33.
+* **The stock ratios stop meaning anything.** `supply / demand` divides by
+  `num_agents`, which in a 3.0 world is a slot capacity, so a comfortably-fed
+  village reads as a famine and the tool's WARNING would have been a lie. It now
+  prints a carrying capacity instead and says which number to read.
+
+---
+
+# What is left
+
+**1. Slot reuse, which is the only thing between this and a generational world.**
+R6 is bounded by an array, not by an island. Recycling a dead agent's row would
+let a village run indefinitely — and the cost is exactly why it has not been done
+casually: `alive_ticks` is per slot and would sum two lives, the replay's agent
+ids would revive mid-episode, and per-agent counters (`night_sheltered_agent`,
+`attacks_per_agent`, the grudge matrix's row and column) all assume one life per
+row. Done properly it needs a per-life ledger and a `generation` column, and the
+replay needs to say a row changed occupant. It is a day's careful work and it
+unlocks the one question this stage set out to ask and did not answer.
+
+**2. A learned arbiter in the village, which is the first place one would know
+something the scripted scorer cannot score.** The observation carries
+`home.beds_free`, `home.overflow`, `home.expandable`, `own.farming`,
+`home.field_room`, `own.age`, `own.adult` and a per-neighbour `same_tribe` flag.
+The scripted arbiter reads all of them, so that is not yet the asymmetry the
+predator rung created. **The asymmetry is that a birth is not a goal**: no scorer
+anywhere decides to have a child, so a learned chooser optimising its own
+survival has no term for "my household's next generation" — and a policy trained
+on a HOUSEHOLD reward (`arb5-hh` already exists) does. Whether kin-shared reward
+produces agents that go home well-fed and stand still is a question this world
+can ask and 2.0 could not.
+
+**3. The construction wall, offered a recurring prize for the first time.**
+ISLAND2_DESIGN.md §10 spent three levers on the fact that learned agents will not
+contribute to construction: `deliver` sat on their menu at 3.9% of decision points
+and was taken zero times of ~2,700. In 2.0 the prize was one-off — twenty sites,
+finished before the first nightfall. Here a house is never finished: storms take
+it down, the family grows, and `expand` is available for the whole episode. That
+does not make the credit chain shorter, and nothing above suggests it will work.
+It does make it a genuinely different question, and it costs one training run.
+
+**4. Do NOT re-run.** R1 at 6,000 and 24,000 ticks; R1b; R2; R3; R4 with the
+`village_fed` control (it fails for the reason above) and with
+`village_fed_capped` (it works); R5 with the geographic-quarter control; R6 at
+200 slots (extinction is the array) and at 300 (both arms slot-bound).

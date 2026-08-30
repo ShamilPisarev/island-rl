@@ -28,7 +28,96 @@ rather than smoothing it over.
 `.claude/output-styles/skimmable.md` carries the same rule so it survives a machine
 switch.
 
-## Island 2.0 is on the table — read `ISLAND2_DESIGN.md` first
+## Island 3.0 is BUILT — read `ISLAND3_DESIGN.md` first
+
+Written 2026-08-30. Families that breed, houses that grow, a forest that grows
+back, fields that get invented under hunger, and tribes that raid across a
+border. Five config-gated blocks on `society4`, every one off by default, with
+five 2.0 worlds pinned bit-identical by trajectory checksums. **Nothing here is
+trained** -- it is the scripted utility arbiter, as the two tech rungs were.
+
+**The one-line result: the ISLAND2 §15 collapse becomes a carrying capacity, and
+the village then overshoots it and dies back.** With regrowing trees society4
+holds **48-49 agents flat from tick 4,000 to tick 24,000**; without, it falls
+46 → 16 and is still falling. In the village (40 founders, 200 slots, capacity
+88 sheltered / 59 exposed by `sim.economy`) the population climbs to **92 and
+falls back to 65** -- a Malthusian overshoot nothing in the arbiter models.
+
+Every read, with its control, in one line each:
+
+* **R1, the forest.** `society4_regrow` vs `society4`, same seeds: survivors
+  **+18.3 ± 1.2 (3/3)** at 6,000 ticks, nights indoors **+50.4 ± 1.2**, shelters
+  522 vs 135 -- and **berries do not move** (−342 ± 361, 1/3). §15 named the
+  right resource. At village scale the forest is not an improvement but the
+  precondition: population **64.8 vs 23.2 (+41.6 ± 0.9, 5/5)**, and fields
+  planted 32.2 vs 2.6, because **a dead forest cannot afford agriculture either**
+  (a field costs a unit of material).
+* **R2, births.** 159.6 births per 6,000 ticks against 0 in the fixed-cast
+  control; the control also gets 0.8 rooms and 0 fields, because a household of
+  two never fills a house and never gets hungry enough to invent farming. Every
+  other 3.0 mechanic is unreachable without reproduction.
+* **R3, beds. MIXED, and honestly a net tax.** The mechanic works -- **58.4 rooms
+  an episode against 0.0**, with **2,446 agent-ticks a night spent outside for
+  want of a BED** -- and it does not pay for itself: nights indoors **−1.9 ± 1.0
+  (1/5)**, lifespan −71 ± 33 (1/5), population −3.0 ± 3.8 (inside noise).
+* **R4, the invention of agriculture. CONFIRMED, and the first control failed in
+  the most interesting way.** Doubling the berry economy did NOT stop farming
+  being invented (16.4 households vs 14.4, nothing) **because the village simply
+  bred to 144 and got hungry again** -- you cannot feed a village out of scarcity
+  when its population is an outcome. Against the control that works (fed AND
+  capped at 60 slots on a 176 capacity): **fields 32.2 vs 0.0, farming households
+  16.4 vs 0.2, first unlock tick 1,487 in 5/5 episodes against 5,588 in 1/5.**
+  Fields then supply **12% of everything the village eats**. Honest cost,
+  unchanged from the axe: the unlock RULE is authored.
+* **R5, tribes. PARTLY REFUTED.** Tribes cut raiding **4,306 → 1,834 (−57%)**,
+  and 43% of what survives crosses a border -- via steals, not raids: tribe
+  immunity blocks intra-tribe theft, which starves the grudge that gates
+  vengeance. Cost: lifespan −129 ± 32 (0/5). **The "strongest tribe" claim does
+  NOT survive its control.** Tribe-size Gini reads 0.27 vs 0.00, and the 0.00 is
+  an artefact of there being one tribe; partitioning households into the SAME
+  four angular quarters either way gives **0.27 vs 0.23, +0.04 ± 0.03 (4/5)**.
+  Most of the inequality is the ground, not the tribe.
+* **R6, old age. Bounded by an ARRAY, not by an island.** `world.num_agents` is a
+  slot capacity and a slot is used once, so 40 founders plus 160 births exhausts
+  200 rows and the mortal village goes extinct at tick 12,000. Re-run at 300
+  slots against a same-budget control, old age costs 91 deaths and −28 of the
+  final population, and **both arms decline after tick 7,000 because both are
+  slot-bound.** Nothing in this stage has measured a village sustaining itself
+  across generations, and it cannot until slots are recycled (§"What is left").
+
+**Six corrections, all pinned by tests named after the symptom, and four of them
+are the same shape -- a denominator that stopped meaning what it meant.** The
+founders were born as infants (nobody could build for 200 ticks, so no house was
+finished, so no birth could happen); capping an unfinished site deleted
+`partial_shelter` and put the M4 cliff back; every per-agent statistic had to
+divide by the BORN; **the goal histogram was counting agents that did not exist**;
+`expand` keyed on overflow could never fire (a birth needs a bed, so a household
+stops AT capacity); and the replay header emitted `Infinity`, so every village
+replay was unloadable in a browser. Full write-ups in ISLAND3_DESIGN.md.
+
+**One correction reaches back into ISLAND2_DESIGN.md.** `OptionRunner.goal_ticks`
+counted dead agents. Every goal share already published is very slightly
+overstated for whichever goal a corpse defaulted to; the effect is small
+(society4 loses ~12 of 100 by tick 600) and no 2.0 comparison is between worlds
+with different death rates, so no 2.0 conclusion changes.
+
+New: `ReproductionConfig`/`HousingConfig`/`AgricultureConfig`/`TribeConfig`,
+`construction.tree_regrow_ticks`/`rock_regrow_ticks`, one appended action
+(`plant`, 22 -- births are automatic and an extension reuses `build`), two goals
+(`expand`, `plant`) and two needs (`house_room`, `land`), **replay schema v7**
+(children drawn small, fields as tilled patches, rooms as annexes),
+`sim.economy` taught to print a CARRYING CAPACITY and a material RATE,
+`config/island3/` (9 configs), `tests/test_island3.py` (30 tests).
+
+Reproduce:
+
+```bash
+.venv/bin/python -m sim.economy --config config/island3/village.yaml
+.venv/bin/python -m sim.society --config config/island3/village.yaml --episodes 5 --ticks 6000
+.venv/bin/python -m sim.society --config config/island3/village.yaml --ticks 3000 --replay
+```
+
+## Island 2.0 -- read `ISLAND2_DESIGN.md` first
 
 Decided 2026-08-25: the next likely direction is a watchable 50–100-agent
 society (utility/"Maslow" arbiter + scripted controllers first, then a learned
