@@ -269,8 +269,8 @@ def test_a_stage4_checkpoint_grows_into_a_tools_world(cfg, tmp_path):
 
     axe_cfg = load_config(AXE)
     grown = load_arbiter(path, axe_cfg)
-    assert grown.policy.n_actions == N_GOALS
-    assert grown.traits.shape[1] == N_GOALS
+    assert grown.policy.n_actions == N_GOALS_RUNG1
+    assert grown.traits.shape[1] == N_GOALS_RUNG1
     # The appended logit's weights are zero, so the grown net scores the goals it
     # was trained on exactly as it did.
     head = grown.policy.policy_head

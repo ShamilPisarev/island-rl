@@ -48,6 +48,18 @@ class Economy:
     # inside a predator's reach -- a lower bound, see `subsistence`.
     hunted_share: float = 0.0
     predator_damage: float = 0.0
+    # --- Island 3.0. Once the population is born rather than cast, "supply over
+    # demand for N agents" stops being the question: N is an outcome. The number
+    # that matters is the CARRYING CAPACITY -- how many agents the island's
+    # regrowth rate can feed indefinitely -- and it is a rate calculation, not a
+    # stock one. Section 15's collapse is exactly what happens when nobody asks
+    # it (see `Materials`, where the collapsing resource actually was).
+    carrying_sheltered: float = 0.0
+    carrying_exposed: float = 0.0
+    field_bushes: int = 0
+    field_supply_rate: float = 0.0
+    child_drain_frac: float = 1.0
+    initial_agents: int = 0
 
     @property
     def ratio_sheltered(self) -> float:
@@ -83,7 +95,40 @@ class Economy:
                 f"  ...the exposed figure includes predators: {self.hunted_share:.1%}"
                 f" of an exposed night inside reach, at {self.predator_damage} hunger"
                 f"/tick (a LOWER bound -- they hunt, they do not patrol)")
-        if self.ratio_sheltered < 1.0:
+        if self.carrying_sheltered > 0.0:
+            lines += [
+                "",
+                "--- Island 3.0: the population is an outcome, so read the RATE ---",
+                f"carrying capacity, all sheltered  {self.carrying_sheltered:6.1f} agents",
+                f"carrying capacity, all exposed    {self.carrying_exposed:6.1f} agents",
+                f"...against {self.initial_agents} at tick 0 and "
+                f"{self.num_agents} slots to grow into",
+            ]
+            if self.field_bushes:
+                lines.append(
+                    f"...plus {self.field_bushes} field slots at "
+                    f"{self.field_supply_rate:.2f} berries/tick if every one is "
+                    f"planted (+{self.field_supply_rate / max(1.0 / max(self.ticks_per_meal, 1e-9), 1e-9):.1f} agents)")
+            if self.child_drain_frac < 1.0:
+                lines.append(
+                    f"...and a child eats {self.child_drain_frac:.0%} of an adult, "
+                    "so a growing population's true capacity sits above the "
+                    "sheltered figure and falls toward it as the children grow")
+            if self.carrying_sheltered < self.initial_agents:
+                lines.append(
+                    "\nWARNING: the island cannot feed the population it STARTS "
+                    "with, so it will shrink whatever anyone does and no "
+                    "reproduction result can be read off it.")
+        if self.carrying_sheltered > 0.0:
+            # The stock ratios above divide by `num_agents`, which in a 3.0 world
+            # is a SLOT CAPACITY rather than a population -- so they read as a
+            # famine in a world that is comfortably fed, and their warning would
+            # be a lie. Rule 6, arriving in a new disguise: a denominator that
+            # stopped meaning what it used to. The rate figures replace them.
+            lines.append("\n(the two ratios above divide by SLOTS, not by "
+                         "agents alive -- in a 3.0 world read the capacities, "
+                         "not the ratios)")
+        elif self.ratio_sheltered < 1.0:
             lines.append("\nWARNING: even a fully sheltered population starves. "
                          "Nothing behavioural can be read off this world.")
         elif self.ratio_exposed >= 1.0:
@@ -165,7 +210,42 @@ def subsistence(cfg: Config) -> Economy:
     # A bush cannot hold more than `capacity`, so its initial load is capped too.
     supply = bushes * (min(b.initial_berries, b.capacity) + regrowths)
 
+    # --- Island 3.0. Supply per tick, not supply per episode: a world whose
+    # population grows has no fixed demand to divide by, so the question becomes
+    # how many mouths the island's REGROWTH can carry. One bush yields one berry
+    # every `regrow_ticks` while below capacity; one agent eats one berry every
+    # `ticks_per_meal`. The quotient is the capacity, and everything else in a
+    # 3.0 sizing hangs off it.
+    # Blights suspend regrowth, so the rate is net of them -- the same deduction
+    # `supply` already makes on the stock figure. Leaving it out would have
+    # over-stated a shocked island's capacity by a third.
+    supply_rate = (bushes / max(b.regrow_ticks, 1)) * (growing / max(ticks, 1))
+    ac = cfg.agriculture
+    field_bushes = 0
+    field_rate = 0.0
+    if ac.enabled and sc.enabled:
+        field_bushes = max(sc.num_households, 1) * ac.max_fields_per_household
+        # A blight is a blight: it suspends a field's regrowth exactly as it
+        # suspends a wild bush's (world.py has one regrowth phase, not two), so
+        # the same deduction applies. Leaving it out over-states what farming
+        # buys, in the one place a world would be sized on it.
+        field_rate = (field_bushes / max(ac.field_regrow_ticks, 1)) * (growing / max(ticks, 1))
+    eat_rate = 1.0 / max(ticks_per_meal, 1e-9)
+    eat_rate_exposed = exposed_drain / max(h.eat_restore, 1e-9)
+    rc = cfg.reproduction
+    carrying_s = carrying_e = 0.0
+    if rc.enabled:
+        carrying_s = supply_rate / max(eat_rate, 1e-9)
+        carrying_e = supply_rate / max(eat_rate_exposed, 1e-9)
+
     return Economy(
+        carrying_sheltered=carrying_s,
+        carrying_exposed=carrying_e,
+        field_bushes=field_bushes,
+        field_supply_rate=field_rate,
+        child_drain_frac=rc.child_drain_frac if rc.enabled else 1.0,
+        initial_agents=(rc.initial_agents if (rc.enabled and rc.initial_agents)
+                        else w.num_agents),
         hunted_share=hunted_share,
         predator_damage=pc.damage if pc.enabled else 0.0,
         blight_ticks=blight_ticks,
@@ -213,14 +293,25 @@ class Materials:
     axe_wood_cost: int
     axe_stone_cost: int
     axes_if_everyone: int
+    # --- Island 3.0
+    wood_regrow_ticks: int = 0
+    rock_regrow_ticks: int = 0
+    wood_regrown: float = 0.0
+    stone_regrown: float = 0.0
+    expansion_demand: float = 0.0
+    field_demand: float = 0.0
+    material_rate: float = 0.0     # units per tick the island puts back
+    build_rate_needed: float = 0.0  # units per tick storms alone consume
 
     @property
     def demand(self) -> float:
-        return self.sites * self.site_cost + self.storm_rebuild
+        return (self.sites * self.site_cost + self.storm_rebuild
+                + self.expansion_demand + self.field_demand)
 
     @property
     def supply(self) -> float:
-        return float(self.wood_supply + self.stone_supply)
+        return float(self.wood_supply + self.stone_supply
+                     + self.wood_regrown + self.stone_regrown)
 
     @property
     def ratio(self) -> float:
@@ -233,9 +324,36 @@ class Materials:
             f" = {self.supply:.0f}",
             f"material demand {self.demand:6.0f}"
             f"   ({self.sites} sites x {self.site_cost}"
-            f" + {self.storm_rebuild:.0f} storm rebuilds)",
+            f" + {self.storm_rebuild:.0f} storm rebuilds"
+            + (f" + {self.expansion_demand:.0f} rooms" if self.expansion_demand else "")
+            + (f" + {self.field_demand:.0f} fields" if self.field_demand else "")
+            + ")",
             f"supply / demand {self.ratio:6.2f}x",
         ]
+        if self.wood_regrow_ticks or self.rock_regrow_ticks:
+            # THE NUMBER SECTION 15 NEEDED AND NOBODY COMPUTED. Trees and rocks
+            # never regrew, so a village whose storms keep levelling it consumes
+            # material at a rate the island never replaces -- and over 600 ticks
+            # that is invisible, because the initial stock covers it. Over 24,000
+            # it is the whole story. These two rates are what decide whether a
+            # world collapses or settles, and a stock ratio cannot say.
+            lines += [
+                "",
+                f"...regrowth adds {self.wood_regrown:.0f} wood + "
+                f"{self.stone_regrown:.0f} stone over the episode",
+                f"island replaces  {self.material_rate:.3f} units/tick",
+                f"storms consume   {self.build_rate_needed:.3f} units/tick",
+            ]
+            if self.material_rate < self.build_rate_needed:
+                lines.append(
+                    "WARNING: the village is consuming material faster than the "
+                    "island replaces it. That is a collapse on a long enough run "
+                    "(ISLAND2_DESIGN.md section 15), whatever a 600-tick episode says.")
+            else:
+                lines.append(
+                    "OK: regrowth outpaces storm damage, so the material economy "
+                    "is sustainable and a long run measures carrying capacity "
+                    "rather than a countdown.")
         if self.axes_if_everyone:
             axe_bill = self.axes_if_everyone * (self.axe_wood_cost + self.axe_stone_cost)
             lines += [
@@ -277,7 +395,33 @@ def materials(cfg: Config) -> Materials:
     wood = cc.num_trees * cc.tree_wood
     per_chop = max(tc.chop_multiplier, 1) if tc.enabled else 1
     wood_bill = float(cc.num_sites * cc.site_wood_cost) + rebuild * 0.5
+    # --- Island 3.0. Regrowth is a RATE, and it is the rate that decides whether
+    # a long run settles or collapses. An upper bound, like the berry supply: a
+    # node stops at the stock it started with, so a forest nobody chops replaces
+    # nothing. Read it as "the most the island can put back".
+    ticks_total = cfg.world.max_ticks
+    wood_regrown = stone_regrown = 0.0
+    if cc.enabled and cc.tree_regrow_ticks > 0:
+        wood_regrown = cc.num_trees * (ticks_total / cc.tree_regrow_ticks)
+    if cc.enabled and cc.rock_regrow_ticks > 0:
+        stone_regrown = cc.num_rocks * (ticks_total / cc.rock_regrow_ticks)
+    material_rate = ((cc.num_trees / cc.tree_regrow_ticks if cc.tree_regrow_ticks else 0.0)
+                     + (cc.num_rocks / cc.rock_regrow_ticks if cc.rock_regrow_ticks else 0.0))
+    build_rate = rebuild / max(ticks_total, 1)
+    hc = cfg.housing
+    ac = cfg.agriculture
+    expansion = (cc.num_sites * hc.max_rooms * hc.expand_units) if hc.enabled else 0.0
+    fields = (max(sc.num_households, 1) * ac.max_fields_per_household
+              * ac.plant_material_cost) if ac.enabled else 0.0
     return Materials(
+        wood_regrow_ticks=cc.tree_regrow_ticks,
+        rock_regrow_ticks=cc.rock_regrow_ticks,
+        wood_regrown=wood_regrown,
+        stone_regrown=stone_regrown,
+        expansion_demand=float(expansion),
+        field_demand=float(fields),
+        material_rate=material_rate,
+        build_rate_needed=build_rate,
         trees=cc.num_trees,
         rocks=cc.num_rocks,
         wood_supply=wood,

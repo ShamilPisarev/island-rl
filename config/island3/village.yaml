@@ -1,0 +1,106 @@
+# Island 3.0: the village -- families that breed, houses that grow, a forest
+# that grows back, fields that get invented, and tribes that raid each other.
+#
+# `society4.yaml` plus the five 3.0 blocks. Read ISLAND3_DESIGN.md first: it
+# carries the five design decisions and, more importantly, the honest costs.
+#
+# WHY THIS WORLD EXISTS. ISLAND2_DESIGN.md section 15 ran society4 for 24,000
+# ticks and watched 100 agents fall to 16, because trees and rocks never regrow
+# and after ~tick 2000 there is nothing left to rebuild the shelters storms keep
+# levelling. A world that cannot sustain itself cannot be asked who WINS it, and
+# "who wins" is what 3.0 is for. So the forest grows back first, and everything
+# else is built on top of that.
+#
+# SIZED WITH `sim.economy` BEFORE A SINGLE RUN (rule 5), and the tool had to be
+# taught two new things first, because a 3.0 world breaks both of its old
+# questions:
+#
+#   * the population is an OUTCOME, so "supply over demand for N agents" is not
+#     the question. `sim.economy` now prints a CARRYING CAPACITY -- the island's
+#     berry regrowth rate divided by one agent's eating rate.
+#   * the material economy is a RATE, not a stock. Regrowth per tick against
+#     storm damage per tick is the number section 15 needed and nobody had.
+#
+# What the tool says about this file:
+#
+#   carrying capacity, all sheltered    88.2 agents   <- against 40 at tick 0
+#   carrying capacity, all exposed      58.8 agents   <- shelter still load-bearing
+#   island replaces  0.392 units/tick
+#   storms consume   0.200 units/tick   <- OK: sustainable
+#
+# So the population starts at 40, has room to roughly double, and then meets a
+# ceiling it can only push with fields. That ceiling is the whole point: it is
+# what makes hunger arrive on schedule, which is what unlocks agriculture, which
+# is what gives the tribes something to fight over.
+extends: ../island2/society4.yaml
+
+world:
+  # A SLOT CAPACITY, not a population. 40 are alive at tick 0 (two founders per
+  # household); the rest are unborn rows waiting to be filled. 200 is well above
+  # the island's carrying capacity on purpose -- the ceiling that stops the
+  # population should be the FOOD, not an array bound, or the headline result
+  # would be a statement about numpy.
+  num_agents: 200
+
+construction:
+  # THE FIX FOR SECTION 15. A tree refills one unit every 150 ticks up to the
+  # stock it started with; a rock every 200. Together that is 0.392 units/tick
+  # against the 0.200 storms take, so the material economy settles instead of
+  # counting down -- and the surplus is what pays for the extensions below.
+  tree_regrow_ticks: 150
+  rock_regrow_ticks: 200
+
+reproduction:
+  enabled: true
+  initial_agents: 40        # 2 per household, in 20 households
+  birth_hunger: 80.0        # well fed, not merely alive
+  birth_food_cost: 4        # out of the family larder, capacity 12
+  birth_cooldown: 150       # ~three quarters of a day/night cycle
+  birth_radius: 3.0
+  maturity_ticks: 200       # a full day-night cycle as a child
+  child_drain_frac: 0.6
+  max_age: 0                # nobody dies of old age here; see village_mortal.yaml
+  observe_age: true
+
+housing:
+  enabled: true
+  # THREE, not four, and the number is chosen so the mechanic is TESTED rather
+  # than merely present. Households start at 2, so the first birth fills the
+  # house and the second one cannot happen until a room is built. If the base
+  # house were big enough for the family the world hands it, R3 would measure
+  # nothing.
+  base_occupants: 3
+  expand_units: 2
+  occupants_per_room: 2
+  max_rooms: 6              # so a house tops out at 15
+  kin_priority: true
+  observe_house: true
+
+agriculture:
+  enabled: true
+  # The invention is SCORED, NOT DISCOVERED, and every write-up says so. What is
+  # honestly measured is whether the unlock fires more where food is short --
+  # which is why `village_fed.yaml` exists, and why the adoption number is read
+  # against a random-goal floor.
+  unlock_hunger: 35.0
+  unlock_hunger_ticks: 300  # cumulative agent-ticks, per household
+  plant_material_cost: 1
+  plant_radius: 8.0
+  # SIZED SO FARMING RELIEVES THE CEILING WITHOUT DELETING IT. The first
+  # sizing (3 fields at 25 ticks) added 168 agents of carrying capacity to an
+  # island whose wild ceiling is 88 -- agriculture would have trivially solved
+  # the world and there would have been nothing left to fight over, which is
+  # rule 5 catching a mechanic before it ran rather than after. Two fields at 60
+  # ticks adds ~32, so a fully farmed village carries ~120 against 88 wild.
+  max_fields_per_household: 2
+  field_capacity: 8         # richer than a wild bush (6)...
+  field_regrow_ticks: 60    # ...and refills two-thirds faster
+  field_initial: 0          # a field starts empty and has to grow
+  observe_agriculture: true
+
+tribes:
+  enabled: true
+  num_tribes: 4             # five households each, as an arc of coast
+  tribe_theft_immunity: true
+  collective_grudge: true
+  observe_tribe: true

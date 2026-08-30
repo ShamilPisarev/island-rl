@@ -1,0 +1,14 @@
+# R2's control: the same village, with nobody ever born.
+#
+# 40 agents, fixed, in the same 20 households -- so the population can only
+# fall, and every difference in the population trace is reproduction. Note
+# `world.num_agents` has to come DOWN to 40: with reproduction off it is a
+# population again rather than a slot capacity, and leaving it at 200 would
+# spawn 200 agents on an island sized for 88.
+extends: village.yaml
+
+world:
+  num_agents: 40
+
+reproduction:
+  enabled: false

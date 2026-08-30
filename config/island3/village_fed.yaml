@@ -1,0 +1,14 @@
+# R4's control: the same village, with more food than it can eat.
+#
+# THE POINT IS THE UNLOCK, NOT THE FIELD. Agriculture is unlocked per household
+# by cumulative hunger, so the honest question is whether the invention fires
+# where food is short and stays shut where it is not. This world raises the
+# berry economy until hunger is rare and everything else -- including the
+# unlock rule itself -- is identical.
+#
+# `sim.economy`: carrying capacity 176.5 sheltered against the village's 88.2,
+# and 200 slots, so the island can feed every agent it can hold.
+extends: village.yaml
+
+bushes:
+  bushes_per_cluster: 18

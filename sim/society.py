@@ -102,6 +102,31 @@ class SocietyReport:
         default_factory=lambda: np.zeros(N_GOALS, dtype=np.int64))
     goal_ticks_unarmed: np.ndarray = field(
         default_factory=lambda: np.zeros(N_GOALS, dtype=np.int64))
+    # --- Island 3.0
+    births: list[int] = field(default_factory=list)
+    deaths_of_age: list[int] = field(default_factory=list)
+    born: list[int] = field(default_factory=list)
+    population_final: list[int] = field(default_factory=list)
+    # Population sampled through the episode. THE trace of a 3.0 world: a final
+    # head count cannot tell a village that grew to 90 and crashed from one that
+    # climbed steadily to 60, and section 15's collapse is invisible in any
+    # endpoint.
+    population_trace: list[list[tuple[int, int]]] = field(default_factory=list)
+    expansions: list[int] = field(default_factory=list)
+    rooms_final: list[np.ndarray] = field(default_factory=list)
+    bed_denied: list[int] = field(default_factory=list)
+    roofless: list[int] = field(default_factory=list)
+    fields_planted: list[int] = field(default_factory=list)
+    farming_households: list[int] = field(default_factory=list)
+    field_berries: list[int] = field(default_factory=list)
+    wood_regrown: list[int] = field(default_factory=list)
+    stone_regrown: list[int] = field(default_factory=list)
+    tribe_population: list[np.ndarray] = field(default_factory=list)
+    tribe_births: list[np.ndarray] = field(default_factory=list)
+    tribe_ever: list[np.ndarray] = field(default_factory=list)
+    raids_cross: list[int] = field(default_factory=list)
+    raids_within: list[int] = field(default_factory=list)
+    births_by_household: list[np.ndarray] = field(default_factory=list)
 
 
 def gini(values: np.ndarray) -> float:
@@ -303,6 +328,12 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
         home_d: list[float] = []
         displaced: list[float] = []
         raid_hungry: list[float] = []
+        # Island 3.0: the population trace, sampled on the same clock as
+        # everything else here. Every 3.0 read is about a trajectory rather than
+        # an endpoint, and the sample interval scales with the episode so a
+        # 24,000-tick run does not carry 24,000 rows.
+        pop_trace: list[tuple[int, int]] = []
+        pop_every = max(cfg.world.max_ticks // 60, 1)
         while True:
             mask = world.action_mask()
             if runner is not None:
@@ -322,15 +353,21 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
                 # Same counting rule as OptionRunner.goal_ticks (every agent,
                 # every tick), split by who owns the agent, so the two subsets'
                 # shares are comparable with the population line above them.
-                np.add.at(rep.goal_ticks_learned, runner.goals[learn_mask], 1)
-                np.add.at(rep.goal_ticks_scripted, runner.goals[~learn_mask], 1)
+                live = pool.alive
+                np.add.at(rep.goal_ticks_learned, runner.goals[learn_mask & live], 1)
+                np.add.at(rep.goal_ticks_scripted, runner.goals[~learn_mask & live], 1)
             if cfg.tools.enabled and runner is not None:
                 # Split by whether the agent was holding an axe on this tick, so
                 # the two shares are comparable with the population line. Counted
                 # every tick, exactly as `OptionRunner.goal_ticks` is.
-                armed = pool.axe > 0
+                armed = (pool.axe > 0) & pool.alive
                 np.add.at(rep.goal_ticks_armed, runner.goals[armed], 1)
-                np.add.at(rep.goal_ticks_unarmed, runner.goals[~armed], 1)
+                np.add.at(rep.goal_ticks_unarmed, runner.goals[(pool.axe == 0) & pool.alive], 1)
+            # Unnested from the sampling block below on purpose: that one skips
+            # ticks with nobody alive, and a population trace whose zeros are
+            # missing is exactly the trace that cannot show a collapse.
+            if world.tick % pop_every == 0:
+                pop_trace.append((int(world.tick), int(pool.alive.sum())))
             if world.tick % 10 == 0 and pool.alive.any():
                 _, is_night = night_phase(world.tick, cfg)
                 # Rhythm is measured as distance to the nearest FINISHED shelter,
@@ -371,6 +408,30 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
         if cfg.tools.enabled:
             rep.axes_crafted.append(stats.axes_crafted)
             rep.axe_holders.append(stats.axe_holders)
+        if (cfg.reproduction.enabled or cfg.housing.enabled
+                or cfg.agriculture.enabled or cfg.tribes.enabled
+                or cfg.construction.tree_regrow_ticks
+                or cfg.construction.rock_regrow_ticks):
+            rep.births.append(stats.births)
+            rep.deaths_of_age.append(stats.deaths_of_age)
+            rep.born.append(stats.born)
+            rep.population_final.append(stats.population_final)
+            rep.population_trace.append(list(pop_trace))
+            rep.expansions.append(stats.house_expansions)
+            rep.rooms_final.append(stats.rooms_final.astype(np.float64))
+            rep.bed_denied.append(stats.bed_denied)
+            rep.roofless.append(stats.roofless)
+            rep.fields_planted.append(stats.fields_planted)
+            rep.farming_households.append(stats.farming_households)
+            rep.field_berries.append(stats.berries_from_fields)
+            rep.wood_regrown.append(stats.wood_regrown)
+            rep.stone_regrown.append(stats.stone_regrown)
+            rep.tribe_population.append(stats.tribe_population.astype(np.float64))
+            rep.tribe_births.append(stats.tribe_births.astype(np.float64))
+            rep.tribe_ever.append(stats.tribe_ever.astype(np.float64))
+            rep.raids_cross.append(stats.raids_cross_tribe)
+            rep.raids_within.append(stats.raids_within_tribe)
+            rep.births_by_household.append(stats.births_by_household.astype(np.float64))
         if cfg.predators.enabled:
             rep.attacks.append(stats.attacks)
             rep.hunger_lost.append(stats.hunger_lost_to_predators)
@@ -384,8 +445,10 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
             rep.blight_ticks.append(stats.blight_ticks)
             h = cfg.society.num_households
             lives_by_house = np.zeros(h)
-            np.add.at(lives_by_house, world.household, world.alive_ticks)
-            counts = np.bincount(world.household, minlength=h)
+            born_mask = world.pool.born
+            np.add.at(lives_by_house, world.household[born_mask],
+                      world.alive_ticks[born_mask])
+            counts = np.bincount(world.household[born_mask], minlength=h)
             rep.house_lifespan.append(lives_by_house / np.maximum(counts, 1))
             rep.house_stock_food.append(stats.stock_food_final.astype(np.float64))
             rep.house_stock_material.append(stats.stock_material_final.astype(np.float64))
@@ -398,7 +461,11 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
             for _tick, raider_h, victim_h, _item in stats.raid_ledger:
                 rep.raid_matrix[raider_h, victim_h] += 1
         rep.ticks.append(stats.ticks)
-        rep.lifespans.append(world.alive_ticks)
+        # BORN AGENTS ONLY. With reproduction on, `world.num_agents` is a slot
+        # capacity and the unborn rows carry a lifespan of 0 -- averaging them in
+        # would report a village of 90 well-fed agents as having a mean lifespan
+        # near zero. Every 2.0 world has `born` all-True, so nothing moves there.
+        rep.lifespans.append(world.alive_ticks[world.pool.born])
         rep.deaths.append(stats.deaths)
         rep.berries.append(stats.berries_gathered)
         rep.shelters.append(stats.shelters_completed)
@@ -427,14 +494,25 @@ def format_report(cfg: Config, rep: SocietyReport, label: str) -> str:
     econ = subsistence(cfg)
     total_goal = max(int(rep.goal_ticks.sum()), 1)
     night_total = max(sum(rep.night_in) + sum(rep.night_out), 1)
+    # ISLAND 3.0: `world.num_agents` stops being a population the moment agents
+    # are born, so every headline that divided by it has to say what it is
+    # dividing by instead. Rule 5 -- change a mechanic, re-derive the arithmetic
+    # around it -- applied to the report rather than to the world.
+    grows = cfg.reproduction.enabled
+    cast = float(np.mean(rep.born)) if (grows and rep.born) else cfg.world.num_agents
+    cast_label = f"{cast:.0f} born" if grows else f"{cfg.world.num_agents}"
     out = [
-        f"=== {label}: {cfg.world.num_agents} agents x {rep.episodes} episodes ===",
+        f"=== {label}: {cast_label}"
+        + (f" of {cfg.world.num_agents} slots" if grows else " agents")
+        + f" x {rep.episodes} episodes ===",
         f"mean lifespan      {lives.mean():7.1f} of {cfg.world.max_ticks} "
-        f"({100 * lives.mean() / cfg.world.max_ticks:.0f}%)",
-        f"deaths / episode   {np.mean(rep.deaths):7.2f} of {cfg.world.num_agents}",
+        f"({100 * lives.mean() / cfg.world.max_ticks:.0f}%)"
+        + ("   (a newborn's ceiling is the ticks LEFT, so this is bounded well "
+           "below max_ticks in any world that grows)" if grows else ""),
+        f"deaths / episode   {np.mean(rep.deaths):7.2f} of {cast_label}",
         f"berries / episode  {np.mean(rep.berries):7.1f} of {econ.supply:.0f} the island makes "
-        f"({100 * np.mean(rep.berries) / max(econ.supply, 1):.0f}% harvested, "
-        f"demand {econ.demand_sheltered:.0f})",
+        f"({100 * np.mean(rep.berries) / max(econ.supply, 1):.0f}% harvested"
+        + ("" if grows else f", demand {econ.demand_sheltered:.0f}") + ")",
         f"shelters / episode {np.mean(rep.shelters):7.2f} of {cfg.construction.num_sites}"
         + (" COMPLETIONS, not distinct sites: a storm knocks finished shelters back "
            "to incomplete and they are rebuilt, so this counts rebuilds and can "
@@ -518,8 +596,97 @@ def format_report(cfg: Config, rep: SocietyReport, label: str) -> str:
         out.append(_tool_section(cfg, rep))
     if cfg.predators.enabled and rep.attacks:
         out.append(_predator_section(cfg, rep))
+    if rep.population_final:
+        out.append(_island3_section(cfg, rep))
     if rep.learn_mask is not None:
         out.append(_mixed_section(cfg, rep))
+    return "\n".join(out)
+
+
+def _island3_section(cfg: Config, rep: SocietyReport) -> str:
+    """Births, houses, fields and tribes -- and it LEADS with the population.
+
+    Every other section in this file reports a rate or a mean over a fixed cast.
+    A 3.0 world has no fixed cast, so the first thing a reader needs is the
+    trajectory: a village that grew to 90 and crashed and one that climbed
+    steadily to 60 have the same final head count and nothing else in common,
+    and section 15's collapse is invisible in any endpoint.
+    """
+    if not rep.population_final:
+        return ""
+    cc, rc, hc, ac, tc = (cfg.construction, cfg.reproduction, cfg.housing,
+                          cfg.agriculture, cfg.tribes)
+    econ = subsistence(cfg)
+    out = ["", "--- Island 3.0 ---"]
+
+    start = rep.population_trace[0][0][1] if rep.population_trace[0] else 0
+    out.append(f"population        {start} at tick 0 -> "
+               f"{np.mean(rep.population_final):.1f} at the end"
+               f"   ({np.mean(rep.born):.1f} ever born, "
+               f"{np.mean(rep.births):.1f} of them here)")
+    if econ.carrying_sheltered > 0.0:
+        out.append(f"  carrying capacity {econ.carrying_sheltered:.0f} sheltered / "
+                   f"{econ.carrying_exposed:.0f} exposed (sim.economy, before fields)")
+    # The trace itself, thinned to a readable row. The shape is the result.
+    trace = rep.population_trace[0]
+    if len(trace) > 1:
+        step = max(len(trace) // 8, 1)
+        pts = trace[::step][:9]
+        # Averaged across episodes at the same sample ticks where they line up.
+        rows = []
+        for t, _ in pts:
+            vals = [dict(tr).get(t) for tr in rep.population_trace]
+            vals = [v for v in vals if v is not None]
+            rows.append(f"t{t}:{np.mean(vals):.0f}" if vals else f"t{t}:-")
+        out.append("  trace           " + "  ".join(rows))
+    if rc.enabled and rc.max_age > 0:
+        out.append(f"  deaths of old age {np.mean(rep.deaths_of_age):.1f} of "
+                   f"{np.mean(rep.deaths_of_age) + 0:.0f} + starvation")
+
+    if cc.tree_regrow_ticks or cc.rock_regrow_ticks:
+        out.append(f"forest            {np.mean(rep.wood_regrown):.0f} wood + "
+                   f"{np.mean(rep.stone_regrown):.0f} stone regrown per episode")
+
+    if hc.enabled:
+        rooms = np.concatenate(rep.rooms_final) if rep.rooms_final else np.zeros(1)
+        nights = max(sum(rep.night_in) + sum(rep.night_out), 1)
+        out += [
+            f"houses            {np.mean(rep.expansions):.1f} rooms added, "
+            f"{rooms.mean():.2f} per house at the end (max {hc.max_rooms})",
+            # TWO NUMBERS, NOT ONE. `roofless` says build a house; `bed_denied`
+            # says build it BIGGER. A single "exposed" figure cannot tell a
+            # village with no walls from one whose walls are full, and the whole
+            # of R3 is that distinction.
+            f"  exposed nights  {100.0 * sum(rep.bed_denied) / nights:5.1f}% no BED"
+            f"   {100.0 * sum(rep.roofless) / nights:5.1f}% no HOUSE",
+        ]
+
+    if ac.enabled:
+        n_house = max(cfg.society.num_households, 1)
+        out += [
+            f"agriculture       {np.mean(rep.farming_households):.1f} of {n_house}"
+            f" households invented it; {np.mean(rep.fields_planted):.1f} fields planted"
+            f" of {n_house * ac.max_fields_per_household} possible",
+            f"  field harvest   {np.mean(rep.field_berries):.0f} berries of "
+            f"{np.mean(rep.berries):.0f} "
+            f"({100.0 * np.mean(rep.field_berries) / max(np.mean(rep.berries), 1e-9):.1f}%)",
+        ]
+
+    if tc.enabled and rep.tribe_population:
+        pop = np.mean(np.stack(rep.tribe_population), axis=0)
+        ever = np.mean(np.stack(rep.tribe_ever), axis=0)
+        births = np.mean(np.stack(rep.tribe_births), axis=0)
+        share = pop / max(pop.sum(), 1e-9)
+        out += [
+            f"tribes            population " + " ".join(f"{v:.0f}" for v in pop)
+            + f"   (share {' '.join(f'{v:.0%}' for v in share)})",
+            f"  ever born       " + " ".join(f"{v:.0f}" for v in ever)
+            + f"   births {' '.join(f'{v:.0f}' for v in births)}",
+            f"  size Gini       {gini(pop):.3f}"
+            f"   (0 = every tribe equal, 1 = one tribe holds everyone)",
+            f"  raids           {np.mean(rep.raids_cross):.0f} across a border,"
+            f" {np.mean(rep.raids_within):.0f} within a tribe",
+        ]
     return "\n".join(out)
 
 

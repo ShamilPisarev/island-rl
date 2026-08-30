@@ -1,0 +1,11 @@
+# R5's control: households with no tribe over them.
+#
+# Everything in `village.yaml` with `tribes.enabled: false`, so theft immunity
+# stops at the household, a grudge is remembered by the victim's household
+# alone, and there is no border for a raid to cross. What this isolates is the
+# only thing tribes add: a wider circle of who you do not rob and who avenges
+# you.
+extends: village.yaml
+
+tribes:
+  enabled: false

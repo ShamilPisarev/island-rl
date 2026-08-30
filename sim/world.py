@@ -321,6 +321,14 @@ class World:
             self.pool.born[:] = False
             self.pool.born[:start] = True
             self.pool.alive[:] = self.pool.born
+            # THE FOUNDERS ARE GROWN-UPS. Leaving every initial agent at age 0
+            # made the whole starting population children for `maturity_ticks`:
+            # nobody could chop, build, plant or defend for the first 200 ticks
+            # of every episode, so no house was ever finished, so -- because a
+            # birth needs a bed -- nobody could be born either. A world that
+            # begins with a generation of infants and no parents is not a
+            # village, and it took a masked `plant` to notice.
+            self.pool.age[:start] = rc.maturity_ticks
 
         cc = cfg.construction
         if cc.enabled:
@@ -1037,15 +1045,22 @@ class World:
                     # scripted "war" logic -- the design doc's minimal reputation.
                     victim_house = raids[-1][1]
                     victims = (self.household == victim_house) & pool.alive
-                    if cfg.tribes.enabled and cfg.tribes.collective_grudge:
-                        # Island 3.0: a raid across a border is remembered by the
-                        # whole TRIBE, not just the household whose pile it was.
-                        # That is the only thing tribes add to the war mechanics
-                        # -- no new action, no new target, just a wider memory --
-                        # and it is what turns two households' feud into
-                        # something a tribe can be said to be in.
+                    cross_border = (cfg.tribes.enabled
+                                    and self.tribe[i] != self.tribe_of_household[victim_house])
+                    if cfg.tribes.collective_grudge and cross_border:
+                        # ISLAND 3.0: A RAID ACROSS A BORDER IS REMEMBERED BY THE
+                        # WHOLE TRIBE; a raid on the family next door is a family
+                        # matter. That split is not decoration, it is what makes
+                        # the mechanic coherent. Raids are allowed WITHIN a tribe
+                        # -- households compete, which is half the ask -- and
+                        # widening the memory unconditionally would have had a
+                        # tribe hold a grudge against its own member, the raider
+                        # included, since the raider is in the tribe it robbed.
+                        # So the wider circle applies exactly where there is an
+                        # outsider to blame.
                         victims = (self.tribe == self.tribe_of_household[victim_house]) \
                             & pool.alive
+                        victims[i] = False
                     self.grudge[victims, i] = np.minimum(
                         self.grudge[victims, i] + sc.grudge_per_theft, 1.0)
 
@@ -1189,7 +1204,16 @@ class World:
                         # from a finished house (nothing un-builds one), and the
                         # shipped `base_occupants` keeps it out of range at the
                         # sizes these worlds start at.
-                        cap = self.site_capacity
+                        # An UNFINISHED site is uncapped. `site_capacity` says 0
+                        # for one, because a birth needs a real bed in a real
+                        # house -- but using that same 0 here deleted
+                        # `partial_shelter` outright and put the M4 cliff back,
+                        # which a test caught before any run did. The two uses
+                        # want different answers to "how many does this shelter",
+                        # so they are computed separately and this comment is why.
+                        done_site = ((self.site_wood_needed == 0)
+                                     & (self.site_stone_needed == 0))
+                        cap = np.where(done_site, self.site_capacity, n + 1)
                         admitted = np.zeros_like(near_site)
                         for sidx in range(self.site_x.shape[0]):
                             if progress[sidx] <= 0.0:

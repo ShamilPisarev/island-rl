@@ -1,0 +1,11 @@
+# R3's control: houses with no beds in them.
+#
+# The 2.0 rule -- `shelter_radius` is a disc that protects everyone standing in
+# it -- against 3.0's occupancy. Everything else is `village.yaml`, births
+# included, so what this isolates is whether a house having ROOM in it changes
+# anything. With housing off there is nothing to expand and no bed to be denied,
+# so `expand` is unavailable and every night ends in "roofless or not".
+extends: village.yaml
+
+housing:
+  enabled: false

@@ -416,8 +416,16 @@ def compute_needs(view: ObsView, cfg: Config) -> np.ndarray:
         # zero again when nothing can be done about it (the house is at
         # `max_rooms`) -- wanting a room that cannot exist is the doomed action
         # the M3 mask deletes, wearing a need's clothes.
-        needs[:, NEED_HOUSE_ROOM] = np.where(view.home_expandable,
-                                             np.clip(view.home_overflow, 0.0, 1.0), 0.0)
+        # A FAMILY EXPANDS WHEN THE HOUSE IS FULL, NOT WHEN IT IS OVER-FULL, and
+        # that correction was forced by the mechanic rather than chosen. A birth
+        # needs a free bed, so a household can never EXCEED its capacity by
+        # breeding -- it stops at it. Keying the need on overflow (the obvious
+        # version, and the first one written) made `expand` unavailable forever:
+        # the only path to overflow is a storm knocking the roof off. So the
+        # deficit rises as the beds fill and saturates when the last one goes.
+        needs[:, NEED_HOUSE_ROOM] = np.where(
+            view.home_expandable,
+            np.clip(1.0 - view.beds_free + view.home_overflow, 0.0, 1.0), 0.0)
     if cfg.agriculture.enabled:
         # Full deficit while the household has farming and no fields, zero once
         # it has all it may have. Note what this makes the adoption number MEAN,
@@ -673,7 +681,7 @@ def goal_availability(view: ObsView, cfg: Config, needs: np.ndarray,
     if cfg.housing.enabled and cfg.society.enabled:
         set_target(EXPAND, view.home_distance)
         available[:, EXPAND] &= (view.home_expandable & (view.material_carried > 0.0)
-                                 & (view.home_overflow > 0.0))
+                                 & (view.beds_free <= 1e-6))
     else:
         available[:, EXPAND] = False
 
@@ -928,7 +936,7 @@ def goal_viable(view: ObsView, cfg: Config, goals: np.ndarray,
         # than the availability test is how a committed option outlives its
         # reason, which is the correction `explore` and the store goals both
         # record.
-        when(EXPAND, view.home_expandable & (view.home_overflow > 0.0)
+        when(EXPAND, view.home_expandable & (view.beds_free <= 1e-6)
              & (view.material_carried > 0.0))
     if cfg.agriculture.enabled:
         when(PLANT_FIELD, view.farming & (view.field_room > 0.0)
@@ -1220,7 +1228,15 @@ class OptionRunner:
         self.last_decided = redecide
 
         self.ticks_left -= 1
-        np.add.at(self.goal_ticks, self.goals, 1)
+        # COUNT THE LIVING ONLY. A dead agent's row is all-False except `idle`,
+        # so "can I move" is an exact aliveness test and needs no new plumbing.
+        # This was harmless while the cast was fixed and a run lost three agents;
+        # Island 3.0 breaks it outright, because a world with 200 slots and 40
+        # agents alive spends 80% of its goal-ticks in rows that do not exist.
+        # Rule 6 again: a rate is dominated by whichever states dominate the
+        # denominator, and here most of them were nobody.
+        active = mask[:, :N_MOVE_ACTIONS].any(axis=1)
+        np.add.at(self.goal_ticks, self.goals[active], 1)
         return execute_goals(self.goals, view, self.cfg, mask, self.explore_heading,
                              self.acfg)
 

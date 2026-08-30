@@ -1,0 +1,11 @@
+# R1's control at village scale: the village with a dead forest.
+#
+# Everything in `village.yaml`, with regrowth turned back off. Kept because the
+# village is where the population is an outcome, so "does the forest matter"
+# has a second, sharper answer here: not survivors, but how many people the
+# island ends up holding.
+extends: village.yaml
+
+construction:
+  tree_regrow_ticks: 0
+  rock_regrow_ticks: 0

@@ -1,0 +1,14 @@
+# The generational world: agents die of old age.
+#
+# `village.yaml` plus `max_age`, so a founder is replaced rather than
+# accumulating forever, and a tribe's population at tick 20,000 is the product
+# of who kept reproducing rather than of who happened to be spawned. That is
+# what makes "the strongest tribe" a selection result instead of a head count.
+#
+# 4000 ticks is twenty day/night cycles and twenty times `maturity_ticks`, so a
+# lifetime holds many chances to breed and the cooldown (150) is not what
+# limits a family.
+extends: village.yaml
+
+reproduction:
+  max_age: 4000

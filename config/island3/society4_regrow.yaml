@@ -1,0 +1,14 @@
+# R1: the section-15 collapse, with the one key that should fix it.
+#
+# `society4.yaml` and NOTHING ELSE changed except that trees and rocks grow
+# back. Same 100 fixed agents, same bushes, same shocks, same seeds -- so a
+# paired long run against society4 isolates the resource asymmetry section 15
+# blamed for the collapse. If survivors at tick 6000 do not move, that
+# diagnosis was wrong and the write-up has to say so.
+#
+# `sim.economy`: island replaces 0.392 units/tick against 0.200 storms consume.
+extends: ../island2/society4.yaml
+
+construction:
+  tree_regrow_ticks: 150
+  rock_regrow_ticks: 200
