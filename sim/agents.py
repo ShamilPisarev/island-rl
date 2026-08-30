@@ -88,8 +88,11 @@ TECH_FARMING, TECH_GRANARY = 0, 1
 N_TECHS = len(TECH_NAMES)
 # How a household came by a technology, for the diffusion measurement. A single
 # has-it flag cannot tell invention from adoption, and telling them apart is the
-# whole of read S3.
-TECH_NONE, TECH_INVENTED, TECH_TAUGHT = 0, 1, 2
+# whole of read S3. `TECH_SETTLED` is the third way a technology travels, added
+# with village fission: settlers take what they know with them, so a daughter
+# household holds its parent's technologies without inventing or being taught
+# anything -- MIGRATION, which is how most technology actually moved.
+TECH_NONE, TECH_INVENTED, TECH_TAUGHT, TECH_SETTLED = 0, 1, 2, 3
 
 
 def action_names(cfg: Config) -> tuple[str, ...]:

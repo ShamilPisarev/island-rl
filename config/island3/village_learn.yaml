@@ -1,0 +1,19 @@
+# The world the LEARNED arbiter is trained in.
+#
+# `village_gen_nohered.yaml` -- the generational village with old age, slot
+# reuse, teaching and the granary -- at 120 slots instead of 200, which is ample
+# above the island's ~88 carrying capacity and cuts the training bill by 40%.
+#
+# HEREDITY IS OFF, AND THAT IS A LIMITATION OF THE TRAINER, NOT A DESIGN CHOICE.
+# `ArbiterTrainer` holds ONE trait vector per agent row, shared across all 8
+# environments, because a trait is part of an agent's identity and the policy
+# conditions on it. Heredity makes traits env-specific -- env 3's slot 7 is a
+# different person from env 5's slot 7 -- and the trainer has nowhere to put
+# that. Training with heredity on would silently give newborns their row's
+# founding traits in every env, which is the failure `OptionRunner` raises about.
+# So both arms of the comparison have it off, the pairing stays one-key, and
+# making the trainer per-env is written up as future work.
+extends: village_gen_nohered.yaml
+
+world:
+  num_agents: 120

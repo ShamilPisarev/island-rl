@@ -530,6 +530,58 @@ class AgricultureConfig:
 
 
 @dataclass(frozen=True)
+class FissionConfig:
+    """Island 3.0 stage 3: a household that has outgrown its house founds a new one.
+
+    Until now twenty households were twenty households forever. A family grew to
+    its house's capacity and stopped, because a household owns the site of its
+    own index and there were no spare sites -- so a successful lineage could not
+    expand onto the ground, and "the strongest tribe" had no territory to win.
+    S5 returned null twice for exactly that reason.
+
+    HOW IT WORKS. `construction.num_sites` now exceeds
+    `society.num_households`; the surplus sites are DORMANT -- parked at infinity
+    like an unplanted field, so they are invisible to the observation, the build
+    mask and the night, and a world with fission off is bit-identical to one
+    without the block. When a household is full (its house at `max_rooms` and
+    every bed taken), has the food to pay for the trip, and its cooldown has
+    elapsed, `party_size` of its grown members walk out and claim the nearest
+    dormant site as a new household.
+
+    THE SETTLERS TAKE WHAT THEY KNOW AND WHO THEY ARE. A daughter household
+    inherits the parent's technologies and, by default, its TRIBE -- which is the
+    whole point rather than a nicety: a tribe that founds settlements spreads
+    across the map, and that is the only mechanism in this project by which one
+    group could come to hold more ground than another. Inheriting tech also makes
+    MIGRATION a third way a technology travels, next to invention and teaching.
+
+    It costs the parent food and three grown members, so a household that fissions
+    while poor is worse off for it. Nothing pays for it.
+    """
+
+    enabled: bool = False
+    # DORMANCY IS ITS OWN KEY, and that is a correction rather than a taste call.
+    # Deriving "sites beyond the initial households are dormant" from
+    # `num_sites > num_households` alone changed two stage-1 worlds the moment a
+    # TEST shrank their household count without shrinking their site count --
+    # caught by the bit-identity pins. And deriving it from `enabled` would have
+    # made S6's control (fission off, same island) a two-key comparison: 40 live
+    # huts against 20 live and 20 dormant. So both arms set `reserve_sites` and
+    # only `enabled` differs, which is what a control means.
+    reserve_sites: bool = False
+    party_size: int = 3
+    # Only a household that has genuinely run out of room. Without this a family
+    # of four founds a village and the mechanic becomes "everybody spreads out",
+    # which is a different thing and not what an outgrown house means.
+    require_full_house: bool = True
+    food_cost: int = 6              # out of the parent's stockpile
+    max_distance: float = 45.0      # how far a founding party will walk
+    cooldown: int = 500
+    inherit_tech: bool = True
+    inherit_tribe: bool = True
+
+
+@dataclass(frozen=True)
 class TechConfig:
     """Island 3.0 stage 2: a technology that needs another technology first.
 
@@ -705,6 +757,7 @@ class Config:
     housing: HousingConfig = field(default_factory=HousingConfig)
     agriculture: AgricultureConfig = field(default_factory=AgricultureConfig)
     tech: TechConfig = field(default_factory=TechConfig)
+    fission: FissionConfig = field(default_factory=FissionConfig)
     tribes: TribeConfig = field(default_factory=TribeConfig)
     mix: MixConfig = field(default_factory=MixConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
@@ -767,6 +820,7 @@ _SECTIONS: dict[str, type] = {
     "housing": HousingConfig,
     "agriculture": AgricultureConfig,
     "tech": TechConfig,
+    "fission": FissionConfig,
     "tribes": TribeConfig,
     "mix": MixConfig,
     "observation": ObservationConfig,

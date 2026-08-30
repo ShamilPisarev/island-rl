@@ -865,3 +865,156 @@ something. A chooser trained on a household or lineage reward has a term for bot
 **4. Do NOT re-run.** S1 (20,000 ticks, extinct control), S2 at 5 seeds (the
 quarter-Gini number there is retracted — use the 10-seed one) and at 10, S3, S4's
 first pair (no control) and S4b, S5 at 12,000 ticks.
+
+---
+
+# Stage 3 — a frontier to expand into, and a learned chooser
+
+Written before the runs, in the same shape as the two stages before it. It builds
+queue items 3.1-2 (village fission) and 3.1-3 (a learned arbiter in the
+generational village).
+
+## Why fission, in one paragraph
+
+**Read S5 has now come back null twice** — at 6,000 ticks and again at 12,000
+with lineages persisting — and both times the geographic control said the same
+thing: a quarter of this island is unequal to the others by about 0.27 of a Gini
+whatever you call its households, and belonging to a tribe adds nothing on top.
+The reason is structural rather than social. **Twenty households were twenty
+households forever.** A family grew to its house's capacity and stopped, because
+a household owns the site of its own index and there were no spare sites, so a
+successful lineage had no way to take ground. A tribe cannot win a territory it
+has no mechanism to occupy.
+
+Fission is that mechanism: a household whose house is full to its last room sends
+three grown members out to claim a dormant site, and they become a new household
+**carrying the parent's technologies and the parent's tribe.** The tribe clause is
+the point — it is the only route in this project by which one group can come to
+hold more of the map than another.
+
+It also gives technology a third way to travel. Invention (hunger), teaching
+(contact), and now **migration** — which is how most technology actually moved,
+and `_tech_source` counts all three separately so the claim stays a measurement.
+
+## The honest costs
+
+* **The map had to change, so the frontier world is not comparable to
+  `village_gen`.** Dealing forty sites onto twenty clusters puts a dormant site
+  two units from the parent's front door, well inside `shelter_radius` — an
+  annexe, not a settlement. `village_frontier.yaml` is forty clusters of five
+  bushes with one site each. Every number is read against
+  `village_frontier_nofission.yaml`, the same island with the claiming turned
+  off.
+* **The learned arbiter is trained with heredity OFF, and that is a limitation of
+  the trainer.** `ArbiterTrainer` holds one trait vector per agent row shared
+  across all environments; heredity makes traits env-specific and there is
+  nowhere to put that. Both arms have it off, so the comparison is still one key
+  — and making the trainer per-env is future work rather than a thing that was
+  skipped quietly.
+* **A household founded at tick 6,000 is young, not poor.** The stage-4
+  household-inequality band reads 0.603 and trips DEGENERATE on the frontier
+  world purely because late households have young members. The band is retired
+  when fission is on, exactly as the mega-camp band was retired at stage 4.
+
+## Pre-registered acceptance criteria
+
+**C1** — every 2.0 and 3.0 checksum reproduces with fission off (no config
+written before this has `num_sites > num_households`, so the dormant-slot rule
+cannot fire in any of them). **C2** — suite green, new tests named after what
+they protect. **C3** — the frontier map is sized with `sim.economy` before it is
+run: it must land near `village_gen`'s carrying capacity and its material must
+still outrun forty sites' worth of storms.
+
+* **S6 — fission produces settlements.** `village_frontier` against
+  `village_frontier_nofission`, 12,000 ticks. Prediction: households rise above
+  20, population rises with them, and a share of technology arrives by
+  settlement. *Failure mode:* if no party ever leaves, read the four gates
+  separately — a full house, the food, the cooldown, and a dormant site in range.
+* **S7 — and NOW does a tribe win?** The same pair, read on the
+  geographic-quarter control that killed S5 twice (0.27–0.31 is the number to
+  beat) and on tribe population share. *Failure mode, pre-registered:* a tribe
+  that looks dominant because its founding quarter had better bushes is the same
+  null in new clothes — the quarter control is what separates them, and if the
+  Gini does not move relative to it, fission changed the map and not the
+  outcome.
+* **S8 — the learned arbiter in the generational village.** 20 learned among the
+  rest, household reward, gamma 0.997, 150 updates, on `village_learn.yaml`;
+  evaluated paired against the scripted arbiter in the same world and against a
+  size-matched random-goal floor. **Two things a learned chooser faces here that
+  no scorer scores: a birth is not a goal, and neither is teaching.** *Reads:*
+  births in learned slots against scripted ones; whether learned agents end up
+  in households that hold technologies; `expand` uptake, where any sustained
+  nonzero is the construction wall finally moving; and learned-slot paired
+  lifespan against the floor.
+
+---
+
+# Stage 3 — results
+
+## S6 — village fission works, and a village that can expand grows past a village that cannot. CONFIRMED.
+
+`village_frontier.yaml` against `village_frontier_nofission.yaml` — the same
+forty-cluster island, the same twenty dormant sites, and one key: whether a
+founding party may claim one. 5 paired episodes of 12,000 ticks.
+
+| | fission | no fission | paired |
+|---|---|---|---|
+| **alive at tick 12,000** | **107.2** | **85.2** | **+22.0 ± 7.0 (4/5)** |
+| births | 405.6 | 342.8 | +62.8 ± 17.4 (5/5) |
+| **farming households** | **24.8** | **13.4** | +11.4 ± 1.5 (5/5) |
+| granary households | 22.6 | 11.4 | +11.2 ± 1.3 (5/5) |
+| fields planted | 47.8 | 25.8 | +22.0 ± 3.0 (5/5) |
+| berries gathered | 15,986 | 14,497 | +1,488 ± 354 (5/5) |
+| rooms added | 93.0 | 60.4 | +32.6 ± 6.5 (5/5) |
+| nights indoors | 87.0% | 85.6% | +1.3 ± 0.2 (5/5) |
+
+| tick | 2,000 | 4,000 | 6,000 | 8,000 | 10,000 | 12,000 |
+|---|---|---|---|---|---|---|
+| can found villages | 62 | 82 | 82 | **102** | 91 | **107** |
+| cannot | 62 | 78 | 79 | 89 | 72 | **85** |
+
+In a single 8,000-tick run the world went **20 households → 32**, with 12
+founding parties, and the population reached 120 against a carrying capacity
+`sim.economy` put at 98 — because farms and more houses raise it.
+
+**The technology numbers are the sharpest part, and they need reading carefully.**
+Farming reaches 24.8 households against 13.4 — but the invented and taught counts
+are *identical in both arms* (4.0/10.0 against 4.2/9.2). Every extra farming
+household got it **by settling**: settlers carry what they know, and migration is
+now the largest of the three channels. That is why `TECH_SETTLED` exists as a
+separate code — with one has-it flag this would have looked like eleven extra
+inventions.
+
+## S7 — and NO, a tribe still does not win. REFUTED for the third time, and now with the mechanism it was missing.
+
+The same pair, read on the geographic-quarter control that killed S5 twice:
+
+| | fission | no fission | paired |
+|---|---|---|---|
+| **quarter-population Gini** | **0.24** | **0.25** | **−0.02 ± 0.04 (1/5)** |
+| tribe-population Gini | 0.25 | 0.25 | −0.00 ± 0.04 (2/5) |
+| raids across a border | 1,450 | 930 | +520 ± 310 (4/5) |
+| raids within a tribe | 1,054 | 521 | +533 ± 164 (5/5) |
+
+**Giving tribes a way to take ground did not make any tribe take more of it.**
+The pre-registered failure mode was that a tribe would look dominant because its
+founding quarter had better bushes; the answer is stranger and cleaner than that
+— nobody looks dominant at all, and the Gini is *identical* to the world where
+expansion is impossible.
+
+The reason is visible in the mechanic once it is stated: **expansion here is
+symmetric.** Every household that fills its house founds a daughter, so every
+tribe expands at roughly the rate its ground supports, and the ratios between
+them do not move. Raiding doubles (a village that has grown has more borders and
+more to take), but a raid moves a berry — it never moves a *site*. **Nothing in
+this world lets one group take another's territory**, so nothing compounds.
+
+Episode 0 shows why single episodes mislead here: with fission the tribes held
+12/36/20/3 and without it 14/34/14/11 — both look like a dominant tribe and a
+dying one, and averaged over five seeds the two Ginis are the same number.
+
+**So the honest answer to "do two big factions emerge and go to war" is no, three
+times over, and the missing ingredient is now named:** conquest. Raiding takes
+food; it cannot take a house, a field or a site. A tribe would need to be able to
+*hold ground* — to destroy or capture a household's site — before territorial
+dominance is even expressible in this world.

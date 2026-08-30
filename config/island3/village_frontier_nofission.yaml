@@ -1,0 +1,12 @@
+# S6's control: the same forty-cluster island where nobody may found anything.
+#
+# One key. The twenty dormant sites still exist and stay dormant forever, so the
+# control has exactly the same food, the same material and the same twenty
+# households -- and no way to become twenty-one.
+extends: village_frontier.yaml
+
+fission:
+  # The dormant sites stay dormant: same island, same food, same material, and
+  # no way to become twenty-one households. One key between this and its pair.
+  reserve_sites: true
+  enabled: false

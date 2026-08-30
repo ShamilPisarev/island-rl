@@ -1,0 +1,60 @@
+# ISLAND 3.0 STAGE 3: a world with room to expand into.
+#
+# `village_gen.yaml` on an island of FORTY berry clusters instead of twenty, with
+# forty shelter sites -- and only the first twenty are households at tick 0. The
+# other twenty are DORMANT: parked at infinity, invisible to the observation, the
+# build mask, the night and every raid, and claimable only by a founding party.
+#
+# WHY THE MAP HAD TO CHANGE. Fission needs somewhere to go. Dealing forty sites
+# onto twenty clusters puts the dormant one about two units from the parent's
+# front door, well inside `shelter_radius` -- that is an annexe, not a
+# settlement. One cluster per site means a founding party walks to an unoccupied
+# berry patch, which is what a frontier is.
+#
+# SIZED WITH `sim.economy` BEFORE THE RUN (rule 5). Halving the bushes per
+# cluster keeps the island's food roughly where `village_gen` had it while
+# doubling the number of PLACES:
+#
+#   40 clusters x 5 bushes = 200 bushes   (village_gen: 20 x 11 = 220)
+#   carrying capacity      ~98 sheltered / ~65 exposed
+#   material               50 trees and 45 rocks over 40 clusters, so no
+#                          settlement is founded on ground that cannot build a
+#                          house, and regrowth (0.558/tick) outruns what forty
+#                          sites' worth of storms consume (0.400)
+#
+# Read every number against `village_frontier_nofission.yaml`, never against
+# `village_gen`: this is a different island.
+extends: village_gen.yaml
+
+bushes:
+  num_clusters: 40
+  bushes_per_cluster: 5
+
+construction:
+  # Twenty of these are dormant until somebody founds a village on them.
+  num_sites: 40
+  # 50/45 rather than one each. Forty sites means storms consume twice what
+  # they did at twenty (0.400 units/tick against 0.200), and at one node per
+  # cluster the island replaces only 0.467 -- 17% of headroom, which is too
+  # tight to call sustainable in a world that is also trying to expand. At 50
+  # and 45 it replaces 0.558.
+  num_trees: 50
+  num_rocks: 45
+
+fission:
+  enabled: true
+  # Sites beyond the initial twenty are dormant. Its own key, so the control
+  # below can hold it while turning the claiming off -- see FissionConfig.
+  reserve_sites: true
+  party_size: 3
+  require_full_house: true
+  food_cost: 6
+  # About a quarter of the island's diameter: far enough to be a new place,
+  # near enough that a party of three actually arrives.
+  max_distance: 45.0
+  cooldown: 500
+  # Settlers take what they know and who they are. The tribe clause is the whole
+  # point: it is the only mechanism in this project by which one group can come
+  # to hold more ground than another.
+  inherit_tech: true
+  inherit_tribe: true

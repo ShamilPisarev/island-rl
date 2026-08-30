@@ -40,6 +40,7 @@ from .agents import (
     TECH_FARMING,
     TECH_GRANARY,
     TECH_INVENTED,
+    TECH_SETTLED,
     TECH_TAUGHT,
     MOVE_VECTORS,
     N_MOVE_ACTIONS,
@@ -185,6 +186,10 @@ class EpisodeStats:
     tech_invented: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     tech_taught: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     granary_households: int = 0
+    # --- Island 3.0 stage 3
+    fissions: int = 0
+    households_final: int = 0
+    tech_settled: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     stock_food_capacity: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -207,6 +212,22 @@ class World:
         self.reset()
 
     # --- setup ------------------------------------------------------------
+
+    def _household_slots(self) -> int:
+        """How many household slots this world has, dormant ones included.
+
+        One rule, used by the bush block (field slots), the society block and the
+        fission phase, so the three cannot disagree about what a household index
+        can be. Equal to `society.num_households` in every world written before
+        village fission, which is what keeps them bit-identical.
+        """
+        cfg = self.cfg
+        n0 = max(cfg.society.num_households, 1) if cfg.society.enabled else 1
+        reserve = cfg.fission.enabled or cfg.fission.reserve_sites
+        if (reserve and cfg.society.enabled and cfg.construction.enabled
+                and cfg.construction.num_sites > n0):
+            return cfg.construction.num_sites
+        return n0
 
     def _sample_in_disc(self, radius: float, n: int) -> tuple[np.ndarray, np.ndarray]:
         """Uniform samples inside a disc (sqrt on the radius, or you get a bullseye)."""
@@ -298,8 +319,14 @@ class World:
         # instead -- the obvious version -- would have put a phantom bush in the
         # middle of the island inside every agent's k-nearest list.
         ac = cfg.agriculture
-        n_fields = (max(cfg.society.num_households, 1) * ac.max_fields_per_household
-                    if ac.enabled else 0)
+        # ONE FIELD BLOCK PER HOUSEHOLD SLOT, not per household that exists at
+        # tick 0. With village fission a household index can be any dormant site,
+        # and `plant` indexes the field slots by household -- so sizing this to
+        # the initial count indexed off the end of the array the moment a
+        # daughter settlement put a field in. Computed here from the same rule
+        # the society block uses below, because the bush arrays are built first.
+        n_house_slots = self._household_slots()
+        n_fields = n_house_slots * ac.max_fields_per_household if ac.enabled else 0
         if n_fields:
             park = np.full(n_fields, np.inf)
             self.bush_x = np.concatenate([self.bush_x, park])
@@ -438,17 +465,37 @@ class World:
 
         # --- Island 2.0 stage 4: households, stockpiles, reputation, shocks
         sc = cfg.society
-        n_house = max(sc.num_households, 1) if sc.enabled else 1
+        n_house0 = max(sc.num_households, 1) if sc.enabled else 1
+        # ISLAND 3.0 STAGE 3: SITES BEYOND THE INITIAL HOUSEHOLDS ARE DORMANT.
+        # They are parked at infinity exactly as an unplanted field is -- absent
+        # from the observation, the build mask, the night and every raid -- so a
+        # world whose `num_sites` equals its `num_households` (which is every
+        # config written before this) is bit-identical. Only village fission can
+        # claim one, and claiming it is what makes a new settlement exist.
+        n_house = self._household_slots()
+        self.site_layout_x = self.site_x.copy()
+        self.site_layout_z = self.site_z.copy()
+        if n_house > n_house0:
+            self.site_x = self.site_x.copy()
+            self.site_z = self.site_z.copy()
+            self.site_x[n_house0:] = np.inf
+            self.site_z[n_house0:] = np.inf
+        self.household_active = np.zeros(n_house, dtype=bool)
+        self.household_active[:n_house0] = True
+        self.household_fission_tick = np.full(n_house, -10 ** 9, dtype=np.int64)
+        self._fissions = 0
         if sc.enabled:
-            if cc.enabled and cc.num_sites < n_house:
+            if cc.enabled and cc.num_sites < n_house0:
                 raise ValueError(
-                    f"society.num_households={n_house} needs at least that many "
+                    f"society.num_households={n_house0} needs at least that many "
                     f"construction.num_sites (have {cc.num_sites}): a household's "
                     f"stockpile sits at its own shelter site.")
             # Round-robin, so households are equal-sized and stable from tick 0.
             # "My group is who sleeps where I sleep" needs no learning to identify
             # and no new abstract channel (design doc section 3).
-            self.household = np.arange(cfg.world.num_agents) % n_house
+            # Round-robin over the households that EXIST at tick 0. Dormant
+            # slots get no members until a founding party walks into one.
+            self.household = np.arange(cfg.world.num_agents) % n_house0
             self.stock_x = self.site_x[:n_house].copy()
             self.stock_z = self.site_z[:n_house].copy()
             # Agents start at their household's site rather than scattered: a
@@ -471,7 +518,9 @@ class World:
         # nothing spatial at all.
         tc = cfg.tribes
         if tc.enabled and sc.enabled:
-            ang = np.arctan2(self.stock_z, self.stock_x)
+            # From the LAYOUT, not from `stock_x`: a dormant site's stockpile is
+            # parked at infinity and `arctan2(inf, inf)` is a number nobody meant.
+            ang = np.arctan2(self.site_layout_z[:n_house], self.site_layout_x[:n_house])
             frac = (ang + np.pi) / (2.0 * np.pi)
             self.tribe_of_household = np.minimum(
                 (frac * tc.num_tribes).astype(np.int64), tc.num_tribes - 1)
@@ -1610,6 +1659,92 @@ class World:
                     births_now.append((slot, int(kin[0]) if kin.size else slot,
                                        int(kin[1]) if kin.size > 1 else slot))
 
+        # 6g. ISLAND 3.0 STAGE 3: VILLAGE FISSION. A household whose house is
+        #     full to its last room sends `party_size` of its grown members out
+        #     to claim the nearest dormant site, and they become a new household.
+        #
+        #     THE SETTLERS TAKE WHAT THEY KNOW AND WHO THEY ARE. The daughter
+        #     inherits the parent's technologies (migration, the third way a
+        #     technology travels) and its TRIBE -- and the tribe clause is the
+        #     whole point rather than a nicety. Until now twenty households were
+        #     twenty households forever, so a successful group had no way to hold
+        #     more ground than anyone else, and read S5 came back null twice
+        #     saying exactly that. This is the mechanism by which it could stop
+        #     being null.
+        #
+        #     Nothing pays for it, and it is not free: the parent loses three
+        #     grown members and the food they carry, and the daughter starts with
+        #     no house -- so it cannot have children of its own until it has
+        #     built one, because a birth needs a bed.
+        fc = cfg.fission
+        if fc.enabled and sc.enabled and cc.enabled:
+            dormant = np.flatnonzero(~self.household_active)
+            if dormant.size:
+                sizes = self.household_size
+                caps = self.site_capacity
+                rooms = self.site_rooms
+                site_done = ((self.site_wood_needed == 0)
+                             & (self.site_stone_needed == 0))
+                grown = pool.alive & pool.adult(cfg)
+                for h in (int(v) for v in np.flatnonzero(self.household_active)):
+                    if dormant.size == 0:
+                        break
+                    if self.tick - self.household_fission_tick[h] < fc.cooldown:
+                        continue
+                    if self.stock_food[h] < fc.food_cost:
+                        continue
+                    if fc.require_full_house and not (
+                            site_done[h] and rooms[h] >= cfg.housing.max_rooms
+                            and sizes[h] >= caps[h]):
+                        continue
+                    members = np.flatnonzero(grown & (self.household == h))
+                    # Leave a household behind, not a ghost town: a party may not
+                    # take so many that the parent can no longer breed (a birth
+                    # needs two grown members at home).
+                    if members.size < fc.party_size + 2:
+                        continue
+                    d2 = ((self.site_layout_x[dormant] - self.stock_x[h]) ** 2
+                          + (self.site_layout_z[dormant] - self.stock_z[h]) ** 2)
+                    reachable = d2 <= fc.max_distance ** 2
+                    if not reachable.any():
+                        continue
+                    pick = int(np.argmin(np.where(reachable, d2, np.inf)))
+                    s_new = int(dormant[pick])
+                    dormant = np.delete(dormant, pick)
+
+                    self.household_active[s_new] = True
+                    self.site_x[s_new] = self.site_layout_x[s_new]
+                    self.site_z[s_new] = self.site_layout_z[s_new]
+                    self.stock_x[s_new] = self.site_layout_x[s_new]
+                    self.stock_z[s_new] = self.site_layout_z[s_new]
+                    # The provisions leave the parent's pile and arrive in the
+                    # daughter's: settlers carry what they set out with.
+                    self.stock_food[h] -= fc.food_cost
+                    self.stock_food[s_new] = fc.food_cost
+                    if fc.inherit_tribe:
+                        self.tribe_of_household[s_new] = self.tribe_of_household[h]
+                    elif cfg.tribes.enabled:
+                        ang = np.arctan2(self.stock_z[s_new], self.stock_x[s_new])
+                        frac = (ang + np.pi) / (2.0 * np.pi)
+                        self.tribe_of_household[s_new] = min(
+                            int(frac * cfg.tribes.num_tribes),
+                            cfg.tribes.num_tribes - 1)
+                    if fc.inherit_tech:
+                        for tech, holder in ((TECH_FARMING, self.household_farming),
+                                             (TECH_GRANARY, self.household_granary)):
+                            if holder[h]:
+                                holder[s_new] = True
+                                self._tech_source[s_new, tech] = TECH_SETTLED
+                    party = members[:fc.party_size]
+                    self.household[party] = s_new
+                    self.tribe[party] = self.tribe_of_household[s_new]
+                    ang = 2.0 * np.pi * (np.arange(party.size) % 8) / 8.0
+                    pool.x[party] = self.stock_x[s_new] + np.cos(ang)
+                    pool.z[party] = self.stock_z[s_new] + np.sin(ang)
+                    self.household_fission_tick[h] = self.tick
+                    self.household_fission_tick[s_new] = self.tick
+                    self._fissions += 1
+
         # 7. clock and termination
         self.tick += 1
 
@@ -1753,6 +1888,9 @@ class World:
             deaths_of_age=self._deaths_of_age,
             born=int(born.sum()) + len(ledger),
             slots_reused=self._reuses,
+            fissions=self._fissions,
+            households_final=int(self.household_active.sum()),
+            tech_settled=(self._tech_source == TECH_SETTLED).sum(axis=0).astype(np.int64),
             tech_invented=(self._tech_source == TECH_INVENTED).sum(axis=0).astype(np.int64),
             tech_taught=(self._tech_source == TECH_TAUGHT).sum(axis=0).astype(np.int64),
             granary_households=int(self.household_granary.sum()),

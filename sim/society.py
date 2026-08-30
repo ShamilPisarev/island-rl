@@ -129,6 +129,9 @@ class SocietyReport:
     births_by_household: list[np.ndarray] = field(default_factory=list)
     # --- stage 2
     slots_reused: list[int] = field(default_factory=list)
+    fissions: list[int] = field(default_factory=list)
+    households_final: list[int] = field(default_factory=list)
+    tech_settled: list[np.ndarray] = field(default_factory=list)
     tech_invented: list[np.ndarray] = field(default_factory=list)
     tech_taught: list[np.ndarray] = field(default_factory=list)
     granary_households: list[int] = field(default_factory=list)
@@ -453,6 +456,9 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
             rep.raids_within.append(stats.raids_within_tribe)
             rep.births_by_household.append(stats.births_by_household.astype(np.float64))
             rep.slots_reused.append(stats.slots_reused)
+            rep.fissions.append(stats.fissions)
+            rep.households_final.append(stats.households_final)
+            rep.tech_settled.append(stats.tech_settled.astype(np.float64))
             rep.tech_invented.append(stats.tech_invented.astype(np.float64))
             rep.tech_taught.append(stats.tech_taught.astype(np.float64))
             rep.granary_households.append(stats.granary_households)
@@ -478,7 +484,11 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
             rep.storms.append(stats.storms)
             rep.damaged.append(stats.shelters_damaged)
             rep.blight_ticks.append(stats.blight_ticks)
-            h = cfg.society.num_households
+            # THE WORLD'S SLOT COUNT, not the config's. With village fission a
+            # household index can be any dormant site, and sizing this array
+            # from `society.num_households` indexed off the end the moment a
+            # daughter settlement's members were counted.
+            h = world.stock_x.shape[0]
             lives_by_house = np.zeros(h)
             born_mask = world.pool.born
             np.add.at(lives_by_house, world.household[born_mask],
@@ -595,7 +605,12 @@ def format_report(cfg: Config, rep: SocietyReport, label: str) -> str:
         # spawn point they were placed on. So the floor is not the control here;
         # the uniform-position expectation is.
         away = _nanmean(rep.displaced)
-        h = max(cfg.society.num_households, 1)
+        # Households that EXIST, averaged over episodes: with fission the number
+        # of homes an agent could be nearest to is an outcome, and the "if
+        # position told you nothing" control has to divide by the same thing the
+        # measurement did.
+        h = max(int(np.mean(rep.households_final)) if rep.households_final
+                else cfg.society.num_households, 1)
         chance_away = 1.0 - 1.0 / h
         camp = "DEGENERATE" if away > 0.6 else ("WATCH" if away > 0.35 else "OK")
         out.append(f"  3. mega-camp    AT NIGHT, {100 * away:.1f}% of agents are nearer a "
@@ -708,7 +723,8 @@ def _island3_section(cfg: Config, rep: SocietyReport) -> str:
         ]
 
     if ac.enabled:
-        n_house = max(cfg.society.num_households, 1)
+        n_house = max(int(np.mean(rep.households_final)) if rep.households_final
+                      else cfg.society.num_households, 1)
         out += [
             f"agriculture       {np.mean(rep.farming_households):.1f} of {n_house}"
             f" households invented it; {np.mean(rep.fields_planted):.1f} fields planted"
@@ -722,15 +738,26 @@ def _island3_section(cfg: Config, rep: SocietyReport) -> str:
     if rep.slots_reused and max(rep.slots_reused) > 0:
         out.append(f"generations       {np.mean(rep.slots_reused):.0f} rows lived in "
                    f"twice or more (the array is no longer the ceiling)")
+    if rep.fissions and max(rep.fissions) > 0:
+        out.append(f"settlements       {np.mean(rep.households_final):.1f} households "
+                   f"at the end, from {cfg.society.num_households} at tick 0 "
+                   f"({np.mean(rep.fissions):.1f} founding parties walked out)")
     if rep.tech_invented:
         inv = np.mean(np.stack(rep.tech_invented), axis=0)
         tau = np.mean(np.stack(rep.tech_taught), axis=0)
-        n_house = max(cfg.society.num_households, 1)
+        setl = (np.mean(np.stack(rep.tech_settled), axis=0) if rep.tech_settled
+                else np.zeros_like(inv))
+        # OF THE HOUSEHOLDS THAT EXIST, not of the ones the config started with:
+        # with fission the denominator is an outcome too.
+        n_house = max(int(np.mean(rep.households_final)) if rep.households_final
+                      else cfg.society.num_households, 1)
         for k, name in enumerate(TECH_NAMES):
-            if inv[k] + tau[k] == 0:
+            if inv[k] + tau[k] + setl[k] == 0:
                 continue
-            out.append(f"tech: {name:<12} {inv[k] + tau[k]:.1f} of {n_house} households"
-                       f"   ({inv[k]:.1f} INVENTED it, {tau[k]:.1f} were TAUGHT)")
+            out.append(f"tech: {name:<12} {inv[k] + tau[k] + setl[k]:.1f} of {n_house}"
+                       f" households   ({inv[k]:.1f} INVENTED, {tau[k]:.1f} TAUGHT"
+                       + (f", {setl[k]:.1f} carried by SETTLERS" if setl[k] else "")
+                       + ")")
     if rep.trait_final:
         # The drift, largest first. This is the only place behaviour nobody
         # wrote can show up -- and the control is the founding mean, not 1.0,
@@ -879,8 +906,8 @@ def _household_section(cfg: Config, rep: SocietyReport) -> str:
     mat = np.stack(rep.house_stock_material)
     per_house = houses.mean(axis=0)
     out = ["\n-- the household economy (stage 4) --",
-           f"  {sc.num_households} households of "
-           f"{cfg.world.num_agents / max(sc.num_households, 1):.0f}",
+           f"  {houses.shape[1]} household slots, {sc.num_households} of them "
+           f"occupied at tick 0",
            f"  deposits / episode      {np.mean(rep.deposits):7.1f}",
            f"  withdrawals / episode   {np.mean(rep.withdrawals):7.1f}",
            f"  raids / episode         {np.mean(rep.raids):7.1f}",
@@ -899,6 +926,19 @@ def _household_section(cfg: Config, rep: SocietyReport) -> str:
     # the verdict bands are deliberately looser than a moral judgement would be.
     hg = gini(per_house)
     verdict = "OK" if hg < 0.20 else ("WATCH" if hg < 0.35 else "DEGENERATE")
+    fissioned = bool(rep.fissions and max(rep.fissions) > 0)
+    if fissioned:
+        # THE BAND DOES NOT APPLY ONCE HOUSEHOLDS ARE FOUNDED MID-RUN, and this
+        # is the stage-4 mega-camp correction in a new place (rule 5). A
+        # household founded at tick 6,000 has members who are all young, so its
+        # mean lifespan is low BY CONSTRUCTION and the Gini rises with no
+        # inequality behind it -- measured on the frontier world it reads 0.603
+        # and trips DEGENERATE while the population climbs 40 -> 120. Dormant
+        # slots that were never claimed read 0 and would be counted as the
+        # poorest household of all, so they are dropped outright.
+        occupied = per_house[np.stack(rep.house_lifespan).mean(axis=0) > 0]
+        hg = gini(occupied) if occupied.size else hg
+        verdict = "band retired: households founded mid-run are young, not poor"
     order = np.argsort(-per_house)
     out.append(f"  4. household inequality  Gini {hg:.3f} [{verdict}]  "
                f"richest household {per_house[order[0]]:.0f} ticks / "
