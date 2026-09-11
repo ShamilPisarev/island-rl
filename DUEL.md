@@ -63,3 +63,50 @@ Three readings, all on one seed, so none of them is settled:
 
 Bug fixed before the first run: `World` has no `num_agents` attribute; the
 slot count is `World.slots`. Caught by `tests/test_duel.py`.
+
+## The fair duel (2026-09-12): 5 seeds, both sides, each network against itself, scripted control
+
+`sim/duel_seeds.py` runs, per seed 10000-10004 at 1200 ticks: A vs B with
+sides swapped, A vs A, B vs B, and `sim.society` with the scripted utility
+arbiter on the same island (same seed, so the same map and founders). 25
+matches, 2 min 14 s in total. Founders are NOT split evenly: tribe 0 starts
+with 22-26 of the 40, tribe 1 with 14-18, which is why the self-duels matter.
+
+Final population, tribe 0 / tribe 1 = total, per seed:
+
+| arm | 10000 | 10001 | 10002 | 10003 | 10004 | mean total |
+|---|---|---|---|---|---|---|
+| arb7-village (t0) vs arb5-hh (t1) | 15/12=27 | 9/24=33 | 13/14=27 | 11/11=22 | 15/10=25 | 26.8 |
+| arb5-hh (t0) vs arb7-village (t1) | 18/10=28 | 29/9=38 | 17/11=28 | 18/7=25 | 13/13=26 | 29.0 |
+| arb7-village vs itself | 16/12=28 | 17/9=26 | 16/10=26 | 16/8=24 | 15/9=24 | 25.6 |
+| arb5-hh vs itself | 19/12=31 | 31/7=38 | 22/6=28 | 19/7=26 | 16/10=26 | 29.8 |
+| scripted arbiter, both sides | 29/15=44 | 41/12=53 | 34/22=56 | 30/21=51 | 31/22=53 | 51.4 |
+
+Paired per seed (mean +- SE, seeds where the sign holds):
+
+1. **Both learned networks lose to the scripted arbiter, on every seed.**
+   Learned pair minus scripted: **-24.6 +- 2.5 (0/5)** with arb7-village on
+   tribe 0, **-22.4 +- 2.8 (0/5)** with arb5-hh there. The self-duels say the
+   same (-25.8 +- 2.5 and -21.6 +- 3.2, both 0/5). The scripted village has
+   29-37 births a run; the learned ones 0-7. Neither network was trained in a
+   world with tribes at this length, so this is the expected result, but it
+   is now measured rather than assumed.
+2. **arb5-hh beats arb7-village by a little, and it is not settled.** Holding
+   the side fixed and summing both sides: **+10.6 +- 6.6 (4/5)**, i.e. +6.4 +-
+   3.7 on tribe 0 and +4.2 +- 3.0 on tribe 1. About 1.6 SE on five seeds.
+   arb5-hh's self-duel also holds more people (29.8 against 25.6).
+3. **The ground is worth more than the network.** With ONE brain on both
+   sides, tribe 0 ends ahead by **+6.4 +- 0.7** (arb7 vs arb7), **+13.0 +-
+   3.3** (arb5 vs arb5) and **+14.6 +- 3.7** (scripted), 5/5 each. That is the
+   founder split (22-26 against 14-18) carrying through, the Island 3.0
+   result that a tribe's size is mostly its starting ground. Any single
+   unswapped match would credit the tribe-0 network with that.
+4. **Captures happen only when the brains differ.** Mixed matches: 0, 1, 9,
+   1, 3, 2, 2, 1, 0, 1. Self-duels: 2 in one of ten, 0 in the rest. Neither
+   network has the `conquer` goal (masked), so these are raids that ended in
+   a capture by presence; two different behaviours brought raiders to enemy
+   stockpiles more often than two copies of one behaviour did.
+
+Honest limits: five seeds, one length (1200 ticks, so no agriculture or
+granary), two networks trained in different worlds and neither in this one.
+Read 3 as the finding, 1 as the control doing its job, and 2 as a hint.
