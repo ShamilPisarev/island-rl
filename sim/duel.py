@@ -35,7 +35,7 @@ class TribeArbiter:
         self.acfg = self.models[0].acfg
         # Both networks see the same individual traits, independent of side.
         for model in self.models:
-            model.traits = agent_traits(world.num_agents, seed, self.acfg)[
+            model.traits = agent_traits(world.slots, seed, self.acfg)[
                 :, :model.traits.shape[1]]
         self.previous_tribes = world.tribe.copy()
 
