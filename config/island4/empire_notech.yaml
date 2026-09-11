@@ -1,0 +1,10 @@
+# IS THE PRIZE WHAT MATTERS? Conquest is on and takes ground, but the conqueror
+# learns nothing from the village it took.
+#
+# The pre-registered read: if capture rates are the same in both arms, the
+# technology transfer is decoration and conquest is purely about land. If they
+# fall here, the `conquest.prize` channel is doing the work -- which is the claim
+# that a tribe which cannot invent has a move.
+extends: empire.yaml
+conquest:
+  capture_tech: false

@@ -15,6 +15,53 @@ Do NOT re-run: arb4/b/c/d (all four all-learned variants), arb5-mix, arb5-hh,
 the mixedrandom floor, anything on the §10 do-not-re-run list, the learned-share
 sweep (item 3), or the axe (item 4).
 
+## ISLAND 4.0 IS BUILT (2026-08-30). Read this queue first.
+
+Growth, conquest, terrain, culture and skill are in, all off by default, all
+measured with the SCRIPTED arbiter. Read `ISLAND4_DESIGN.md` before touching
+anything. Do NOT re-run S1 (growth) or S3 (the goal). The queue:
+
+### 4-1. S2 at ten seeds (cheapest, and it is the one that matters)
+
+The first tribe result that survives its control reads **village Gini
++0.09 +- 0.04, 4/5** -- about 2.2 SE on five seeds. Three previous attempts came
+back at +0.04, +0.03 and -0.02, so this is the first positive one and it is not
+yet settled. Ten paired seeds of `empire.yaml` vs `empire_nocon.yaml`, 8,000
+ticks, nothing else changed. ~25 minutes.
+
+Pre-register: if it holds above 2 SE at ten seeds, "a tribe can take ground"
+is earned. If it falls inside noise, S2 joins the other three refutations and
+the honest headline becomes "conquest fires 19.6 times an episode and still does
+not make a winner", which is a result too.
+
+### 4-2. Culture and skill need paired controls
+
+Both currently rest on ONE seed and one episode (ISLAND4_DESIGN.md §5, §6). The
+culture read refutes its own pre-registered direction, which is enough to change
+the story and not enough to quote; the skill read's "all 111 agents are best at
+foraging" is qualitative enough to stand, its correlations are not. Five paired
+seeds each, one key on top of `empire.yaml`. ~20 minutes for both.
+
+### 4-3. Something that pushes a village average somewhere
+
+§5's conclusion: averaging cannot make cultures diverge, and this world has no
+selection pressure that differs BY PLACE. Terrain (§4) is now the obvious
+carrier -- a village on poor ground should be selected toward different behaviour
+than one on rich ground -- and nothing connects the two. This is a design item,
+not a run.
+
+### 4-4. The learned chooser, but only once the mechanic set is frozen
+
+Three things are now in the observation that no scripted goal reads:
+`conquest.threat` (a siege coming), `own.skill_*` (my own competence) and the
+whole conquest block. That is the largest gap between what a learned arbiter can
+see and what the scripted one uses that this project has ever had. **But 3.0's
+lesson stands: `arb7-village` used 600-tick episodes and never reached
+agriculture.** Episodes must be long enough to meet the mechanics, and
+`world.grow_slots` is NOT supported under training (PPO's buffers are fixed
+width) -- so a learned run here is a capped-array run, which is a one-key
+difference from every number in ISLAND4_DESIGN.md and has to be said out loud.
+
 ## ISLAND 3.0 STAGE 2 IS BUILT (2026-08-30). Read this queue first.
 
 Stage 2 answered the old item 3.0-1 (slot reuse) and added heredity, technology

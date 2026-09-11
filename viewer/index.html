@@ -207,6 +207,46 @@
   #drop { background: rgba(13,17,23,.8); border: 2px dashed var(--accent); }
   #drop b { color: var(--accent); font-size: 16px; }
   #loading { position: absolute; left: 14px; top: 12px; color: var(--dim); z-index: 10; }
+
+/* --- Island 4.0 panel blocks ------------------------------------------- */
+.i4box { margin: 10px 0 4px; padding: 8px 9px; border: 1px solid #26303a;
+         border-radius: 6px; background: #131a21; }
+.i4head { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+          color: #7b8b9a; margin-bottom: 6px; }
+.i4sub { font-size: 11px; color: #7b8b9a; text-transform: none;
+         letter-spacing: 0; }
+.segmented { display: flex; gap: 4px; flex-wrap: wrap; }
+.segmented button { flex: 1 1 auto; padding: 4px 6px; font-size: 11px;
+                    background: #1b242c; color: #b7c4d0; border: 1px solid #2c3742;
+                    border-radius: 4px; cursor: pointer; }
+.segmented button.on { background: #2f6f9f; color: #fff; border-color: #3f8fc4; }
+#historyCanvas { width: 100%; height: 132px; display: block; border-radius: 4px;
+                 background: #0e141a; cursor: crosshair; }
+#historyReadout { margin-top: 5px; font-variant-numeric: tabular-nums; }
+#eventFeed { max-height: 168px; overflow-y: auto; font-size: 11.5px;
+             line-height: 1.5; }
+#eventFeed .ev { display: flex; gap: 6px; padding: 1px 0; }
+#eventFeed .ev .tk { color: #63727f; font-variant-numeric: tabular-nums;
+                     min-width: 46px; text-align: right; }
+#eventFeed .ev.now { background: #1d2a35; border-radius: 3px; }
+#eventFeed .ev b { color: #e6edf3; }
+.swatch-inline { display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+                 vertical-align: middle; margin: 0 3px; }
+
+/* --- the start-here row ------------------------------------------------- */
+#featured { margin: 4px 0 10px; }
+#featuredList { display: flex; flex-direction: column; gap: 5px; }
+.feat { display: block; width: 100%; text-align: left; padding: 8px 10px;
+        border: 1px solid #2c3742; border-radius: 6px; background: #16202a;
+        color: #dbe4ec; cursor: pointer; font: inherit; line-height: 1.35; }
+.feat:hover { background: #1d2a35; border-color: #3f8fc4; }
+.feat.on { border-color: #3f8fc4; background: #1d2f3f; }
+.feat .ft { font-weight: 700; font-size: 12.5px; }
+.feat .fs { display: block; color: #8b9aa8; font-size: 11px; margin-top: 2px; }
+.feat .fx { display: block; color: #63727f; font-size: 10.5px; margin-top: 3px; }
+.feat[disabled] { opacity: .45; cursor: default; }
+#allReplays summary { cursor: pointer; color: #8b9aa8; font-size: 11.5px;
+                      margin-bottom: 6px; }
 </style>
 </head>
 <body>
@@ -228,13 +268,48 @@
         &nbsp; <a href="./exchange.html">exchange view →</a></div>
     </header>
 
+    <!-- START HERE. A dropdown of 320 entries is a dropdown nobody scrolls,
+         and the interesting worlds were buried in it -- the file you want was
+         indistinguishable from the file not existing. These are the handful
+         worth watching, newest stage first, each saying what to look for. -->
+    <div id="featured">
+      <div class="i4head">start here</div>
+      <div id="featuredList"></div>
+    </div>
+
     <div class="picker">
+      <details id="allReplays">
+        <summary>…or pick any of the <span id="replayCount">0</span> recorded runs</summary>
       <select id="replaySelect"><option value="">— select a replay —</option></select>
       <input type="file" id="fileInput" accept=".json">
+      </details>
       <div class="hint" id="pickerHint">Drag a .json anywhere to load it.</div>
     </div>
 
     <div id="summary"></div>
+
+    <!-- ISLAND 4.0. Three blocks a v8 viewer had nowhere to put. `colourBox`
+         answers "who is who" (four tribes read as one crowd when every agent
+         wears its own hue); `historyBox` answers "what happened over time",
+         which is the question a civilisation IS and which a single tick can
+         never show; `eventBox` answers "what just happened", because a village
+         changing hands is otherwise a colour that quietly changed. -->
+    <div id="colourBox" class="i4box" style="display:none">
+      <div class="i4head">colour agents by</div>
+      <div class="segmented" id="colourModes"></div>
+    </div>
+
+    <div id="historyBox" class="i4box" style="display:none">
+      <div class="i4head">history <span class="i4sub" id="historyLegend"></span></div>
+      <canvas id="historyCanvas" width="560" height="132"></canvas>
+      <div class="i4sub" id="historyReadout"></div>
+    </div>
+
+    <div id="eventBox" class="i4box" style="display:none">
+      <div class="i4head">events <span class="i4sub" id="eventCount"></span></div>
+      <div id="eventFeed"></div>
+    </div>
+
     <details id="legendBox">
       <summary>what am I looking at?</summary>
       <div id="legend"></div>

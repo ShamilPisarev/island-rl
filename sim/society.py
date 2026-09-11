@@ -30,7 +30,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .agents import TECH_NAMES, action_names, night_phase, num_actions
+from .agents import (SKILL_NAMES, TECH_NAMES, action_names, night_phase,
+                     num_actions)
 from .config import Config, load_config
 from .economy import subsistence
 from .replay import ReplayRecorder
@@ -139,6 +140,21 @@ class SocietyReport:
     tech_invented: list[np.ndarray] = field(default_factory=list)
     tech_taught: list[np.ndarray] = field(default_factory=list)
     granary_households: list[int] = field(default_factory=list)
+    # --- ISLAND 4.0
+    slots_final: list[int] = field(default_factory=list)
+    slots_grown: list[int] = field(default_factory=list)
+    slot_cap_hits: list[int] = field(default_factory=list)
+    conquests: list[int] = field(default_factory=list)
+    tech_conquered: list[np.ndarray] = field(default_factory=list)
+    # HOUSEHOLDS per tribe, which is the only number that can answer "did a
+    # tribe take ground". Tribe POPULATION cannot: a tribe that merely bred
+    # faster moves it without holding one extra site, and reading population as
+    # territory is how the stage-1 Gini claim went wrong the first time.
+    tribe_households: list[np.ndarray] = field(default_factory=list)
+    skill_mean: list[np.ndarray] = field(default_factory=list)
+    skill_max: list[np.ndarray] = field(default_factory=list)
+    skill_best: list[np.ndarray] = field(default_factory=list)
+    fertility: list[np.ndarray] = field(default_factory=list)
     # Mean arbiter trait per goal over the agents ALIVE at the end, against the
     # founding mean. The only place selection can show up: a trait is a
     # multiplier on a goal, so a lineage that breeds moves this vector.
@@ -318,6 +334,22 @@ def make_runner(cfg: Config, policy: str, seed: int,
     raise ValueError(f"unknown arbiter {policy!r}")
 
 
+def world_stage(cfg: Config) -> str:
+    """Which Island stage this config actually is, for labelling a replay.
+
+    Read off the blocks that are ON rather than off the file's path, because a
+    config can extend another one from a different directory and the path would
+    then lie about what is in the world.
+    """
+    if cfg.world.grow_slots or cfg.conquest.enabled or cfg.terrain.enabled \
+            or cfg.skills.enabled:
+        return "island4"
+    if (cfg.reproduction.enabled or cfg.housing.enabled
+            or cfg.agriculture.enabled or cfg.tribes.enabled):
+        return "island3"
+    return "island2"
+
+
 def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | None = None,
                  policy: str = "utility", checkpoint: str | None = None,
                  learn_agents: int | None = None,
@@ -375,6 +407,14 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
                 actions = random_actions(obs, rng, n_act)
             res = world.step(actions)
             obs = res.obs
+            # ISLAND 4.0: `world.grow_slots` widens the world INSIDE `step`, and
+            # everything sampled below this line compares a runner array against
+            # a pool array. `OptionRunner.act` widens itself on its next call,
+            # which is too late -- the diagnostics run first, and a
+            # `(135,) & (203,)` broadcast is how that showed up. Widened here so
+            # the two are the same shape for the rest of the tick.
+            if hasattr(runner, "ensure_slots"):
+                runner.ensure_slots(world.pool.n)
             pool = world.pool
             if learn_mask is not None:
                 # Same counting rule as OptionRunner.goal_ticks (every agent,
@@ -461,6 +501,16 @@ def run_episodes(cfg: Config, episodes: int, seed: int, acfg: ArbiterConfig | No
             rep.births_by_household.append(stats.births_by_household.astype(np.float64))
             rep.slots_reused.append(stats.slots_reused)
             rep.fissions.append(stats.fissions)
+            rep.slots_final.append(stats.slots_final)
+            rep.slots_grown.append(stats.slots_grown)
+            rep.slot_cap_hits.append(stats.slot_cap_hits)
+            rep.conquests.append(stats.conquests)
+            rep.tech_conquered.append(stats.tech_conquered)
+            rep.tribe_households.append(stats.tribe_households)
+            rep.skill_mean.append(stats.skill_mean)
+            rep.skill_max.append(stats.skill_max)
+            rep.skill_best.append(stats.skill_best_counts)
+            rep.fertility.append(stats.fertility)
             rep.households_final.append(stats.households_final)
             rep.tech_settled.append(stats.tech_settled.astype(np.float64))
             rep.tech_invented.append(stats.tech_invented.astype(np.float64))
@@ -752,16 +802,19 @@ def _island3_section(cfg: Config, rep: SocietyReport) -> str:
         tau = np.mean(np.stack(rep.tech_taught), axis=0)
         setl = (np.mean(np.stack(rep.tech_settled), axis=0) if rep.tech_settled
                 else np.zeros_like(inv))
+        con = (np.mean(np.stack(rep.tech_conquered), axis=0) if rep.tech_conquered
+               else np.zeros_like(inv))
         # OF THE HOUSEHOLDS THAT EXIST, not of the ones the config started with:
         # with fission the denominator is an outcome too.
         n_house = max(int(np.mean(rep.households_final)) if rep.households_final
                       else cfg.society.num_households, 1)
         for k, name in enumerate(TECH_NAMES):
-            if inv[k] + tau[k] + setl[k] == 0:
+            if inv[k] + tau[k] + setl[k] + con[k] == 0:
                 continue
-            out.append(f"tech: {name:<12} {inv[k] + tau[k] + setl[k]:.1f} of {n_house}"
+            out.append(f"tech: {name:<12} {inv[k] + tau[k] + setl[k] + con[k]:.1f} of {n_house}"
                        f" households   ({inv[k]:.1f} INVENTED, {tau[k]:.1f} TAUGHT"
                        + (f", {setl[k]:.1f} carried by SETTLERS" if setl[k] else "")
+                       + (f", {con[k]:.1f} taken by CONQUEST" if con[k] else "")
                        + ")")
     if rep.trait_final:
         # The drift, largest first. This is the only place behaviour nobody
@@ -792,7 +845,80 @@ def _island3_section(cfg: Config, rep: SocietyReport) -> str:
             f"  raids           {np.mean(rep.raids_cross):.0f} across a border,"
             f" {np.mean(rep.raids_within):.0f} within a tribe",
         ]
+        # HOUSEHOLDS, NOT PEOPLE, and it is a separate line because it is a
+        # separate claim. A tribe that merely out-bred its neighbours moves the
+        # population Gini without holding one extra site; only this number can
+        # say a tribe took GROUND, which is what the stage-1, stage-2 and
+        # stage-3 tribe reads each failed to show.
+        if rep.tribe_households:
+            hh = np.mean(np.stack(rep.tribe_households), axis=0)
+            out += [
+                f"  villages held   " + " ".join(f"{v:.1f}" for v in hh)
+                + f"   Gini {gini(hh):.3f}  <- GROUND, not people",
+            ]
+    out += _island4_lines(cfg, rep)
     return "\n".join(out)
+
+
+def _island4_lines(cfg: Config, rep: SocietyReport) -> list[str]:
+    """Island 4.0: how big the array got, and who took what off whom.
+
+    LEADS WITH WHETHER THE MECHANIC FIRED, the way the predator section does. A
+    conquest world with zero captures has tested nothing, and every line under
+    it would be a number about a thing that did not happen.
+
+    The growth line leads with `slot_cap_hits` for the same reason and a sharper
+    one: if the memory guard bound, the population was limited by numpy and
+    every carrying-capacity reading in that run is void -- which is exactly the
+    mistake read R6 made when 200 rows looked like an island.
+    """
+    out: list[str] = []
+    if cfg.world.grow_slots and rep.slots_final:
+        grown = np.mean(rep.slots_grown)
+        capped = int(np.sum(rep.slot_cap_hits))
+        out.append(f"array             {cfg.world.num_agents} rows at tick 0 -> "
+                   f"{np.mean(rep.slots_final):.0f} at the end "
+                   f"(+{grown:.0f} grown; the array is not the ceiling)")
+        if capped:
+            out.append(f"  ** world.max_slots BOUND on {capped} tick(s): this "
+                       f"population was limited by MEMORY, not by the island. "
+                       f"Every carrying-capacity read in this run is void.")
+    if cfg.terrain.enabled and rep.fertility and rep.fertility[0].size:
+        f = np.concatenate(rep.fertility)
+        out.append(f"terrain           fertility {f.min():.2f}-{f.max():.2f} "
+                   f"(mean {f.mean():.2f}); the ground is no longer uniform"
+                   + ("; material dealt to the POOR half"
+                      if cfg.terrain.material_anticorrelated else ""))
+    if cfg.skills.enabled and rep.skill_mean and rep.skill_mean[0].size:
+        m = np.mean(np.stack(rep.skill_mean), axis=0)
+        mx = np.mean(np.stack(rep.skill_max), axis=0)
+        best = np.mean(np.stack(rep.skill_best), axis=0)
+        out.append("skill             "
+                   + "  ".join(f"{SKILL_NAMES[k]} {m[k]:.2f} (best {mx[k]:.2f})"
+                               for k in range(len(SKILL_NAMES))))
+        # THE DIVISION-OF-LABOUR LINE, and it is the one to read. If every agent
+        # is best at the same resource there is one profession on this island,
+        # not a division of labour -- which a mean skill cannot tell you and
+        # which is exactly what the mechanic was built to test.
+        share = best / max(best.sum(), 1e-9)
+        out.append("  best at         "
+                   + " / ".join(f"{SKILL_NAMES[k]} {share[k]:.0%}"
+                                for k in range(len(SKILL_NAMES)))
+                   + ("   [ONE PROFESSION -- no division of labour]"
+                      if share.max() > 0.9 else ""))
+    if cfg.conquest.enabled and rep.conquests:
+        cq = np.mean(rep.conquests)
+        out.append(f"conquest          {cq:.1f} villages changed hands an episode"
+                   + ("   [NOT TESTED -- nothing below this line means anything]"
+                      if cq < 0.5 else ""))
+        if cq >= 0.5 and rep.tech_conquered:
+            con = np.mean(np.stack(rep.tech_conquered), axis=0)
+            if con.sum():
+                out.append("  technology taken  "
+                           + ", ".join(f"{TECH_NAMES[k]} {con[k]:.1f}"
+                                       for k in range(len(TECH_NAMES)) if con[k])
+                           + "   (households holding it BECAUSE they took a village)")
+    return out
 
 
 def _predator_section(cfg: Config, rep: SocietyReport) -> str:
@@ -1149,8 +1275,14 @@ def main() -> None:
         # two are meant to be compared against.
         stem = Path(args.config).stem
         path = args.replay_path or f"{cfg.logging.replay_dir}/{stem}.json"
+        # NAMED AFTER THE STAGE THE WORLD ACTUALLY IS, not hardcoded to "island2".
+        # Every society replay ever written said "island2" whatever was in it, so
+        # a viewer's dropdown of 320 entries showed an Island 4.0 empire filed
+        # under Island 2.0 -- which is indistinguishable from the file not being
+        # there. Derived from the config so it cannot drift from the world.
         written = record_replay(cfg, args.seed, path,
-                                f"island2 {args.arbiter} arbiter ({stem})", acfg,
+                                f"{world_stage(cfg)} {args.arbiter} arbiter ({stem})",
+                                acfg,
                                 policy=args.arbiter, checkpoint=args.checkpoint,
                                 learn_agents=args.learn_agents)
         print(f"\nreplay written: {written}")

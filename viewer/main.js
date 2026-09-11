@@ -10,12 +10,19 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createPopulation } from './biped.js';
 
 // --- replay schema this build can read (see sim/replay.py) ------------------
-const SUPPORTED_SCHEMA = [1, 2, 3, 4, 5, 6, 7, 8]; // v2 = M4 materials/shelters/night, v3 = M5 transfers,
+const SUPPORTED_SCHEMA = [1, 2, 3, 4, 5, 6, 7, 8, 9]; // v2 = M4 materials/shelters/night, v3 = M5 transfers,
                                               // v4 = island2 stage 4 households/stockpiles/raids,
                                               // v5 = goals (`o`), shocks (`n`), learned-agent flags,
                                               // v6 = predator positions (`d`),
                                               // v7 = island3 children (`adult`), fields (`f`), rooms (`h`),
-                                              // v8 = reused rows (`u`), granaries (`q`)
+                                              // v8 = reused rows (`u`), granaries (`q`),
+                                              // v9 = island4: sites off the LAYOUT (the `Infinity`
+                                              //      fix that made frontier replays loadable at
+                                              //      all), household state (`hh`), membership
+                                              //      moves (`hm`), captures (`cq`), foundings
+                                              //      (`fs`), sieges (`sg`), history (`y`/`yt`),
+                                              //      and a tick's agent list may be SHORTER than
+                                              //      the header's when the world grew.
 // Column order inside each tick's `a` rows. Cross-checked against the file's
 // own tick_fields on load, so a schema change cannot silently shift a column.
 const A_X = 0, A_Z = 1, A_HUNGER = 2, A_FOOD = 3, A_ALIVE = 4, A_ACTION = 5;
@@ -162,6 +169,26 @@ const state = {
   agentHousehold: null,   // live identity, rewritten by `u` (schema v8)
   agentTribe: null,
   reuseAt: null,
+  // --- schema v9 (Island 4.0)
+  island4: false,
+  colourMode: 'agent',      // agent | tribe | household
+  agentColors: [],          // the header's golden-angle per-agent palette
+  tribeColors: [],
+  householdColors: [],
+  hhAt: null,               // tick -> [[h, tribe, farming, granary, active]]
+  hmAt: null,               // tick -> [[agent, household, tribe]]
+  siegeAt: null,            // tick -> [[h, progress]]
+  hhTribe: null,            // live per-household tribe
+  hhActive: null,           // live per-household inhabited flag
+  hhFarming: null,
+  hhGranary: null,
+  territory: [],            // one tinted disc per household slot
+  siegeRings: [],           // one ring per household slot
+  history: null,            // { alive, births, deaths, households, farming, granary, slots, tribes }
+  events: [],               // { t, kind, text }
+  eventCursor: -1,
+  holdTicks: 60,
+  lastColourKey: '',
 };
 
 function fatal(title, message) {
@@ -539,6 +566,79 @@ function loadReplay(replay, origin) {
     });
   }
 
+  // --- schema v9: the Island 4.0 stream, scanned once at load.
+  //
+  // Everything here is SPARSE in the file -- a household's tribe changes a
+  // handful of times in twelve thousand ticks -- so the viewer keeps a live
+  // per-household state and replays the changes onto it. Scrubbing BACKWARDS is
+  // the case that makes this non-trivial and it is why `applyIsland4` rebuilds
+  // from tick 0 rather than stepping: a sparse stream has no inverse.
+  state.island4 = replay.schema_version >= 9;
+  state.hhAt = new Map();
+  state.hmAt = new Map();
+  state.siegeAt = new Map();
+  state.events = [];
+  state.holdTicks = replay.world?.conquest_hold_ticks || 60;
+  if (state.island4) {
+    const tribeName = (t) => `tribe ${t}`;
+    for (const tk of replay.ticks) {
+      if (Array.isArray(tk.hh)) state.hhAt.set(tk.t, tk.hh);
+      if (Array.isArray(tk.hm)) state.hmAt.set(tk.t, tk.hm);
+      if (Array.isArray(tk.sg)) state.siegeAt.set(tk.t, tk.sg);
+      if (Array.isArray(tk.fs)) {
+        for (const [parent, child] of tk.fs) {
+          state.events.push({ t: tk.t, kind: 'settle',
+            text: `village <b>${child}</b> founded by village ${parent}` });
+        }
+      }
+      if (Array.isArray(tk.cq)) {
+        for (const [h, from, to] of tk.cq) {
+          state.events.push({ t: tk.t, kind: 'conquest',
+            text: `<b>${tribeName(to)}</b> took village ${h} from ${tribeName(from)}` });
+        }
+      }
+    }
+    // Technology unlocks are not their own key: they are a household state
+    // change, which is what `hh` already carries. Deriving the event here rather
+    // than emitting a second key is the same call the field stream makes -- the
+    // file says what CHANGED and the viewer says what that meant.
+    const seenF = new Set(), seenG = new Set();
+    for (const tk of replay.ticks) {
+      if (!Array.isArray(tk.hh)) continue;
+      for (const [h, , farming, granary] of tk.hh) {
+        if (farming && !seenF.has(h)) {
+          seenF.add(h);
+          state.events.push({ t: tk.t, kind: 'tech',
+            text: `village <b>${h}</b> has farming` });
+        }
+        if (granary && !seenG.has(h)) {
+          seenG.add(h);
+          state.events.push({ t: tk.t, kind: 'tech',
+            text: `village <b>${h}</b> built a granary` });
+        }
+      }
+    }
+    state.events.sort((a, b) => a.t - b.t);
+    // The history series, one entry per recorded tick.
+    const nt = replay.world?.num_tribes || 1;
+    const H = { t: [], alive: [], births: [], deaths: [], households: [],
+                farming: [], granary: [], slots: [],
+                tribes: Array.from({ length: nt }, () => []) };
+    for (const tk of replay.ticks) {
+      const y = tk.y;
+      if (!Array.isArray(y)) continue;
+      H.t.push(tk.t);
+      H.alive.push(y[0]); H.births.push(y[1]); H.deaths.push(y[2]);
+      H.households.push(y[3]); H.farming.push(y[4]); H.granary.push(y[5]);
+      H.slots.push(y[6] ?? y[0]);
+      const yt = Array.isArray(tk.yt) ? tk.yt : null;
+      for (let k = 0; k < nt; k++) H.tribes[k].push(yt ? (yt[k] ?? 0) : 0);
+    }
+    state.history = H.t.length ? H : null;
+  } else {
+    state.history = null;
+  }
+
   state.society = replay.schema_version >= 4;
   state.stockpiles = [];
   state.households = replay.households || [];
@@ -548,6 +648,65 @@ function loadReplay(replay, origin) {
       worldGroup.add(built.group);
       return built;
     });
+  }
+
+  // --- schema v9: the ground each tribe holds, and the sieges on it.
+  //
+  // A tinted disc under every inhabited village, coloured by its TRIBE. This is
+  // the answer to "how do they divide the territory": four tribes wearing four
+  // golden-angle agent hues read as one crowd, and the thing the stage exists to
+  // show -- one tribe's colour spreading across the island as it takes villages
+  // -- is invisible without it. Built for every slot, hidden until inhabited,
+  // for the reason the fields and the room annexes are: a replay scrubs
+  // backwards and meshes made mid-playback leak.
+  state.territory = null;
+  state.siegeRings = [];
+  state.tribeColors = (replay.tribes || []).map((t) => t.color);
+  state.agentColors = replay.agents.map((a) => a.color || '#8899aa');
+  state.householdColors = state.households.map((h) => h.color || '#8899aa');
+  if (state.island4 && state.society) {
+    const spread = replay.world?.stockpile_radius
+      ? Math.max(replay.world.stockpile_radius * 2.2, 7) : 9;
+    // THE TERRITORY FIELD. Not a disc per village, which was the first version
+    // and which answered the wrong question: a ring under each hut says where
+    // the huts are, and what the stage is about is which tribe holds which PART
+    // OF THE ISLAND -- a thing that only exists as a field over the ground.
+    //
+    // A 72x72 grid over the island, each vertex tinted by the tribe of the
+    // nearest inhabited village and faded out where no village is near. Vertex
+    // colours with alpha (itemSize 4), so the whole map is one draw call and
+    // recolouring it is a buffer write -- the same argument the biped rig makes.
+    const R = replay.world.island_radius;
+    const GRID = 72;
+    const fieldGeo = new THREE.PlaneGeometry(R * 2, R * 2, GRID, GRID);
+    fieldGeo.rotateX(-Math.PI / 2);
+    const vcount = fieldGeo.attributes.position.count;
+    fieldGeo.setAttribute('color',
+      new THREE.BufferAttribute(new Float32Array(vcount * 4), 4));
+    const field = new THREE.Mesh(fieldGeo, new THREE.MeshBasicMaterial({
+      vertexColors: true, transparent: true, depthWrite: false,
+    }));
+    field.position.y = 0.05;
+    field.renderOrder = -1;   // under the agents and the huts, never over them
+    worldGroup.add(field);
+    state.territory = { mesh: field, geo: fieldGeo, count: vcount,
+                        radius: R, spread, key: '' };
+
+    for (const h of state.households) {
+      // A siege reads as a ring that CLOSES. Drawn as an arc whose sweep is the
+      // progress, so a village three quarters taken looks three quarters taken
+      // -- a number in a panel would be a number nobody watching sees.
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(spread * 0.82, spread * 0.94, 40, 1, 0, 0.001),
+        new THREE.MeshBasicMaterial({ color: 0xff3b30, transparent: true,
+                                      opacity: 0.0, side: THREE.DoubleSide,
+                                      depthWrite: false }),
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(h.x, 0.07, h.z);
+      worldGroup.add(ring);
+      state.siegeRings.push({ mesh: ring, inner: spread * 0.82, outer: spread * 0.94 });
+    }
   }
 
   // --- schema v5: goals, and who is learned.
@@ -617,6 +776,14 @@ function loadReplay(replay, origin) {
   worldGroup.add(state.population.group);
   state.aliveSpans = aliveSpans(replay);
   state.agentCount = replay.agents.length;
+  // DEFAULT TO TRIBE WHEN THERE ARE TRIBES. The per-agent palette is the right
+  // default for six agents and the wrong one for four tribes on forty sites:
+  // the first question a village replay raises is who holds what, and a viewer
+  // that opens on 3.6-degree hue steps makes that unanswerable until you find
+  // the toggle.
+  state.colourMode = (replay.world?.num_tribes || 1) > 1 ? 'tribe' : 'agent';
+  state.lastColourKey = '';
+  state.eventCursor = -2;
   state.headings = new Float64Array(state.agentCount);
   state.agentPos = new Float64Array(state.agentCount * 2);
 
@@ -626,6 +793,12 @@ function loadReplay(replay, origin) {
 
   buildAgentPanel();
   renderLegend();
+  renderColourModes();
+  // Called on EVERY load, not only an island4 one: both self-hide when there is
+  // no data, and loading a v8 replay after a v9 one would otherwise leave the
+  // previous run's history chart and event feed on screen next to it.
+  renderHistory();
+  renderEvents();
   renderSummary();
   $('replayLabel').textContent = `${replay.label ?? 'replay'} · ${replay.source ?? '?'} · seed ${replay.seed}`;
   $('scrub').max = String(state.lastTick);
@@ -657,7 +830,9 @@ function aliveSpans(replay) {
   for (let t = 0; t < replay.ticks.length; t++) {
     const rows = replay.ticks[t].a;
     for (let i = 0; i < n; i++) {
-      const alive = rows[i][A_ALIVE] === 1 ? 1 : 0;
+      // schema v9: rows past the end of a tick's list belong to slots the world
+      // had not grown yet. Not alive, and not a death either.
+      const alive = rows[i] && rows[i][A_ALIVE] === 1 ? 1 : 0;
       if (alive && !wasAlive[i]) spans[i].push([t, Infinity]);
       else if (!alive && wasAlive[i]) spans[i][spans[i].length - 1][1] = t;
       wasAlive[i] = alive;
@@ -699,7 +874,14 @@ function applyTick(t) {
   const nightNow = state.construction && nightFactor(i0) > 0.5;
   const pop = state.population;
   for (let i = 0; i < state.agentCount; i++) {
+    // schema v9: A TICK'S AGENT LIST CAN BE SHORTER THAN THE HEADER'S. With
+    // `world.grow_slots` the array widens mid-episode, and the header is sized
+    // from the FINAL width, so early ticks simply have no row for a slot that
+    // does not exist yet. That is the unborn state the viewer already draws as
+    // nothing -- the only new thing is that the row is absent rather than
+    // present-and-unborn.
     const a0 = cur.a[i], a1 = nxt.a[i];
+    if (!a0 || !a1) { pop.setPose(i, { hidden: true }); continue; }
     const alive = a0[A_ALIVE] === 1;
 
     const x = a0[A_X] + (a1[A_X] - a0[A_X]) * f;
@@ -833,6 +1015,73 @@ function applyTick(t) {
     }
   }
 
+  // --- schema v9: household state, membership, territory and sieges.
+  //
+  // Rebuilt from tick 0 every frame, for the reason the v8 block is: the file
+  // carries CHANGES, and a change stream has no inverse, so scrubbing backwards
+  // cannot be done by undoing. Cheap, because the maps hold only the ticks on
+  // which something actually changed -- two of them in a 1,500-tick village.
+  if (state.island4) {
+    const nH = state.households.length;
+    if (!state.hhTribe || state.hhTribe.length !== nH) {
+      state.hhTribe = new Int32Array(nH);
+      state.hhActive = new Uint8Array(nH);
+      state.hhFarming = new Uint8Array(nH);
+      state.hhGranary = new Uint8Array(nH);
+    }
+    for (let h = 0; h < nH; h++) {
+      state.hhTribe[h] = state.households[h].tribe ?? 0;
+      state.hhActive[h] = state.households[h].active ? 1 : 0;
+      state.hhFarming[h] = 0;
+      state.hhGranary[h] = 0;
+    }
+    for (const [tick, rows] of state.hhAt) {
+      if (tick > cur.t) continue;
+      for (const [h, tribe, farming, granary, active] of rows) {
+        state.hhTribe[h] = tribe;
+        state.hhFarming[h] = farming;
+        state.hhGranary[h] = granary;
+        state.hhActive[h] = active;
+      }
+    }
+    for (const [tick, rows] of state.hmAt) {
+      if (tick > cur.t) continue;
+      for (const [i, house, tribe] of rows) {
+        if (i >= state.agentHousehold.length) continue;
+        state.agentHousehold[i] = house;
+        state.agentTribe[i] = tribe;
+      }
+    }
+    // A DORMANT SITE IS NOT A RUIN, it is ground nobody has settled yet. Hiding
+    // it (rather than drawing the empty foundation ring every site mesh starts
+    // with) is what makes a daughter settlement read as APPEARING -- twenty huts
+    // materialising over an episode instead of forty foundations that slowly
+    // fill in.
+    for (let h = 0; h < nH && h < state.sites.length; h++) {
+      state.sites[h].group.visible = state.hhActive[h] === 1;
+    }
+    for (let h = 0; h < nH && h < state.stockpiles.length; h++) {
+      state.stockpiles[h].group.visible = state.hhActive[h] === 1;
+    }
+    updateTerritoryField();
+    // Sieges: an arc that closes as the village is taken.
+    const sg = new Map();
+    const list = state.siegeAt.get(cur.t);
+    if (list) for (const [h, prog] of list) sg.set(h, prog);
+    for (let h = 0; h < state.siegeRings.length; h++) {
+      const r = state.siegeRings[h];
+      const prog = sg.get(h) ?? 0;
+      const frac = Math.min(prog / Math.max(state.holdTicks, 1), 1);
+      r.mesh.visible = frac > 0 && state.hhActive[h] === 1;
+      if (!r.mesh.visible) continue;
+      r.mesh.geometry.dispose();
+      r.mesh.geometry = new THREE.RingGeometry(
+        r.inner, r.outer, Math.max(4, Math.round(40 * frac)), 1,
+        Math.PI / 2, -frac * Math.PI * 2);
+      r.mesh.material.opacity = 0.35 + 0.5 * frac;
+    }
+  }
+
   // --- schema v8: a granary is a bigger crate. A technology that changes what a
   // household can hold has to be visible, or a store that quietly keeps twice as
   // much reads as a rendering bug.
@@ -896,6 +1145,14 @@ function applyTick(t) {
 
   applyShock(cur, i0);
   updateAgentPanel(cur);
+  if (state.island4) {
+    // Colours can change WITHIN an episode (a settler joins a new village, a
+    // conquered village changes tribe), so this is per tick and not per load.
+    // `refreshColours` no-ops unless the answer actually moved.
+    refreshColours();
+    renderHistory();
+    renderEvents();
+  }
   const night = state.construction && nightFactor(t) > 0.5;
   $('tickCount').textContent = `${night ? '\u263e ' : ''}${i0} / ${state.lastTick}`;
   $('scrub').value = String(t);
@@ -1157,6 +1414,7 @@ function describeAgent(i) {
   const tick = state.ticks[Math.min(Math.floor(state.t), state.lastTick)];
   const a = tick.a[i];
   const world = state.replay.world;
+  if (!a) return `agent ${i} · not born yet`;   // schema v9: row not grown yet
   if (a[A_ALIVE] !== 1) return `agent ${i} · dead`;
   const act = state.actionNames[a[A_ACTION]] ?? '?';
   // Goal first, action second: the goal is what the agent is TRYING to do and
@@ -1186,6 +1444,7 @@ function updateAgentPanel(tick) {
   if (state.rosterMode) {
     for (let i = 0; i < state.rows.length; i++) {
       const r = state.rows[i], a = tick.a[i];
+      if (!a) continue;                 // schema v9: not grown yet
       const alive = a[A_ALIVE] === 1;
       const hunger = a[A_HUNGER] / world.max_hunger;
       r.row.classList.toggle('dead', !alive);
@@ -1213,7 +1472,7 @@ function updateAgentPanel(tick) {
   const hasGoals = !!state.goalNames && Array.isArray(tick.o);
   for (let i = 0; i < state.agentCount; i++) {
     const a = tick.a[i];
-    const isAlive = a[A_ALIVE] === 1;
+    const isAlive = !!a && a[A_ALIVE] === 1;    // schema v9: absent == not grown yet
     const cell = state.rows[i].cell;
     cell.classList.toggle('dead', !isAlive);
     cell.classList.toggle('followed', state.follow === i);
@@ -1256,6 +1515,280 @@ function updateAgentPanel(tick) {
 // constants that draw it. Nothing here was discoverable before: a red ball at
 // the hip (carried berries) and a red diamond over the head (stealing) look
 // like the same "red dot" until someone tells you they are not.
+// Repaint the territory field: every vertex takes the colour of the nearest
+// inhabited village's tribe, fading out where nothing is near.
+//
+// Recomputed only when the map of (which village, which tribe, inhabited)
+// actually changes -- a handful of times in a whole episode -- because the inner
+// loop is vertices x villages and running 5,300 x 40 every frame for a picture
+// that did not move is exactly the waste the rest of this file avoids.
+const _terrCol = new THREE.Color();
+function updateTerritoryField() {
+  const T = state.territory;
+  if (!T) return;
+  let key = '';
+  for (let h = 0; h < state.hhActive.length; h++) {
+    if (state.hhActive[h]) key += h + ':' + state.hhTribe[h] + ',';
+  }
+  if (key === T.key) return;
+  T.key = key;
+
+  const pos = T.geo.attributes.position;
+  const col = T.geo.attributes.color;
+  const live = [];
+  for (let h = 0; h < state.hhActive.length; h++) {
+    if (state.hhActive[h]) {
+      live.push([state.households[h].x, state.households[h].z, state.hhTribe[h]]);
+    }
+  }
+  const rgb = state.tribeColors.map((c) => new THREE.Color(c));
+  // HOW FAR A VILLAGE'S CLAIM REACHES, sized from how many villages there are
+  // rather than fixed. At a fixed stockpile-sized radius a forty-village island
+  // reads as forty dots on empty ground, which answers "where are the huts" and
+  // not "who holds which part of the island" -- and the second is the question
+  // the tint exists for. Grows as villages are lost, so a shrinking tribe's
+  // remaining ground still reads as territory.
+  const reach = Math.min(
+    Math.max(T.radius / Math.sqrt(Math.max(live.length, 1)) * 1.5, T.spread * 2.2),
+    T.radius * 0.5);
+  const reach2 = reach * reach;
+  const R2 = T.radius * T.radius;
+  for (let v = 0; v < T.count; v++) {
+    const x = pos.getX(v), z = pos.getZ(v);
+    let best = Infinity, bestTribe = -1;
+    for (let k = 0; k < live.length; k++) {
+      const dx = live[k][0] - x, dz = live[k][1] - z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < best) { best = d2; bestTribe = live[k][2]; }
+    }
+    // Off the island, or too far from anybody, is UNCLAIMED -- and unclaimed
+    // has to look unclaimed. A field that tinted the whole disc would say four
+    // tribes have carved up an island they have barely settled.
+    if (bestTribe < 0 || best > reach2 || x * x + z * z > R2) {
+      col.setXYZW(v, 0, 0, 0, 0);
+      continue;
+    }
+    const c = rgb[bestTribe] ?? _terrCol.set('#8899aa');
+    // Strongest at the village, feathered to nothing at `reach`, so borders read
+    // as borders rather than as a mosaic of hard-edged cells.
+    const a = 0.30 * (1 - Math.sqrt(best / reach2));
+    col.setXYZW(v, c.r, c.g, c.b, a);
+  }
+  col.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------------------
+// Island 4.0 panel: who is who, what happened over time, what just happened
+// ---------------------------------------------------------------------------
+
+// The colour an agent wears, under whichever mode is selected.
+//
+// WHY THIS IS A MODE AND NOT A CHOICE. The golden-angle per-agent palette is
+// right for six agents and wrong for four tribes: at n=100 the hues sit 3.6
+// degrees apart, so "which tribe holds the north" is a question the default
+// colouring physically cannot answer. Tribe colouring answers it and loses
+// individual identity, which is why both exist rather than one replacing the
+// other.
+function agentColorFor(i) {
+  if (state.colourMode === 'tribe' && state.tribeColors.length) {
+    return state.tribeColors[state.agentTribe?.[i] ?? 0] ?? '#8899aa';
+  }
+  if (state.colourMode === 'household' && state.householdColors.length) {
+    return state.householdColors[state.agentHousehold?.[i] ?? 0] ?? '#8899aa';
+  }
+  return state.agentColors[i] ?? '#8899aa';
+}
+
+// Recolour only when the answer would actually differ. Identity changes as the
+// replay runs -- a settler joins a new village, a conquered village changes
+// tribe -- so this cannot be done once at load; but writing 8 instance colour
+// buffers every frame for a picture that did not change is exactly the waste
+// instancing was introduced to remove.
+function refreshColours() {
+  const pop = state.population;
+  if (!pop || !pop.recolour) return;
+  let key = state.colourMode;
+  if (state.colourMode === 'tribe' && state.agentTribe) key += ':' + state.agentTribe.join(',');
+  else if (state.colourMode === 'household' && state.agentHousehold) {
+    key += ':' + state.agentHousehold.join(',');
+  }
+  if (key === state.lastColourKey) return;
+  state.lastColourKey = key;
+  const colours = new Array(state.agentCount);
+  for (let i = 0; i < state.agentCount; i++) colours[i] = agentColorFor(i);
+  pop.recolour(colours);
+}
+
+const COLOUR_MODES = [
+  ['agent', 'agent'],
+  ['tribe', 'tribe'],
+  ['household', 'village'],
+];
+
+function renderColourModes() {
+  const box = $('colourBox'), host = $('colourModes');
+  if (!host) return;
+  const canTribe = state.tribeColors.length > 1;
+  const canHouse = state.householdColors.length > 1;
+  if (!canTribe && !canHouse) { if (box) box.style.display = 'none'; return; }
+  if (box) box.style.display = '';
+  host.innerHTML = '';
+  for (const [mode, label] of COLOUR_MODES) {
+    if (mode === 'tribe' && !canTribe) continue;
+    if (mode === 'household' && !canHouse) continue;
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.className = state.colourMode === mode ? 'on' : '';
+    b.onclick = () => {
+      state.colourMode = mode;
+      state.lastColourKey = '';
+      renderColourModes();
+      refreshColours();
+    };
+    host.appendChild(b);
+  }
+}
+
+// --- the history strip ------------------------------------------------------
+//
+// A civilisation is a TRAJECTORY. Every number this viewer showed before was a
+// single tick's, so "the population overshot its carrying capacity and fell
+// back" -- the headline finding of Island 3.0 -- was a thing you could read in
+// a write-up and never see. Six series, drawn as one small chart, with the
+// playhead marked.
+const HISTORY_SERIES = [
+  { key: 'alive', label: 'alive', color: '#6ec46e', width: 2 },
+  { key: 'slots', label: 'slots', color: '#3d5a6c', width: 1, dashed: true },
+  { key: 'households', label: 'villages', color: '#e0b83c', width: 1.5 },
+  { key: 'farming', label: 'farming', color: '#c98cf0', width: 1.5 },
+  { key: 'granary', label: 'granaries', color: '#59b6d8', width: 1.5 },
+];
+
+function renderHistory() {
+  const box = $('historyBox'), cv = $('historyCanvas');
+  if (!cv) return;
+  const H = state.history;
+  if (!H || H.t.length < 2) { if (box) box.style.display = 'none'; return; }
+  if (box) box.style.display = '';
+
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = cv.clientWidth || 560, h = 132;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+  }
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+
+  const byTribe = state.colourMode === 'tribe' && state.tribeColors.length > 1;
+  const series = byTribe
+    ? state.tribeColors.map((c, k) => ({ data: H.tribes[k], color: c,
+                                         label: `tribe ${k}`, width: 1.8 }))
+    : HISTORY_SERIES.map((sdef) => ({ ...sdef, data: H[sdef.key] }));
+
+  // The peak is a property of the SERIES, not of the playhead, so it is scanned
+  // once and cached. Rescanning 5 series x 24,000 points twelve times a second
+  // for a number that cannot change is the same waste the recolour key avoids.
+  const peakKey = (byTribe ? 'tribe' : 'main') + ':' + H.t.length;
+  if (state._historyPeakKey !== peakKey) {
+    let p = 1;
+    for (const sr of series) for (const v of sr.data) if (v > p) p = v;
+    state._historyPeak = p;
+    state._historyPeakKey = peakKey;
+  }
+  const peak = state._historyPeak;
+  const padL = 26, padR = 4, padT = 6, padB = 14;
+  const plotW = Math.max(w - padL - padR, 1), plotH = Math.max(h - padT - padB, 1);
+  const n = H.t.length;
+  const tMax = H.t[n - 1] || 1;
+  const X = (i) => padL + (H.t[i] / tMax) * plotW;
+  const Y = (v) => padT + plotH - (v / peak) * plotH;
+
+  g.strokeStyle = '#1d262e'; g.lineWidth = 1;
+  g.fillStyle = '#5c6b78'; g.font = '9px ui-monospace, monospace';
+  for (let k = 0; k <= 2; k++) {
+    const v = (peak / 2) * k, y = Y(v);
+    g.beginPath(); g.moveTo(padL, y); g.lineTo(w - padR, y); g.stroke();
+    g.fillText(String(Math.round(v)), 2, y + 3);
+  }
+
+  for (const sr of series) {
+    if (!sr.data) continue;
+    g.strokeStyle = sr.color;
+    g.lineWidth = sr.width || 1.5;
+    g.setLineDash(sr.dashed ? [3, 3] : []);
+    g.beginPath();
+    // One point per pixel column at most: a 24,000-tick series into a 560px
+    // canvas is 40 moveTo calls per pixel otherwise, every frame.
+    const stride = Math.max(1, Math.floor(n / plotW));
+    for (let i = 0; i < n; i += stride) {
+      const x = X(i), y = Y(sr.data[i]);
+      if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    }
+    g.lineTo(X(n - 1), Y(sr.data[n - 1]));
+    g.stroke();
+  }
+  g.setLineDash([]);
+
+  // The playhead, so the chart and the island agree about "now".
+  const px = padL + (Math.min(state.t, tMax) / tMax) * plotW;
+  g.strokeStyle = '#e6edf3'; g.globalAlpha = 0.55; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(px, padT); g.lineTo(px, padT + plotH); g.stroke();
+  g.globalAlpha = 1;
+
+  const legend = $('historyLegend');
+  if (legend) {
+    legend.innerHTML = series.map((sr) =>
+      `<span class="swatch-inline" style="background:${sr.color}"></span>${sr.label}`
+    ).join(' ');
+  }
+  const idx = Math.min(n - 1, Math.max(0, Math.round((state.t / tMax) * (n - 1))));
+  const out = $('historyReadout');
+  if (out) {
+    out.innerHTML = byTribe
+      ? series.map((sr, k) => `t${k} <b>${sr.data[idx]}</b>`).join(' · ')
+      : `tick <b>${H.t[idx]}</b> · alive <b>${H.alive[idx]}</b> of `
+        + `<b>${H.slots[idx]}</b> rows · born <b>${H.births[idx]}</b> · `
+        + `died <b>${H.deaths[idx]}</b> · villages <b>${H.households[idx]}</b>`;
+  }
+}
+
+// --- the event feed ---------------------------------------------------------
+//
+// A village changing hands is otherwise a colour that quietly changed, and a
+// technology being invented is nothing at all. Events are derived at load from
+// the sparse stream; this only renders the window around the playhead.
+const EVENT_ICON = { settle: '⌂', conquest: '⚔', tech: '✦' };
+
+function renderEvents() {
+  const box = $('eventBox'), feed = $('eventFeed');
+  if (!feed) return;
+  if (!state.events.length) { if (box) box.style.display = 'none'; return; }
+  if (box) box.style.display = '';
+  const now = state.t;
+  // Index of the last event at or before the playhead.
+  let cursor = -1;
+  for (let i = 0; i < state.events.length; i++) {
+    if (state.events[i].t <= now) cursor = i; else break;
+  }
+  const counted = cursor + 1;
+  if (cursor === state.eventCursor && feed.dataset.n === String(counted)) return;
+  state.eventCursor = cursor;
+  feed.dataset.n = String(counted);
+  const from = Math.max(0, cursor - 11);
+  const rows = [];
+  for (let i = from; i <= cursor; i++) {
+    const e = state.events[i];
+    rows.push(`<div class="ev${i === cursor ? ' now' : ''}">`
+      + `<span class="tk">${e.t}</span>`
+      + `<span>${EVENT_ICON[e.kind] || '·'} ${e.text}</span></div>`);
+  }
+  feed.innerHTML = rows.reverse().join('') || '<div class="ev">—</div>';
+  const c = $('eventCount');
+  if (c) c.textContent = `${counted} of ${state.events.length} so far`;
+}
+
 function renderLegend() {
   const host = $('legend');
   if (!host) return;
@@ -1359,6 +1892,24 @@ function renderLegend() {
     rows.push(item('', '#b08d57', 'little huts round a shelter',
                    'rooms built onto the family house — each one sleeps more of '
                    + 'the family, and a family with no free bed cannot have a child'));
+  }
+  if (state.island4) {
+    rows.push('<div class="grp">Island 4.0 (schema v9)</div>');
+    rows.push(item('', '#6ec46e', 'tinted ground',
+                   'territory — every patch takes the colour of the tribe whose '
+                   + 'village is nearest, so a tribe taking villages spreads '
+                   + 'visibly across the island'));
+    rows.push(item('', '#ff3b30', 'a red arc closing round a village',
+                   'a SIEGE — adults of another tribe outnumber the defenders. '
+                   + 'When the arc completes, the village changes hands and the '
+                   + 'conqueror learns whatever it knew'));
+    rows.push(item('', '#b08d57', 'a hut appearing where there was none',
+                   'a daughter settlement: three grown members of a full house '
+                   + 'walked out and claimed empty ground'));
+    rows.push(item('', 'transparent',
+                   'the colour toggle changes what a body means',
+                   'by AGENT it is identity, by TRIBE it is allegiance (which '
+                   + 'changes when a village is taken), by VILLAGE it is family'));
   }
   if (state.society) {
     rows.push('<div class="grp">the weather (schema v5)</div>');
@@ -1521,6 +2072,75 @@ async function loadFromUrl(url) {
   loadReplay(await res.json(), url);
 }
 
+// THE START-HERE LIST. Ordered newest STAGE first, not newest file first: the
+// manifest is chronological and the last thing to finish is usually a diagnostic
+// probe with most mechanics switched off. Matched by filename, so a run that has
+// not been recorded yet simply shows as unavailable with the command to make it
+// -- which is more useful than not appearing.
+const FEATURED = [
+  { file: 'empire.json', title: 'Island 4 — the empire',
+    sub: 'tribes take villages off each other, and the population is not capped',
+    watch: 'watch the history strip: two tribes go to zero. Villages change '
+         + 'hands; a red arc closing round a hut is a siege.',
+    cmd: 'python -m sim.society --config config/island4/empire.yaml --ticks 4000 --replay' },
+  { file: 'village_frontier.json', title: 'Island 3 — the frontier',
+    sub: 'full households send out founding parties and new villages appear',
+    watch: 'huts appear on empty ground as families outgrow their houses.',
+    cmd: 'python -m sim.society --config config/island3/village_frontier.yaml --ticks 1500 --replay' },
+  { file: 'island3_generations.json', title: 'Island 3 — generations',
+    sub: 'births, heredity, and technology spreading by contact',
+    watch: 'houses grow annexes; fields appear beside them; children are small.',
+    cmd: 'python -m sim.society --config config/island3/village_gen.yaml --ticks 6000 --replay' },
+  { file: 'island3_village.json', title: 'Island 3 — the first village',
+    sub: 'the population overshoots its carrying capacity and falls back',
+    watch: 'the population climbs to ~92 and drops to ~65.',
+    cmd: 'python -m sim.society --config config/island3/village.yaml --ticks 3000 --replay' },
+  { file: 'society4_long.json', title: 'Island 2 — the long run',
+    sub: 'a hundred agents, and the collapse that made Island 3 necessary',
+    watch: 'the material runs out and every night becomes an exposed night.',
+    cmd: 'python -m sim.society --config config/island2/society4.yaml --ticks 3000 --replay' },
+];
+
+function renderFeatured(entries) {
+  const host = $('featuredList');
+  if (!host) return;
+  const have = new Map(entries.map((e) => [e.file, e]));
+  host.innerHTML = '';
+  for (const f of FEATURED) {
+    const e = have.get(f.file);
+    const b = document.createElement('button');
+    b.className = 'feat';
+    b.dataset.file = f.file;
+    if (!e) {
+      // NOT HIDDEN, and that is the point: a missing world should say how to
+      // make it, because "the button is not there" and "the file is not there"
+      // look identical and only one of them is actionable.
+      b.disabled = true;
+      b.innerHTML = `<span class="ft">${f.title}</span>`
+        + `<span class="fs">${f.sub}</span>`
+        + `<span class="fx">not recorded yet — run:<br><code>${f.cmd}</code></span>`;
+    } else {
+      b.innerHTML = `<span class="ft">${f.title}</span>`
+        + `<span class="fs">${f.sub}</span>`
+        + `<span class="fx">${e.ticks} ticks · ${f.watch}</span>`;
+      b.onclick = () => {
+        markFeatured(f.file);
+        const sel = $('replaySelect');
+        if (sel) sel.value = f.file;
+        loadFromUrl(`replays/${f.file}`)
+          .catch((err) => fatal('Cannot load replay', err.message));
+      };
+    }
+    host.appendChild(b);
+  }
+}
+
+function markFeatured(file) {
+  for (const b of document.querySelectorAll('.feat')) {
+    b.classList.toggle('on', b.dataset.file === file);
+  }
+}
+
 async function populateManifest() {
   const select = $('replaySelect');
   try {
@@ -1551,6 +2171,9 @@ async function populateManifest() {
     };
     addGroup(`the island — ${islands.length} worlds worth watching`, islands);
     addGroup(`older milestone runs (${rest.length}) — training snapshots`, rest);
+    renderFeatured(entries);
+    const count = $('replayCount');
+    if (count) count.textContent = String(entries.length);
     if (!entries.length) {
       $('pickerHint').textContent = 'No replays yet. Run sim/make_fake_replay.py or train.py.';
       $('loading').style.display = 'none';
@@ -1562,9 +2185,15 @@ async function populateManifest() {
     const asked = new URLSearchParams(location.search).get('replay');
     // Default to an ISLAND rather than to whatever finished last, which for
     // months has been a diagnostic probe world with most mechanics switched off.
-    const fallback = (islands[0] || entries[0]).file;
+    // Default to the FIRST FEATURED world that exists, which is the newest
+    // stage rather than the newest file. `islands[0]` was the previous rule and
+    // it opens on whichever society run finished last -- which for a week has
+    // been a control arm with a mechanic deliberately switched off.
+    const featuredHit = FEATURED.find((f) => entries.some((e) => e.file === f.file));
+    const fallback = featuredHit?.file || (islands[0] || entries[0]).file;
     const wanted = entries.some((e) => e.file === asked) ? asked : fallback;
     select.value = wanted;
+    markFeatured(wanted);
     await loadFromUrl(`replays/${wanted}`);
   } catch (err) {
     // file:// blocks fetch, so this is the normal path when the page is opened
@@ -1577,13 +2206,39 @@ async function populateManifest() {
 }
 
 $('replaySelect').addEventListener('change', (e) => {
-  if (e.target.value) loadFromUrl(`replays/${e.target.value}`).catch((err) => fatal('Cannot load replay', err.message));
+  if (!e.target.value) return;
+  markFeatured(e.target.value);   // keep the start-here row in step with the list
+  loadFromUrl(`replays/${e.target.value}`).catch((err) => fatal('Cannot load replay', err.message));
 });
 
 $('fileInput').addEventListener('change', (e) => {
   const file = e.target.files?.[0];
   if (file) readFile(file);
 });
+
+// Clicking the history chart scrubs to that tick. The chart IS a timeline and a
+// timeline you cannot click is a picture of one.
+{
+  const cv = $('historyCanvas');
+  if (cv) {
+    const seek = (ev) => {
+      const H = state.history;
+      if (!H || !H.t.length) return;
+      const r = cv.getBoundingClientRect();
+      const padL = 26, padR = 4;
+      const frac = (ev.clientX - r.left - padL) / Math.max(r.width - padL - padR, 1);
+      const tMax = H.t[H.t.length - 1] || 1;
+      state.t = Math.max(0, Math.min(tMax, frac * tMax));
+      state.playing = false;
+      updatePlayButton();
+      applyTick(state.t);
+      const sc = $('scrub');
+      if (sc) sc.value = String(state.t);
+    };
+    cv.addEventListener('pointerdown', (ev) => { cv.setPointerCapture(ev.pointerId); seek(ev); });
+    cv.addEventListener('pointermove', (ev) => { if (ev.buttons & 1) seek(ev); });
+  }
+}
 
 function readFile(file) {
   const reader = new FileReader();

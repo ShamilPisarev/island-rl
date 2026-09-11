@@ -1,0 +1,49 @@
+# ISLAND 4.0: a population the array does not bound, and a tribe that can take
+# ground off another tribe.
+#
+# `village_frontier.yaml` plus exactly two blocks:
+#
+#   world.grow_slots  -- a birth that finds no free row WIDENS the array instead
+#                        of being refused, so what bounds the population is the
+#                        food, the beds and the land. Read R6 again with this on:
+#                        the "extinction at tick 12,000" was numpy.
+#   conquest          -- a site changes hands under sustained foreign pressure,
+#                        and the conqueror learns what the village knew.
+#
+# WHY BOTH AT ONCE, when this file's own rule 5 says one key per control. They
+# are not one experiment: `empire_capped.yaml` holds conquest and turns growth
+# off, `empire_nocon.yaml` holds growth and turns conquest off, and each read is
+# taken against its own one-key partner. What this file is, is the world where
+# the two mechanics are allowed to interact -- which is the thing being asked
+# about, because a tribe that breeds faster can only convert that into ground if
+# the array lets it breed.
+extends: ../island3/village_frontier.yaml
+
+world:
+  # THE STARTING WIDTH, AND IT IS DELIBERATELY BELOW THE ISLAND'S CAPACITY.
+  # `sim.economy` puts this island at ~98 sheltered / ~65 exposed, plus ~33 more
+  # if every field slot is planted. Sixty rows is under all of those, so in the
+  # CAPPED control the array is what stops the population -- which is the only
+  # condition under which the pair measures anything at all. At the frontier
+  # world's own 200 rows neither arm ever reaches the ceiling and `grow_slots`
+  # correctly does nothing, which is a fact worth knowing and not an experiment.
+  num_agents: 60
+  grow_slots: true
+  slot_growth: 1.5
+  # A MEMORY GUARD, not a design cap: the grudge matrix is (n, n) float64, so
+  # 4,000 rows is 128MB and 20,000 would be 3.2GB on an 8GB machine. If a run
+  # reports `slot_cap_hits > 0` its population was bounded by this number and
+  # every carrying-capacity read in it is void.
+  max_slots: 4000
+  max_ticks: 12000
+
+conquest:
+  enabled: true
+  radius: 6.0
+  hold_ticks: 60
+  superiority: 1.5
+  decay: 1
+  cooldown: 400
+  capture_tech: true
+  assimilate: true
+  goal: true

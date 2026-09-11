@@ -1,0 +1,36 @@
+# ISLAND 4.0: THE GROUND STOPS BEING THE SAME EVERYWHERE.
+#
+# `empire.yaml` plus one block. Clusters get a lognormal fertility -- a rich
+# patch holds more berries and refills faster -- and material is dealt to the
+# POOR half of each region, so a fertile village has food and no stone and a
+# barren one has stone and no food.
+#
+# WHY IT MATTERS HERE RATHER THAN AS A SEPARATE STAGE. Three of this project's
+# null results have uniform ground upstream of them:
+#
+#   * M5's exchange verdict. Its own postmortem asked for exactly this ("a relay
+#     needs its chain shortened by GEOGRAPHY").
+#   * the tribe reads, refuted three times. A tribe is an arc of an island where
+#     every arc is identical, so of course no tribe was stronger.
+#   * conquest, which is only interesting if one village's ground is worth more
+#     than another's -- otherwise taking one is a lateral move.
+#
+# NO NEW OBSERVATION CHANNEL, deliberately. A rich bush already reads as a bush
+# with more berries in it; a `fertility` input would tell a scripted scorer where
+# to go, and a mechanic that scores its own adoption measures the score.
+#
+# SIZE IT WITH `sim.economy` BEFORE READING ANYTHING (rule 5). Fertility is
+# multiplicative about 1.0 and clipped symmetrically in log space, so the island
+# holds roughly what it did -- but "roughly" is not a number, and the pair to
+# read against is `empire.yaml`, never `village_frontier.yaml`.
+extends: empire.yaml
+
+terrain:
+  enabled: true
+  # 0.55 gives a 10th-to-90th-percentile spread of about 2.4x in capacity, which
+  # is a real difference between villages without making half the island
+  # uninhabitable. Clipped at 0.35/2.50 so no cluster is a desert or a paradise.
+  fertility_spread: 0.55
+  min_fertility: 0.35
+  max_fertility: 2.50
+  material_anticorrelated: true

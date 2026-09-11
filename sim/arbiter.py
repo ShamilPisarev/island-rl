@@ -64,6 +64,7 @@ from .obsview import ObsView
 from .policy import ActorCritic, column_map, grow_actor_critic
 from .utility import (GOAL_NAMES, N_GOALS, N_GOALS_RUNG1, N_GOALS_STAGE4, NEED_SAFETY, REST, ArbiterConfig,
                       agent_traits, commit_budget, compute_needs,
+                      N_GOALS_ISLAND3,
                       goal_availability, option_interrupted)
 from .world import World
 
@@ -83,8 +84,10 @@ def goal_width(cfg: Config) -> int:
     are global and appended, so a narrower menu is always a PREFIX -- which is
     the only reason slicing is safe, and the reason a rung must never insert.
     """
-    if cfg.housing.enabled or cfg.agriculture.enabled:
+    if cfg.conquest.enabled:
         return N_GOALS
+    if cfg.housing.enabled or cfg.agriculture.enabled:
+        return N_GOALS_ISLAND3
     return N_GOALS_RUNG1 if cfg.tools.enabled else N_GOALS_STAGE4
 
 
@@ -128,10 +131,10 @@ class LearnedArbiter:
         self._birth_rng = np.random.default_rng(seed + 40507)
         torch.manual_seed(seed)
 
-    def on_births(self, births, cfg=None) -> None:
+    def on_births(self, births, cfg=None, world=None) -> None:
         """Heredity, through the one shared blend. See `utility.inherit_traits`."""
         from .utility import inherit_traits
-        inherit_traits(self.traits, self._birth_rng, births, cfg or self.cfg)
+        inherit_traits(self.traits, self._birth_rng, births, cfg or self.cfg, world)
 
     def _inputs(self, view: ObsView) -> torch.Tensor:
         return torch.as_tensor(
@@ -162,7 +165,7 @@ class MixedArbiter:
         self.learn_mask = np.asarray(learn_mask, dtype=bool)
         self.acfg = scripted.acfg
 
-    def on_births(self, births, cfg=None) -> None:
+    def on_births(self, births, cfg=None, world=None) -> None:
         """Forward heredity to whichever sub-chooser owns traits.
 
         A learned arbiter carries the scripted trait vector as an INPUT, so a
@@ -173,7 +176,7 @@ class MixedArbiter:
         for sub in (self.scripted, self.learned):
             hook = getattr(sub, "on_births", None)
             if hook is not None:
-                hook(births, cfg)
+                hook(births, cfg, world)
 
     def choose(self, view: ObsView, mask: np.ndarray,
                rng: np.random.Generator) -> np.ndarray:
@@ -197,10 +200,10 @@ class RandomGoalArbiter:
         self.traits = agent_traits(cfg.world.num_agents, seed, self.acfg)
         self._birth_rng = np.random.default_rng(seed + 40507)
 
-    def on_births(self, births, cfg=None) -> None:
+    def on_births(self, births, cfg=None, world=None) -> None:
         """Heredity, through the one shared blend. See `utility.inherit_traits`."""
         from .utility import inherit_traits
-        inherit_traits(self.traits, self._birth_rng, births, cfg or self.cfg)
+        inherit_traits(self.traits, self._birth_rng, births, cfg or self.cfg, world)
 
     def choose(self, view: ObsView, mask: np.ndarray,
                rng: np.random.Generator) -> np.ndarray:

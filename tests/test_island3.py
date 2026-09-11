@@ -20,7 +20,7 @@ from sim.agents import (BUILD, CHOP, PLANT, RAID, STEAL, action_names,
 from sim.config import load_config
 from sim.economy import materials, subsistence
 from sim.society import make_runner, run_episodes
-from sim.utility import (EXPAND, NEED_HOUSE_ROOM, NEED_LAND, N_GOALS,
+from sim.utility import (EXPAND, N_GOALS_ISLAND3, NEED_HOUSE_ROOM, NEED_LAND, N_GOALS,
                          N_GOALS_RUNG1, N_GOALS_STAGE4, PLANT_FIELD,
                          ArbiterConfig, agent_traits, compute_needs)
 from sim.world import World
@@ -480,7 +480,14 @@ def test_the_learned_goal_head_keeps_each_rungs_width():
     from sim.arbiter import goal_width
     assert goal_width(load_config(ISLAND2 / "society4.yaml")) == N_GOALS_STAGE4
     assert goal_width(load_config(ISLAND2 / "society4_axe.yaml")) == N_GOALS_RUNG1
-    assert goal_width(load_config(ISLAND3 / "village.yaml")) == N_GOALS
+    # ISLAND 3.0's OWN RUNG, not `N_GOALS`. The two were the same number until
+    # Island 4.0 appended `conquer`; asserting `N_GOALS` here would mean "a 3.0
+    # world gets whatever the newest rung is", which is exactly the guarantee
+    # this test exists to deny -- a from-scratch run in a world with no conquest
+    # in it must start from the same weights it always did.
+    assert goal_width(load_config(ISLAND3 / "village.yaml")) == N_GOALS_ISLAND3
+    assert goal_width(load_config(
+        ROOT / "config" / "island4" / "empire.yaml")) == N_GOALS
     assert EXPAND == N_GOALS_RUNG1 and PLANT_FIELD == N_GOALS_RUNG1 + 1
 
 

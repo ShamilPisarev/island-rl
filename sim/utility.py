@@ -69,11 +69,13 @@ GOAL_NAMES: tuple[str, ...] = (
     # --- Island 3.0
     "expand",          # add a room to my own finished house
     "plant",           # put a field in, next to my own house
+    # --- Island 4.0
+    "conquer",         # stand at a foreign tribe's village until it changes hands
 )
 (FORAGE, HARVEST_WOOD, HARVEST_STONE, DELIVER, SHELTER, GOAL_STEAL,
  GOAL_GIVE_FOOD, GOAL_GIVE_MATERIAL, EXPLORE, REST,
  STORE_FOOD, STORE_MATERIAL, DRAW_FOOD, DRAW_MATERIAL, GOAL_RAID,
- CRAFT_AXE, EXPAND, PLANT_FIELD) = range(len(GOAL_NAMES))
+ CRAFT_AXE, EXPAND, PLANT_FIELD, CONQUER) = range(len(GOAL_NAMES))
 N_GOALS = len(GOAL_NAMES)
 # The goal count at each frozen rung. `agent_traits` draws each block in its own
 # call so appending a goal cannot perturb an existing world's traits, and
@@ -81,6 +83,7 @@ N_GOALS = len(GOAL_NAMES)
 # in `agent_traits` for the failure this prevents.
 N_GOALS_STAGE4 = 15
 N_GOALS_RUNG1 = 16   # + craft
+N_GOALS_ISLAND3 = 18  # + expand, plant
 
 # --- needs ------------------------------------------------------------------
 NEED_NAMES: tuple[str, ...] = ("hunger", "food_stock", "safety", "shelter_stock", "wealth",
@@ -100,10 +103,17 @@ NEED_NAMES: tuple[str, ...] = ("hunger", "food_stock", "safety", "shelter_stock"
                                # house_food -- the first two needs in the project
                                # that are about the family's PROPERTY rather than
                                # its stores.
-                               "house_room", "land")
+                               "house_room", "land",
+                               # Island 4.0: ground my family has no other way
+                               # to get. NOT the same need as `land`, and the
+                               # difference is the whole mechanic: `land` is
+                               # zero for a household that cannot farm, which is
+                               # exactly the household that should want to take
+                               # a farm off somebody else.
+                               "territory")
 (NEED_HUNGER, NEED_FOOD_STOCK, NEED_SAFETY, NEED_SHELTER_STOCK, NEED_WEALTH,
  NEED_HOUSE_FOOD, NEED_HOUSE_MATERIAL, NEED_TOOL,
- NEED_HOUSE_ROOM, NEED_LAND) = range(10)
+ NEED_HOUSE_ROOM, NEED_LAND, NEED_TERRITORY) = range(11)
 N_NEEDS = len(NEED_NAMES)
 
 # How much each goal restores each need, in [0, 1]. Rows are goals, columns
@@ -164,6 +174,14 @@ RESTORE[EXPAND, NEED_HOUSE_ROOM] = 1.0
 # it goes in (`field_initial` is 0). A need is what you LACK, and what a hungry
 # household without a field lacks is the field.
 RESTORE[PLANT_FIELD, NEED_LAND] = 1.0
+# Island 4.0. `conquer` serves TERRITORY and nothing else. Deliberately NOT
+# hunger, and not food_stock: a besieger eats nothing at the gate, and paying
+# conquest in the currency of the need it is competing with would make it the
+# cheap answer to being hungry rather than the expensive answer to being stuck.
+# What it must not be is a reward (rule 1): nothing in world.py pays for a
+# capture, and if villages change hands it is because holding ground fed
+# somebody afterwards.
+RESTORE[CONQUER, NEED_TERRITORY] = 1.0
 
 # Maslow shaping: which tier each need sits in, lowest first. Only tiers that can
 # actually kill gate anything -- hunger, then night exposure. A half-empty
@@ -171,7 +189,13 @@ RESTORE[PLANT_FIELD, NEED_LAND] = 1.0
 # contribute to scores without suppressing anything.
 NEED_TIER = np.array([0, 2, 1, 2, 2, 3, 3,
                       2,      # tool: prudence, like every other stock need
-                      3, 2])  # house_room with the other household needs; land
+                      3, 2,   # house_room with the other household needs; land
+                      3])     # territory: a household need, above the stocks --
+                              # taking a village is never how you answer being
+                              # hungry TONIGHT, and putting it lower would let it
+                              # outbid foraging, which is how a mechanic becomes
+                              # a pathology
+                              # (the comment below belongs to `land`)
                               # with the stock needs, because a field is how you
                               # stop being hungry LATER and prudence is exactly
                               # what that is
@@ -191,7 +215,12 @@ NEED_TIER = np.array([0, 2, 1, 2, 2, 3, 3,
 GOAL_TIER = np.array([0, 2, 2, 2, 1, 0, 3, 3, 0, 4,
                       2, 2, 0, 2, 0,
                       2,      # craft: prudence, exactly like harvesting
-                      2, 2])  # expand and plant: prudence too. Neither may sit
+                      2, 2,
+                      3])     # conquer: above every stock need. A besieger is
+                              # standing at a gate not eating, so it must lose to
+                              # anything urgent -- which is also what makes a
+                              # siege a measurement of SURPLUS grown members.
+                              # (the comment below belongs to expand/plant) Neither may sit
                               # above the needs it serves -- the correction
                               # EXPLORE's placement records, applied ahead of
                               # time rather than after a measurement
@@ -236,7 +265,7 @@ PERSIST_GOALS[EXPAND] = True
 
 
 def inherit_traits(traits: np.ndarray, rng: np.random.Generator, births,
-                   cfg: Config) -> None:
+                   cfg: Config, world=None) -> None:
     """Give each newborn its parents' traits, mutated. In place.
 
     GEOMETRIC mean, not arithmetic: the traits are lognormal about 1.0, so
@@ -258,10 +287,33 @@ def inherit_traits(traits: np.ndarray, rng: np.random.Generator, births,
     if not (rc.enabled and rc.heritable_traits) or not births:
         return
     width = traits.shape[1]
+    # ISLAND 4.0: CULTURE. The household a child is born into gets a say, in log
+    # space -- the traits are lognormal, so the geometric mean is the only mean
+    # that respects them, and it is the same argument that made the PARENTS'
+    # blend geometric. Computed once per call rather than per birth: several
+    # children can arrive on the same tick and they should all be raised by the
+    # same village, not by a village that has already shifted under them.
+    culture = float(rc.culture_weight) if world is not None else 0.0
+    house_mean = None
+    if culture > 0.0:
+        alive = world.pool.alive & world.pool.born
+        n_house = int(world.stock_x.shape[0])
+        logs = np.log(np.maximum(traits[:alive.shape[0]], 1e-12))
+        idx = world.household[:alive.shape[0]]
+        sums = np.zeros((n_house, width))
+        np.add.at(sums, idx[alive], logs[alive])
+        counts = np.bincount(idx[alive], minlength=n_house).astype(float)
+        # A household with nobody in it has no culture to pass on, and its row
+        # is never read: a birth needs two living parents standing in it.
+        house_mean = np.exp(sums / np.maximum(counts, 1.0)[:, None])
     for slot, pa, pb in births:
         if slot >= traits.shape[0]:
             continue
         blend = np.sqrt(traits[pa] * traits[pb])
+        if house_mean is not None:
+            h = int(world.household[slot])
+            if counts[h] > 0:
+                blend = blend ** (1.0 - culture) * house_mean[h] ** culture
         traits[slot] = blend * np.exp(rng.normal(0.0, rc.trait_mutation, size=width))
 
 
@@ -344,7 +396,9 @@ def agent_traits(num_agents: int, seed: int, cfg: ArbiterConfig) -> np.ndarray:
     # later rungs into a single draw would reshuffle rung 1's column the moment
     # Island 3.0 appended two more -- the identical row-major failure this
     # splitting exists to prevent, one rung further along.
-    for width in (N_GOALS_RUNG1 - N_GOALS_STAGE4, N_GOALS - N_GOALS_RUNG1):
+    for width in (N_GOALS_RUNG1 - N_GOALS_STAGE4,
+                  N_GOALS_ISLAND3 - N_GOALS_RUNG1,
+                  N_GOALS - N_GOALS_ISLAND3):
         if width > 0:
             blocks.append(np.exp(rng.normal(0.0, cfg.trait_spread,
                                             size=(num_agents, width))))
@@ -467,6 +521,30 @@ def compute_needs(view: ObsView, cfg: Config) -> np.ndarray:
         # control on the same seeds.
         needs[:, NEED_LAND] = np.where(view.farming,
                                        np.clip(view.field_room, 0.0, 1.0), 0.0)
+    if cfg.conquest.enabled:
+        # ISLAND 4.0: GROUND MY FAMILY HAS NO OTHER WAY TO GET.
+        #
+        # Two terms, and the first is the mechanic's whole motive. THE PRIZE: a
+        # village of another tribe that holds a technology mine does not. That is
+        # what makes conquest something a WEAKER group does to a stronger one --
+        # the user's version of the question, and the only version in which a
+        # tribe that cannot invent has a move.
+        #
+        # THE PRESSURE: a family whose larder is short and which has no way to
+        # grow more food. `land` is deliberately not this need, and the split is
+        # the reason a second need exists at all -- `land` reads zero for a
+        # household without farming, which is exactly the household that should
+        # want somebody else's farm.
+        #
+        # Read only off the observation, like every other need here, so the
+        # arbiter is not psychic: `conquest.found`/`prize` are channels and
+        # `house_food`/`farming`/`field_room` were already channels.
+        stuck = np.where(view.farming & (view.field_room > 0.0), 0.0, 1.0)
+        needs[:, NEED_TERRITORY] = np.where(
+            view.conquest_found,
+            np.clip(np.maximum(view.conquest_prize.astype(np.float64),
+                               needs[:, NEED_HOUSE_FOOD] * stuck), 0.0, 1.0),
+            0.0)
     return needs
 
 
@@ -724,6 +802,18 @@ def goal_availability(view: ObsView, cfg: Config, needs: np.ndarray,
     else:
         available[:, PLANT_FIELD] = False
 
+    # --- Island 4.0. A k-nearest slot, not the home offset: the target is
+    # somebody else's village, and which one is a question about distance.
+    if cfg.conquest.enabled and cfg.conquest.goal and cfg.society.enabled:
+        set_target(CONQUER, view.conquest_distance)
+        # ADULTS ONLY, and that is the mechanic rather than a nicety: a siege is
+        # counted in grown heads, so a child standing at the gate would want a
+        # goal it cannot contribute to -- the doomed action the M3 mask deletes,
+        # one level up.
+        available[:, CONQUER] &= view.conquest_found & view.adult
+    else:
+        available[:, CONQUER] = False
+
     return available, discount, bonus
 
 
@@ -971,6 +1061,12 @@ def goal_viable(view: ObsView, cfg: Config, goals: np.ndarray,
     if cfg.agriculture.enabled:
         when(PLANT_FIELD, view.farming & (view.field_room > 0.0)
              & (view.material_carried > 0.0))
+    if cfg.conquest.enabled and cfg.conquest.goal:
+        # A siege ends when the village stops being foreign -- which is what a
+        # successful capture makes it -- or when the besieger stops being grown
+        # up, which cannot happen but costs nothing to say. Mirrors the
+        # availability test, as every termination test here does.
+        when(CONQUER, view.conquest_found & view.adult)
 
     when(EXPLORE, ~(view.loaded_bushes.any(axis=1) & room_food))
     # The gifts are single-tick by nature and `rest` never fails.
@@ -1096,6 +1192,25 @@ def execute_goals(goals: np.ndarray, view: ObsView, cfg: Config,
         if cfg.agriculture.enabled:
             walk_then(PLANT_FIELD, view.home_distance, view.home_dx, view.home_dz,
                       PLANT, cfg.agriculture.plant_radius)
+        # --- Island 4.0. `conquer` HAS NO ACTION, and that is the design
+        # rather than an omission. A siege is presence: the muscle walks to the
+        # foreign village and then stands there, and the world counts heads.
+        # Giving it an `attack` action would have made conquest a fight, and a
+        # fight would need a combat model nobody has measured -- what this
+        # measures is whether a tribe can afford to have grown members standing
+        # somewhere that feeds them nothing.
+        if cfg.conquest.enabled and cfg.conquest.goal:
+            rows_q = goals == CONQUER
+            if rows_q.any():
+                d_q = view.conquest_distance
+                # Well inside the ring, not on its lip, for the reason `shelter`
+                # stops at 0.6 of the radius: an agent that halts on the boundary
+                # jitters back out and its siege ticks stop counting.
+                inside = d_q <= cfg.conquest.radius * 0.6
+                chosen = np.where(inside, IDLE,
+                                  _heading(view.conquest_dx, view.conquest_dz))
+                chosen = np.where(np.isfinite(d_q), chosen, IDLE)
+                actions[rows_q] = chosen[rows_q]
 
     # explore: hold a heading. Ballistic travel rather than a fresh random step
     # each tick, which is the one thing `nav-commit` showed is worth real ticks
@@ -1134,9 +1249,29 @@ class UtilityArbiter:
         # theirs: mutation draws must not shift the layout, the spawn positions
         # or a softmax draw of an otherwise identical world.
         self._birth_rng = np.random.default_rng(seed + 40507)
+        # ...and so must the growth draw, for the same reason.
+        self._grow_rng = np.random.default_rng(seed + 90211)
 
-    def on_births(self, births, cfg: Config | None = None) -> None:
-        inherit_traits(self.traits, self._birth_rng, births, cfg or self.cfg)
+    def ensure_slots(self, n: int) -> int:
+        """Widen the trait table to `n` rows (ISLAND 4.0). Returns rows added.
+
+        A fresh row gets a fresh draw off a dedicated stream, so a world that
+        grows is still reproducible from its seed and the LAYOUT stream is not
+        consumed. With heredity on the draw is immediately overwritten by
+        `inherit_traits`; with it off, a newborn in a grown row is a new person
+        with a new character, which is what a fresh draw means.
+        """
+        old = int(self.traits.shape[0])
+        extra = int(n) - old
+        if extra <= 0:
+            return 0
+        fresh = np.exp(self._grow_rng.normal(
+            0.0, self.acfg.trait_spread, size=(extra, self.traits.shape[1])))
+        self.traits = np.concatenate([self.traits, fresh], axis=0)
+        return extra
+
+    def on_births(self, births, cfg: Config | None = None, world=None) -> None:
+        inherit_traits(self.traits, self._birth_rng, births, cfg or self.cfg, world)
 
     def choose(self, view: ObsView, mask: np.ndarray,
                rng: np.random.Generator) -> np.ndarray:
@@ -1244,6 +1379,41 @@ class OptionRunner:
         # fires once per option rather than every tick of every evening.
         self.decided_safe = np.ones(n, dtype=bool)
 
+    def ensure_slots(self, n: int) -> int:
+        """Widen the runner's per-agent state to `n` rows. Returns rows added.
+
+        ISLAND 4.0. `world.grow_slots` lets a birth widen the world rather than
+        be refused, so the runner's own bookkeeping -- which goal each row is
+        running, how long it has left -- has to widen with it. Called from `act`
+        off the observation's own row count, so a driver cannot forget: whatever
+        width the world hands over is the width the runner works in.
+
+        New rows start in the state a never-decided row is already in (REST,
+        no ticks left), which is what every unborn founding slot has held since
+        Island 3.0 -- so nothing downstream meets a state it has not seen.
+        """
+        old = int(self.goals.shape[0])
+        extra = int(n) - old
+        if extra <= 0:
+            return 0
+        def pad(arr, value):
+            return np.concatenate([arr, np.full(extra, value, dtype=arr.dtype)])
+        self.goals = pad(self.goals, REST)
+        self.ticks_left = pad(self.ticks_left, 0)
+        self.decisions = pad(self.decisions, 0)
+        self.last_decided = pad(self.last_decided, False)
+        self.decided_safe = pad(self.decided_safe, True)
+        # A heading is drawn, not defaulted: a new row that later picks EXPLORE
+        # would otherwise start every one of them walking due north together.
+        # Off the runner's own stream, so the world's layout rng is untouched.
+        self.explore_heading = np.concatenate(
+            [self.explore_heading,
+             self.rng.integers(0, N_MOVE_ACTIONS, size=extra)])
+        hook = getattr(self.arbiter, "ensure_slots", None)
+        if hook is not None:
+            hook(n)
+        return extra
+
     def reset(self) -> None:
         self.goals[:] = REST
         self.ticks_left[:] = 0
@@ -1252,6 +1422,9 @@ class OptionRunner:
         self.decided_safe[:] = True
 
     def act(self, obs: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        # The world may have got WIDER since the last tick (world.grow_slots).
+        # First thing, before any per-agent array is touched.
+        self.ensure_slots(obs.shape[0])
         # Births from the PREVIOUS step, before anything is scored. A newborn is
         # created inside `World.step`, so the first tick it can act on is this
         # one -- and its traits have to be in place before its first goal is
@@ -1261,7 +1434,12 @@ class OptionRunner:
             if births:
                 on_births = getattr(self.arbiter, "on_births", None)
                 if on_births is not None:
-                    on_births(births, self.cfg)
+                    # The WORLD goes too, because culture is a fact about the
+                    # household a child is born into and the arbiter only owns
+                    # the traits. Same split the pedigree already has: the world
+                    # knows who the parents were, the arbiter knows what they
+                    # were like.
+                    on_births(births, self.cfg, self.world)
         """One tick: keep or re-decide each agent's goal, then execute it."""
         view = ObsView(obs, self.cfg)
         needs = compute_needs(view, self.cfg)

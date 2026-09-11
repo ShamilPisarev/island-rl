@@ -206,7 +206,35 @@ SCHEMA_VERSION_ISLAND3 = 7
 # into v7 because a v7 reader shown a v8 file would draw a village of corpses
 # that walk.
 SCHEMA_VERSION_GENERATIONS = 8
-SUPPORTED_VERSIONS = frozenset({1, 2, 3, 4, 5, 6, 7, 8})
+# v9, ISLAND 4.0. Four changes to the tick encoding and one to the header, and
+# the header one is a BUG FIX that had made a whole world unwatchable:
+#
+#   header `sites` came off `world.site_x`, where a DORMANT site is parked at
+#   `inf` -- and `json.dump` writes the literal `Infinity`, which `JSON.parse`
+#   rejects outright. So every frontier replay was unloadable in a browser, and
+#   the one mechanic that makes villages MULTIPLY had never been watched. It is
+#   the same trap the fields fix already caught, in the one place that fix did
+#   not reach. Sites now come off `site_layout_*`, which is always finite, and
+#   `site_active` says which of them anybody lives on.
+#
+#   `hh` -- households whose (tribe, farming, granary, active) changed. One
+#           sparse key drives four things a v8 reader could not show at all: a
+#           daughter settlement appearing, a village changing tribe, and either
+#           technology being unlocked.
+#   `cq` -- captures this tick, so a conquest reads as an event and not as a
+#           colour that quietly changed.
+#   `fs` -- foundings this tick, same argument.
+#   `sg` -- siege progress per household, sparse (nonzero only).
+#   `y`  -- the per-tick aggregate series. A civilisation is a TRAJECTORY and a
+#           v8 file could only ever show one tick of it; recomputing population
+#           in the viewer is possible and recomputing tech adoption is not,
+#           because a household's history is spread across sparse events.
+#
+# Also: a tick's agent list may now be SHORTER than the header's agent table,
+# because `world.grow_slots` widens the world mid-episode. Rows past the end of
+# a tick's list are unborn, which is a state every v7 reader already handles.
+SCHEMA_VERSION_ISLAND4 = 9
+SUPPORTED_VERSIONS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9})
 
 AGENT_FIELDS = ["x", "z", "hunger", "food", "alive", "action"]
 AGENT_FIELDS_V2 = AGENT_FIELDS + ["wood", "stone"]
@@ -230,6 +258,18 @@ def island3_world(cfg: Config) -> bool:
 def generations_world(cfg: Config) -> bool:
     """Does this config recycle rows or hold the second technology?"""
     return bool(cfg.reproduction.reuse_slots or cfg.tech.enabled)
+
+
+def island4_world(cfg: Config) -> bool:
+    """Does this config grow its array, take ground, or reserve a frontier?
+
+    `reserve_sites` is in here and that is the bug fix, not an afterthought: a
+    world with dormant sites is exactly the world whose header used to carry
+    `Infinity`, so it must be written by the v9 encoder even if nothing else
+    about it is new.
+    """
+    return bool(cfg.world.grow_slots or cfg.conquest.enabled
+                or cfg.fission.reserve_sites)
 
 
 class ReplaySchemaError(ValueError):
@@ -286,6 +326,15 @@ class ReplayRecorder:
         # which the viewer has to be told about; a birth into a fresh row is not.
         self._occupied: set[int] = set(
             int(i) for i in np.flatnonzero(world.pool.born))
+        # ISLAND 4.0. The last household/agent state emitted, so a tick can send
+        # only what CHANGED. A household's tribe, its technologies and whether
+        # anybody lives there move a handful of times in twelve thousand ticks;
+        # repeating forty rows every tick is how an 11MB replay becomes a 200MB
+        # one, which is the lesson the field key already records.
+        self._last_hh: np.ndarray | None = None
+        self._last_member: np.ndarray | None = None
+        self._births_cum = 0
+        self._deaths_cum = 0
         # WILD BUSHES ONLY. Island 3.0 parks its unplanted field slots at
         # infinity so the engine treats them as absent, and `float('inf')` is not
         # representable in JSON -- python writes the literal `Infinity`, which
@@ -398,17 +447,85 @@ class ReplayRecorder:
                     tick["u"] = rows_u
             if self.cfg.tech.enabled:
                 tick["q"] = [int(v) for v in self.world.household_granary]
+        # --- v9. Everything here is either SPARSE (only what changed) or a
+        # handful of integers, so a 12,000-tick village pays a few hundred KB
+        # for a history it previously could not show at all.
+        if island4_world(self.cfg) and self.cfg.society.enabled:
+            w = self.world
+            n_hh = int(w.stock_x.shape[0])
+            cur_hh = np.stack([w.tribe_of_household[:n_hh],
+                               w.household_farming[:n_hh].astype(np.int64),
+                               w.household_granary[:n_hh].astype(np.int64),
+                               w.household_active[:n_hh].astype(np.int64)], axis=1)
+            if self._last_hh is None or self._last_hh.shape != cur_hh.shape:
+                rows_hh = np.arange(n_hh)
+            else:
+                rows_hh = np.flatnonzero((cur_hh != self._last_hh).any(axis=1))
+            self._last_hh = cur_hh.copy()
+            if rows_hh.size:
+                tick["hh"] = [[int(h), *(int(v) for v in cur_hh[h])] for h in rows_hh]
+            # WHO BELONGS WHERE, and it is not decoration: a founding party
+            # changes household mid-episode with no birth involved, and v8's `u`
+            # key only ever fired on a REUSED row. Without this a settler kept
+            # its parent village's colour for the rest of the run.
+            cur_m = np.stack([w.household, w.tribe], axis=1)
+            if self._last_member is None or self._last_member.shape != cur_m.shape:
+                # A grown array is all-new past the old width; before the first
+                # snapshot the header already carries the membership, so only a
+                # LATER width change needs announcing.
+                old_n = 0 if self._last_member is None else self._last_member.shape[0]
+                rows_m = np.arange(old_n, cur_m.shape[0])
+                if old_n:
+                    same = np.flatnonzero(
+                        (cur_m[:old_n] != self._last_member).any(axis=1))
+                    rows_m = np.concatenate([same, rows_m])
+            else:
+                rows_m = np.flatnonzero((cur_m != self._last_member).any(axis=1))
+            self._last_member = cur_m.copy()
+            if rows_m.size and self.ticks:
+                tick["hm"] = [[int(i), *(int(v) for v in cur_m[i])] for i in rows_m]
+            if self.ticks and getattr(w, "last_conquests", None):
+                tick["cq"] = [[int(h), int(a), int(b)] for h, a, b in w.last_conquests]
+            if self.ticks and getattr(w, "last_fissions", None):
+                tick["fs"] = [[int(a), int(b)] for a, b in w.last_fissions]
+            if self.cfg.conquest.enabled:
+                sg = [[h, int(v)] for h, v in enumerate(w.siege_progress[:n_hh])
+                      if v > 0]
+                if sg:
+                    tick["sg"] = sg
+            # THE TRAJECTORY. Six aggregates and the per-tribe population, which
+            # is the whole of the history strip. Population could be recounted in
+            # the viewer; technology adoption could not, because a household's
+            # history arrives as sparse events and reconstructing it per tick is
+            # exactly the work this key does once.
+            self._births_cum = int(w._births)
+            self._deaths_cum = int((w.pool.born & ~w.pool.alive).sum())
+            tick["y"] = [int(w.pool.alive.sum()), self._births_cum,
+                         self._deaths_cum, int(w.household_active.sum()),
+                         int(w.household_farming.sum()),
+                         int(w.household_granary.sum()), int(w.pool.n)]
+            if self.cfg.tribes.enabled:
+                nt = int(self.cfg.tribes.num_tribes)
+                tick["yt"] = [int(v) for v in np.bincount(
+                    w.tribe[w.pool.alive], minlength=nt)[:nt]]
         self.ticks.append(tick)
 
     def to_dict(self) -> dict[str, Any]:
         cfg = self.cfg
         stats = self.world.stats()
-        n = cfg.world.num_agents
+        # THE FINAL WIDTH, not the configured one. `world.grow_slots` widens the
+        # array mid-episode, so `cfg.world.num_agents` is only where it started
+        # -- an agent table sized from it would silently drop every row the
+        # world grew, and `zip` would have truncated the household column to
+        # match without saying so.
+        n = int(self.world.pool.n)
         construction = cfg.construction.enabled
         exchange = cfg.exchange.enabled
         society = cfg.society.enabled
         version = SCHEMA_VERSION
-        if generations_world(cfg):
+        if island4_world(cfg):
+            version = SCHEMA_VERSION_ISLAND4
+        elif generations_world(cfg):
             version = SCHEMA_VERSION_GENERATIONS
         elif island3_world(cfg):
             version = SCHEMA_VERSION_ISLAND3
@@ -475,8 +592,17 @@ class ReplayRecorder:
                              for x, z in zip(world.tree_x, world.tree_z)]
             blob["rocks"] = [{"x": round(float(x), 2), "z": round(float(z), 2)}
                              for x, z in zip(world.rock_x, world.rock_z)]
+            # OFF THE LAYOUT, NOT OFF `site_x`. A dormant site's live position
+            # is `inf`, python writes that as the literal `Infinity`, and
+            # `JSON.parse` rejects the file -- so every frontier replay written
+            # before v9 was unloadable in a browser and the fission mechanic had
+            # never once been watched. `site_layout_*` is the position a site
+            # WOULD occupy and is always finite; `site_active` says whether
+            # anybody lives there yet, and the viewer hides the rest.
+            sx = getattr(world, "site_layout_x", world.site_x)
+            sz = getattr(world, "site_layout_z", world.site_z)
             blob["sites"] = [{"x": round(float(x), 2), "z": round(float(z), 2)}
-                             for x, z in zip(world.site_x, world.site_z)]
+                             for x, z in zip(sx, sz)]
             blob["summary"].update({
                 "wood_gathered": stats.wood_gathered,
                 "stone_gathered": stats.stone_gathered,
@@ -500,18 +626,60 @@ class ReplayRecorder:
                 "stockpile_food_capacity": sc.stockpile_food_capacity,
                 "stockpile_material_capacity": sc.stockpile_material_capacity,
             })
+            if island4_world(cfg):
+                blob["world"].update({
+                    "num_household_slots": int(world.stock_x.shape[0]),
+                    "num_tribes": int(cfg.tribes.num_tribes) if cfg.tribes.enabled else 1,
+                    "conquest_hold_ticks": int(cfg.conquest.hold_ticks)
+                                           if cfg.conquest.enabled else 0,
+                    "conquest_radius": float(cfg.conquest.radius)
+                                       if cfg.conquest.enabled else 0.0,
+                    "grow_slots": bool(cfg.world.grow_slots),
+                    "start_agents": int(cfg.world.num_agents),
+                })
+                blob["summary"].update({
+                    "slots_final": stats.slots_final,
+                    "slots_grown": stats.slots_grown,
+                    "slot_cap_hits": stats.slot_cap_hits,
+                    "conquests": stats.conquests,
+                    "tech_conquered": [int(v) for v in stats.tech_conquered],
+                    "tribe_households": [int(v) for v in stats.tribe_households],
+                    "households_final": stats.households_final,
+                    "fissions": stats.fissions,
+                })
             # Household membership and home position are static for an episode, so
             # they belong here and not on every tick. `home` is index-aligned with
             # the tick's `p`.
+            # EVERY household slot, not only the ones inhabited at tick 0.
+            # Dormant slots exist from the start (parked at infinity) and a
+            # founding party moves into one mid-episode, so a table that stopped
+            # at `num_households` left the viewer with daughter settlements it
+            # had no row for -- and reading their position off `stock_x` would
+            # have written `Infinity` again. Positions come off the LAYOUT for
+            # the same reason `sites` does.
+            n_hh = int(self.world.stock_x.shape[0])
+            hx = getattr(self.world, "site_layout_x", self.world.stock_x)
+            hz = getattr(self.world, "site_layout_z", self.world.stock_z)
             blob["households"] = [
                 {"id": h,
-                 "x": round(float(self.world.stock_x[h]), 2),
-                 "z": round(float(self.world.stock_z[h]), 2),
-                 "color": agent_color(h * 7 + 3, sc.num_households)}
-                for h in range(sc.num_households)
+                 "x": round(float(hx[h]), 2),
+                 "z": round(float(hz[h]), 2),
+                 "active": bool(self.world.household_active[h]),
+                 "tribe": int(self.world.tribe_of_household[h]),
+                 "color": agent_color(h * 7 + 3, n_hh)}
+                for h in range(n_hh)
             ]
             for agent, h in zip(blob["agents"], self.world.household):
                 agent["household"] = int(h)
+            if self.cfg.tribes.enabled:
+                # One colour per TRIBE, alongside the golden-angle per-agent one.
+                # Four tribes read as one crowd when every agent wears its own
+                # hue, and "who holds what" is the question this stage exists to
+                # ask -- so the viewer needs a palette it can switch to, not a
+                # hue it has to infer.
+                nt = int(self.cfg.tribes.num_tribes)
+                blob["tribes"] = [{"id": t, "color": agent_color(t, max(nt, 1))}
+                                  for t in range(nt)]
             if self.goal_source is not None:
                 # Index -> label, exactly as `action_names` is carried, so the
                 # viewer never hardcodes a goal list that can drift from the

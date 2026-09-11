@@ -1,0 +1,10 @@
+# Isolated inference-only trial. Existing worlds and saved weights are untouched.
+extends: island4/empire.yaml
+world:
+  num_agents: 120
+  grow_slots: false
+  max_ticks: 1200
+tribes:
+  num_tribes: 2
+reproduction:
+  heritable_traits: false

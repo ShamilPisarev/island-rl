@@ -1,0 +1,11 @@
+# THE ONE-KEY CONTROL FOR GROWTH. Same island, same conquest, same seeds; the
+# array stays the width it started at, which is every world before Island 4.0.
+#
+# The pre-registered read: read R6 said a mortal village "goes extinct at tick
+# 12,000" and stage 2 showed that was the ARRAY. This pair prices what the array
+# was still costing after slot reuse -- reuse recycles a row when somebody dies,
+# so it hides the ceiling without removing it, and the number ALIVE AT ONCE was
+# `num_agents` in every run this project has ever published.
+extends: empire.yaml
+world:
+  grow_slots: false

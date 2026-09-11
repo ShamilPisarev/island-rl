@@ -92,7 +92,16 @@ N_TECHS = len(TECH_NAMES)
 # with village fission: settlers take what they know with them, so a daughter
 # household holds its parent's technologies without inventing or being taught
 # anything -- MIGRATION, which is how most technology actually moved.
-TECH_NONE, TECH_INVENTED, TECH_TAUGHT, TECH_SETTLED = 0, 1, 2, 3
+# `TECH_CONQUERED` is the FOURTH way a technology travels (Island 4.0): a
+# tribe that takes a village learns what the village knew.
+TECH_NONE, TECH_INVENTED, TECH_TAUGHT, TECH_SETTLED, TECH_CONQUERED = 0, 1, 2, 3, 4
+
+# --- Island 4.0: the three things practice can make you better at.
+# Berries, wood, stone -- one per harvestable resource, and no more: a skill
+# needs a YIELD to multiply, and delivering or building produces nothing new.
+SKILL_NAMES: tuple[str, ...] = ("forage", "wood", "stone")
+SKILL_FOOD, SKILL_WOOD, SKILL_STONE = 0, 1, 2
+N_SKILLS = len(SKILL_NAMES)
 
 
 def action_names(cfg: Config) -> tuple[str, ...]:
@@ -254,6 +263,16 @@ class Island3View:
     fields: np.ndarray           # (H,) fields planted so far
     granary: np.ndarray          # (H,) stage 2: does it hold the second tech
     stock_food_capacity: np.ndarray  # (H,) per household -- a granary doubles it
+    # --- ISLAND 4.0: conquest. Defaults so every existing caller -- and every
+    # test that builds one of these in two lines -- keeps working unchanged.
+    household_active: np.ndarray = field(          # (H,) is this site inhabited
+        default_factory=lambda: np.zeros(0, dtype=bool))
+    siege_progress: np.ndarray = field(            # (H,) ticks of sustained pressure
+        default_factory=lambda: np.zeros(0, dtype=np.int64))
+    siege_by: np.ndarray = field(                  # (H,) besieging tribe, -1 none
+        default_factory=lambda: np.zeros(0, dtype=np.int64))
+    skill: np.ndarray = field(                     # (A, N_SKILLS) in [0, 1]
+        default_factory=lambda: np.zeros((0, N_SKILLS)))
 
 
 def neighbour_society_channels(cfg: Config) -> int:
@@ -402,6 +421,8 @@ def observation_dim(cfg: Config) -> int:
     dim += housing_channels(cfg)
     dim += agriculture_channels(cfg)
     dim += tech_channels(cfg)
+    dim += conquest_channels(cfg)
+    dim += skill_channels(cfg)
     return dim
 
 
@@ -413,6 +434,40 @@ def tool_channels(cfg: Config) -> int:
 def predator_channels(cfg: Config) -> int:
     """Tech ladder rung 2: the nearest predator's offset, and whether it hunts."""
     return 3 * int(cfg.predators.enabled and cfg.predators.observe_predator)
+
+
+def skill_channels(cfg: Config) -> int:
+    """Island 4.0: how good am I at each of the three harvests.
+
+    Three channels and NO scripted consumer, which is the predator rung's call
+    made again for the same reason. A scripted `do what you are best at` rule
+    would score the specialisation and then measure the score; what the world
+    can honestly measure with the arbiter untouched is whether practice tracks
+    PREFERENCE -- an agent whose trait makes it chop more ends up better at
+    chopping without anybody deciding it should.
+
+    The channels exist so a LEARNED chooser can do the thing the scripted one
+    cannot: notice its own competence and lean into it.
+    """
+    return 3 * int(cfg.skills.enabled and cfg.skills.observe_skill)
+
+
+def conquest_channels(cfg: Config) -> int:
+    """Island 4.0: the nearest site my tribe does not hold, and two sieges.
+
+    Five channels, and the width does not grow with the number of households --
+    the same fixed-width rule the foreign stockpile follows, for the same reason.
+
+    `threat` is the one with no scripted consumer, and that is deliberate rather
+    than an omission. The predator rung shipped three channels and no `flee`
+    goal on the argument that a scripted response would score the response and
+    then measure the score; a scripted `defend` would do exactly that here. The
+    channel exists so a LEARNED chooser can see a siege coming, which is the one
+    thing the scripted arbiter is blind to in this world.
+    """
+    if not (cfg.conquest.enabled and cfg.tribes.enabled and cfg.society.enabled):
+        return 0
+    return 6
 
 
 def action_mask(
@@ -703,6 +758,11 @@ def observation_layout(cfg: Config) -> tuple[str, ...]:
         names += ["own.farming", "home.field_room"]
     if cfg.tech.enabled and cfg.tech.observe_tech:
         names.append("own.granary")
+    if conquest_channels(cfg):
+        names += ["conquest.found", "conquest.dx", "conquest.dz",
+                  "conquest.prize", "conquest.pressure", "conquest.threat"]
+    if skill_channels(cfg):
+        names += [f"own.skill_{k}" for k in SKILL_NAMES]
     names += ["edge.room", "edge.outward_x", "edge.outward_z"]
     return tuple(names)
 
@@ -1055,6 +1115,56 @@ def build_observations(
         assert island3 is not None and society is not None, "island3 world state missing"
         out[:, col] = island3.granary[society.household].astype(np.float32)
         col += 1
+
+    # --- ISLAND 4.0: the nearest ground my tribe does not hold.
+    if conquest_channels(cfg):
+        assert island3 is not None and society is not None, "island3 world state missing"
+        mine_h = society.household
+        my_tribe = island3.tribe_of_household[mine_h]
+        h = society.stock_x.shape[0]
+        hold = max(cfg.conquest.hold_ticks, 1)
+        dx = society.stock_x[None, :] - pool.x[:, None]
+        dz = society.stock_z[None, :] - pool.z[:, None]
+        d2 = dx ** 2 + dz ** 2
+        # Only an INHABITED site of ANOTHER tribe is a target. A dormant site is
+        # parked at infinity anyway, but saying so here means the channel does
+        # not depend on that happening to stay true.
+        foreign = ((island3.tribe_of_household[None, :h] != my_tribe[:, None])
+                   & island3.household_active[None, :h])
+        d2 = np.where(foreign, d2, np.inf)
+        j = np.argmin(d2, axis=1)
+        found = np.isfinite(d2[rows, j])
+        # `found` IS A CHANNEL, not an inference. Zero offsets mean "a village
+        # exactly underfoot" everywhere else in this observation, and the
+        # docstring's own padding warning applies here more sharply than
+        # anywhere: an agent whose tribe holds the whole island would otherwise
+        # read a conquerable village standing on its toes.
+        out[:, col + 0] = found.astype(np.float32)
+        out[:, col + 1] = np.where(found, np.clip(dx[rows, j] / scale, -1.0, 1.0), 0.0)
+        out[:, col + 2] = np.where(found, np.clip(dz[rows, j] / scale, -1.0, 1.0), 0.0)
+        # THE PRIZE, and it is the whole motive: a technology that site holds and
+        # mine does not. Without this the channel says only "foreigners live
+        # there", which is a fact about geography, not a reason to go.
+        prize = ((island3.farming[j] & ~island3.farming[mine_h])
+                 | (island3.granary[j] & ~island3.granary[mine_h]))
+        out[:, col + 3] = np.where(found, prize.astype(np.float32), 0.0)
+        # How far MY tribe's siege of that site has got, and how far somebody
+        # else's siege of MY home has got. Both normalised by `hold_ticks`, so
+        # 1.0 means "resolves now" in either direction.
+        ours = island3.siege_by[j] == my_tribe
+        out[:, col + 4] = np.where(found & ours,
+                                   island3.siege_progress[j] / hold, 0.0)
+        theirs = (island3.siege_by[mine_h] >= 0) & (island3.siege_by[mine_h] != my_tribe)
+        out[:, col + 5] = np.where(theirs, island3.siege_progress[mine_h] / hold, 0.0)
+        col += 6
+
+    # --- ISLAND 4.0: what am I good at. No scripted consumer; see
+    # `skill_channels` for why that is the design and not an omission.
+    if skill_channels(cfg):
+        assert island3 is not None, "island3 world state missing"
+        if island3.skill.shape[0] == pool.n:
+            out[:, col:col + N_SKILLS] = island3.skill.astype(np.float32)
+        col += N_SKILLS
 
     # --- shoreline
     r = np.sqrt(pool.x**2 + pool.z**2)

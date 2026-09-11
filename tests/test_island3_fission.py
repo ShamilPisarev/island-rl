@@ -79,6 +79,11 @@ def test_no_world_before_stage3_has_a_dormant_slot():
     for path in sorted(glob.glob(str(ROOT / "config" / "**" / "*.yaml"), recursive=True)):
         if Path(path).name in frontier:
             continue          # the two worlds this stage exists for
+        if Path(path).parent.name == "island4":
+            continue          # a LATER stage, built on the frontier island. The
+                              # claim under test is "nothing written BEFORE
+                              # stage 3 has a dormant slot", and a stage-4 world
+                              # is not evidence against it.
         cfg = load_config(path)
         if not (cfg.society.enabled and cfg.construction.enabled):
             continue

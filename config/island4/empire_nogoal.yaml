@@ -1,0 +1,9 @@
+# DID THEY GO THERE ON PURPOSE? Conquest is on, the `conquer` goal is off.
+#
+# A siege is presence, and raiding already puts enemy adults at enemy stockpiles,
+# so captures can happen here without anybody intending one. The pair says how
+# much of the conquest rate is deliberate and how much is a side effect of the
+# grudge economy -- the same question `--arm-all` asks of the axe, one level up.
+extends: empire.yaml
+conquest:
+  goal: false

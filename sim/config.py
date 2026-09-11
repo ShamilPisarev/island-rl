@@ -37,6 +37,25 @@ class WorldConfig:
     # touching the reward. 1 reproduces every earlier world bit-identically.
     decision_interval: int = 1
 
+    # --- ISLAND 4.0: THE ARRAY STOPS BEING THE CEILING ----------------------
+    # `num_agents` has always been the WIDTH of every per-agent array, and read
+    # R6 mistook that for an island: 40 founders plus 160 births exhausted 200
+    # rows and the village "went extinct" at tick 12,000 because it had run out
+    # of numpy, not out of food. Stage 2 recycled rows, which hid the ceiling
+    # (200 rows held 606 lives) without removing it -- the number ALIVE AT ONCE
+    # was still `num_agents`, so a population could never actually grow.
+    #
+    # With `grow_slots` a birth that finds no free row widens every per-agent
+    # array by `slot_growth` instead of being refused, so what bounds the
+    # population is the food, the beds and the land. `max_slots` is NOT a design
+    # cap and must not be read as one: the grudge matrix is (n, n) float64, so
+    # 20,000 rows is 3.2GB and this machine has 8GB. It is a memory guard, it is
+    # reported in `stats()` when it binds, and a run that hits it is a run whose
+    # ecology never bound -- which is a finding about the world, not a setting.
+    grow_slots: bool = False
+    slot_growth: float = 1.5
+    max_slots: int = 20000
+
 
 @dataclass(frozen=True)
 class HungerConfig:
@@ -448,6 +467,26 @@ class ReproductionConfig:
     # of pursuing one.
     heritable_traits: bool = False
     trait_mutation: float = 0.15
+    # ISLAND 4.0: CULTURE, AS DISTINCT FROM HEREDITY.
+    #
+    # A child's traits are its parents', mutated -- so what a village is, is the
+    # sum of its lineages and nothing more. That is genetics with no culture in
+    # it, and it is why the stage-2 drift read could only ever be a story about
+    # selection: there was no other channel for a trait to move along.
+    #
+    # `culture_weight` blends the parents' inheritance with the MEAN of the
+    # household the child is born into, in log space (the traits are lognormal,
+    # so the geometric mean is the mean that respects them). 0.0 is pure
+    # heredity, which is every world before this one and is the default; 1.0 is
+    # pure upbringing, where a child resembles its village and not its parents.
+    #
+    # WHAT THIS CAN AND CANNOT SHOW, stated here rather than discovered later.
+    # It can make villages DIVERGE from each other while staying uniform inside
+    # -- which is what a culture looks like from outside, and is measurable as
+    # between-household trait variance against within-household. It cannot make
+    # a village invent a behaviour: a trait is still a multiplier on a goal
+    # somebody wrote.
+    culture_weight: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -640,6 +679,158 @@ class TribeConfig:
 
 
 @dataclass(frozen=True)
+class SkillConfig:
+    """Island 4.0: DIVISION OF LABOUR -- you get better at what you do.
+
+    Everybody in this project has always been equally good at everything, so the
+    only thing separating two agents is what they FEEL like doing (a trait) and
+    where they happen to be standing. That is a preference, not a profession,
+    and it is why M2's specialisation result had to be measured as behavioural
+    divergence rather than as anybody being better at anything.
+
+    A skill is per agent and per resource -- berries, wood, stone -- and it
+    rises with successful use. What it buys is yield: a practised chopper brings
+    back more wood per swing.
+
+    THE FEEDBACK LOOP IS THE POINT, and it uses machinery that is already here.
+    The scripted arbiter gives each agent a lognormal trait per goal, so one
+    agent already chops slightly more often than another. With skills that small
+    difference compounds: it chops more, so it gets better, so its wood is
+    cheaper than anyone else's, so it chops more. Division of labour falls out
+    of two mechanics that were both already present, and nothing scores it --
+    which is the difference between this and the axe, whose adoption the arbiter
+    was told to want.
+
+    DETERMINISTIC, with no rng anywhere. A yield is an integer, and a skill
+    bonus is a fraction, so the bonus accumulates in a per-agent CARRY and pays
+    out a whole extra unit when it crosses 1.0. Rolling a die for the extra unit
+    would have been the obvious implementation and it would have put a random
+    stream inside the harvest phase, which is how a replay stops reproducing.
+    """
+
+    enabled: bool = False
+    # Proficiency gained per successful harvest. SIZED AGAINST A MEASURED
+    # NUMBER, not picked (rule 5): at 0.002 the best forager on this island
+    # reached 0.154 in 4,000 ticks, i.e. ~77 successful gathers, so a whole
+    # career bought a 15% bonus and the mechanic was decorative. 0.008 reaches
+    # 0.6 over the same 77 uses and saturates in roughly one long life, which is
+    # what "you get good at your job" should mean on this timescale.
+    rate: float = 0.008
+    # Yield multiplier at full proficiency. 1.0 doubles it, which is exactly
+    # what the axe does for wood -- deliberately, so the two are comparable and
+    # the honest question "is a practised hand worth a tool" has an answer.
+    max_bonus: float = 1.0
+    observe_skill: bool = True
+
+
+@dataclass(frozen=True)
+class TerrainConfig:
+    """Island 4.0: THE GROUND STOPS BEING THE SAME EVERYWHERE.
+
+    Every island this project has ever run is uniform -- clusters are
+    interchangeable, so one village's ground is worth exactly what another's is.
+    That uniformity is upstream of three separate null results:
+
+      * M5's exchange verdict. The write-up's own proposal was "if wood could
+        only be harvested by an agent standing far from the sites, a relay would
+        be the CHEAPEST way to build rather than a nicety". Nothing in the world
+        made anywhere different from anywhere else, so a relay never paid.
+      * the tribe reads, refuted three times. Tribes are angular arcs of an
+        island where every arc is the same, so of course no tribe was stronger.
+      * the carrying-capacity reads, which are all island-wide means over ground
+        that has no variance in it.
+
+    Two knobs, and they do different jobs:
+
+    `fertility_spread` makes clusters RICH OR POOR -- a lognormal multiplier on
+    each cluster's bush capacity and (inversely) on its regrow time, so a fertile
+    patch holds more and refills faster. Deliberately NO new observation channel:
+    a rich bush already reads as a bush with more berries in it, and adding a
+    "fertility" input would be telling the agent something the berry count
+    already says (and, worse, telling a scripted scorer where to go, which is how
+    a mechanic becomes its own measurement).
+
+    `material_anticorrelated` deals trees and rocks preferentially onto the POOR
+    clusters. That is the geography M5 asked for: a fertile village has food and
+    no stone, a barren one has stone and no food, and the two have a reason to
+    trade -- or, now that there is such a thing, to take each other's ground.
+
+    Both off by default; ramp 0 is bit-identical and pinned.
+    """
+
+    enabled: bool = False
+    fertility_spread: float = 0.0     # lognormal sigma; 0.0 = uniform, as before
+    min_fertility: float = 0.35
+    max_fertility: float = 2.50
+    material_anticorrelated: bool = False
+
+
+@dataclass(frozen=True)
+class ConquestConfig:
+    """Island 4.0: a tribe can TAKE GROUND, and take what the ground knows.
+
+    THE MISSING INGREDIENT, named by the stage-3 write-up. Tribes have now been
+    refuted three times as a source of inequality -- quarter Gini 0.27 vs 0.23,
+    0.31 vs 0.27, 0.24 vs 0.25 -- and the third refutation says why: expansion in
+    this world is SYMMETRIC. Every household that fills its house founds a
+    daughter, so the ratios between tribes never move, and raiding moves berries
+    but cannot move a SITE. Nothing a tribe could do made it bigger than its
+    neighbour.
+
+    Conquest is the asymmetric channel. A site under sustained pressure from
+    adults of another tribe -- more of them, inside `radius`, for `hold_ticks`
+    consecutive ticks -- changes hands: the household keeps its house, its store
+    and its fields, and joins the conqueror's tribe. So a tribe that breeds
+    faster fields more adults, takes more ground, and compounds.
+
+    AND THE DEFENDER'S TECHNOLOGY IS THE PRIZE. On a capture the besieging
+    household learns every technology the taken site held (`TECH_CONQUERED`, the
+    fourth way a technology travels, next to invention, teaching and migration).
+    That is what gives a smaller tribe something to play for: a farming village
+    is worth taking, and taking it is how a tribe that cannot invent catches up.
+
+    Nothing pays for it (rule 1). There is no reward term and the scripted
+    arbiter's `conquer` goal serves the LAND need like `plant` does, so if
+    conquest happens it is because holding ground fed somebody.
+
+    The honest costs, both stated in the write-up rather than buried:
+      * the assimilation rule is authored -- the residents join rather than die,
+        because a mechanic that killed them would be measuring a massacre and
+        this one is measuring a border;
+      * `hold_ticks` and `radius` are a sizing, picked with `sim.economy` against
+        a pre-registered target the way the predator's count and reach were.
+    """
+
+    enabled: bool = False
+    # How close an adult must be to a site to count toward its siege, and how
+    # long a majority must hold. A siege that resolved instantly would make a
+    # border flicker every time a raiding party walked past.
+    radius: float = 6.0
+    hold_ticks: int = 60
+    # Attackers must exceed defenders by this factor before pressure accumulates
+    # at all. 1.0 means a bare majority; above it, a defended village is safe
+    # from a party that merely equals it.
+    superiority: float = 1.5
+    # Progress decays when the pressure lifts, so a siege must be SUSTAINED
+    # rather than accumulated over an episode of passing traffic.
+    decay: int = 2
+    # A captured site cannot be captured again for this long -- it stops two
+    # tribes trading one village back and forth every `hold_ticks`.
+    cooldown: int = 400
+    # The technology transfer. Off, conquest moves ground only, which is the
+    # control that says whether the tech channel is what makes it matter.
+    capture_tech: bool = True
+    # Whether the conquered household's living members change tribe with it.
+    # Off, the site changes hands and its people stay foreign, which is a
+    # different (and much less stable) world.
+    assimilate: bool = True
+    # Give the scripted arbiter a `conquer` goal. Off, conquest can still happen
+    # -- raids already put enemy adults at enemy sites -- and that pair is the
+    # one-key control for "did they go there ON PURPOSE".
+    goal: bool = True
+
+
+@dataclass(frozen=True)
 class MixConfig:
     """Train on TWO worlds at once: a share of the envs run a second config.
 
@@ -759,6 +950,9 @@ class Config:
     tech: TechConfig = field(default_factory=TechConfig)
     fission: FissionConfig = field(default_factory=FissionConfig)
     tribes: TribeConfig = field(default_factory=TribeConfig)
+    conquest: ConquestConfig = field(default_factory=ConquestConfig)
+    terrain: TerrainConfig = field(default_factory=TerrainConfig)
+    skills: SkillConfig = field(default_factory=SkillConfig)
     mix: MixConfig = field(default_factory=MixConfig)
     observation: ObservationConfig = field(default_factory=ObservationConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
@@ -822,6 +1016,9 @@ _SECTIONS: dict[str, type] = {
     "tech": TechConfig,
     "fission": FissionConfig,
     "tribes": TribeConfig,
+    "conquest": ConquestConfig,
+    "terrain": TerrainConfig,
+    "skills": SkillConfig,
     "mix": MixConfig,
     "observation": ObservationConfig,
     "reward": RewardConfig,

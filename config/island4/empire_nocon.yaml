@@ -1,0 +1,10 @@
+# THE ONE-KEY CONTROL FOR CONQUEST. Same island, same growth, same seeds; the
+# only difference is that a village cannot change hands.
+#
+# Read the village Gini between these two, never the population Gini: a tribe
+# that merely out-breeds its neighbours moves the second without holding one
+# extra site, and reading population as territory is how the stage-1 claim went
+# wrong the first time.
+extends: empire.yaml
+conquest:
+  enabled: false

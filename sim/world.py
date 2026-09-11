@@ -36,7 +36,12 @@ from .agents import (
     ITEM_STONE,
     ITEM_WOOD,
     MINE,
+    N_SKILLS,
     N_TECHS,
+    SKILL_FOOD,
+    SKILL_STONE,
+    SKILL_WOOD,
+    TECH_CONQUERED,
     TECH_FARMING,
     TECH_GRANARY,
     TECH_INVENTED,
@@ -191,6 +196,32 @@ class EpisodeStats:
     households_final: int = 0
     tech_settled: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     stock_food_capacity: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    # --- ISLAND 4.0
+    # How many rows the array grew by, and how many times the memory guard bit.
+    # `slot_cap_hits > 0` means the population was bounded by numpy rather than
+    # by the island, which invalidates every carrying-capacity read in that run
+    # -- so it is a stat, printed, not a silent clamp.
+    slots_final: int = 0
+    slots_grown: int = 0
+    slot_cap_hits: int = 0
+    conquests: int = 0
+    # Per tech, like `tech_invented`/`tech_taught`/`tech_settled`: how many
+    # households hold it because somebody took a village off somebody else. The
+    # fourth column of the diffusion read.
+    tech_conquered: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    # Households per tribe at the end, which is the only number that can say
+    # whether a tribe took GROUND. Tribe POPULATION cannot: a tribe that simply
+    # bred faster moves it without holding a single extra site.
+    tribe_households: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    # Per-resource skill over the agents ALIVE at the end. Three numbers each,
+    # because the division-of-labour question needs all three: how good the
+    # island got, how UNEVENLY (a mean cannot say), and which resource each
+    # agent is best at -- if that last one is the same resource for everybody
+    # there is one profession, not a division of labour.
+    skill_mean: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    skill_max: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    skill_best_counts: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    fertility: np.ndarray = field(default_factory=lambda: np.zeros(0))
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -247,6 +278,19 @@ class World:
         cx, cz = self._sample_in_disc(self.cfg.world.island_radius * bc.cluster_radius_frac,
                                       bc.num_clusters)
         self._cluster_centres = (cx.copy(), cz.copy())
+        # ISLAND 4.0: HOW GOOD IS THIS GROUND. One multiplier per cluster,
+        # lognormal about 1.0 and clipped, drawn HERE so it comes off the layout
+        # stream next to the centres it belongs to -- a separate draw later
+        # would shift every bush position in every world that has no terrain in
+        # it, which is the append-never-insert rule applied to the rng.
+        tcfg = self.cfg.terrain
+        if tcfg.enabled and tcfg.fertility_spread > 0.0:
+            self.fertility = np.clip(
+                np.exp(self.rng.normal(0.0, tcfg.fertility_spread,
+                                       size=bc.num_clusters)),
+                tcfg.min_fertility, tcfg.max_fertility)
+        else:
+            self.fertility = np.ones(bc.num_clusters)
         xs, zs = [], []
         for c in range(bc.num_clusters):
             for _ in range(bc.bushes_per_cluster):
@@ -267,7 +311,8 @@ class World:
         """Uniformly scattered static entities (trees, rocks, shelter sites)."""
         return self._sample_in_disc(self.cfg.world.island_radius * margin, count)
 
-    def _at_clusters(self, count: int, spread: float = 1.5) -> tuple[np.ndarray, np.ndarray]:
+    def _at_clusters(self, count: int, spread: float = 1.5,
+                     material: bool = False) -> tuple[np.ndarray, np.ndarray]:
         """Static entities dealt round-robin onto the berry clusters.
 
         Agents live at the clusters because that is where food is, so anything
@@ -276,7 +321,29 @@ class World:
         (``materials_at_clusters``).
         """
         ccx, ccz = self._cluster_centres
-        pick = np.arange(count) % len(ccx)
+        # ISLAND 4.0: POOR GROUND GETS THE STONE. Round-robin over the clusters
+        # ordered by fertility ASCENDING instead of by index, so the barren
+        # patches are dealt material first and the fertile ones last. That is
+        # M5's own prescription -- make the two economies live in different
+        # places and a relay becomes the cheap way to build rather than a
+        # nicety -- and it is also what gives one village's ground a different
+        # value from another's, which is what conquest needs to be about
+        # anything. Ordering only: the COUNT is unchanged, so the island holds
+        # exactly as much material as it did.
+        pool = np.arange(len(ccx))
+        if (material and self.cfg.terrain.enabled
+                and self.cfg.terrain.material_anticorrelated):
+            # THE POOREST HALF, not "the poor ones slightly more often". Dealing
+            # round-robin over a fertility-sorted list and letting only the
+            # surplus fall on the poor end is the version that was written
+            # first, and it is nearly inert: with 50 trees over 40 clusters only
+            # ten clusters get a second one, and the measured fertility where
+            # trees stood came out ABOVE the island mean. Half the island grows
+            # food and half of it has stone -- that is a geography, and the
+            # weaker version was a rounding error wearing one's clothes.
+            order = np.argsort(self.fertility, kind="stable")
+            pool = order[:max(len(ccx) // 2, 1)]
+        pick = pool[np.arange(count) % len(pool)]
         jitter = self.rng.normal(0.0, spread, size=(2, count))
         return ccx[pick] + jitter[0], ccz[pick] + jitter[1]
 
@@ -301,6 +368,14 @@ class World:
         keep = np.flatnonzero(side > 0 if wood_side else side <= 0)
         if keep.size == 0:
             keep = np.arange(ccx.shape[0])
+        if self.cfg.terrain.enabled and self.cfg.terrain.material_anticorrelated:
+            # Within its own side, material still goes to the POOR half. The
+            # region split says which economy lives on which side of the island;
+            # fertility says which patches on that side are worth farming. They
+            # are different questions and both keys are one-key controls, so the
+            # bias has to compose with the split rather than replace it.
+            order = keep[np.argsort(self.fertility[keep], kind="stable")]
+            keep = order[:max(keep.size // 2, 1)]
         pick = keep[np.arange(count) % keep.size]
         jitter = self.rng.normal(0.0, spread, size=(2, count))
         return ccx[pick] + jitter[0], ccz[pick] + jitter[1]
@@ -339,6 +414,20 @@ class World:
         self.bush_active[:n_wild] = True
         self.bush_cap = np.full(n_bushes, cfg.bushes.capacity, dtype=np.int64)
         self.bush_regrow = np.full(n_bushes, cfg.bushes.regrow_ticks, dtype=np.int64)
+        # ISLAND 4.0: rich ground holds more and refills faster. Applied to the
+        # WILD bushes only -- a planted field is a thing a household made, and
+        # scaling it by the ground under it would silently make agriculture a
+        # geography mechanic as well, which is a second variable nobody asked
+        # for. Both bounds are floors of 1: a cluster with zero capacity is not
+        # poor ground, it is a bug that reads as poor ground.
+        if cfg.terrain.enabled and cfg.terrain.fertility_spread > 0.0:
+            per = cfg.bushes.bushes_per_cluster
+            n_wild_f = min(n_wild, per * cfg.bushes.num_clusters)
+            fert = np.repeat(self.fertility, per)[:n_wild_f]
+            self.bush_cap[:n_wild_f] = np.maximum(
+                np.round(cfg.bushes.capacity * fert), 1).astype(np.int64)
+            self.bush_regrow[:n_wild_f] = np.maximum(
+                np.round(cfg.bushes.regrow_ticks / fert), 1).astype(np.int64)
         self.n_wild_bushes = n_wild
         if n_fields:
             self.bush_cap[n_wild:] = ac.field_capacity
@@ -394,14 +483,14 @@ class World:
             if regions:
                 self.tree_x, self.tree_z = self._at_clusters_in_region(cc.num_trees, True)
             elif cc.materials_at_clusters:
-                self.tree_x, self.tree_z = self._at_clusters(cc.num_trees)
+                self.tree_x, self.tree_z = self._at_clusters(cc.num_trees, material=True)
             else:
                 self.tree_x, self.tree_z = self._scatter(cc.num_trees)
             self.tree_wood = np.full(cc.num_trees, cc.tree_wood, dtype=np.int64)
             if regions:
                 self.rock_x, self.rock_z = self._at_clusters_in_region(cc.num_rocks, False)
             elif cc.materials_at_clusters:
-                self.rock_x, self.rock_z = self._at_clusters(cc.num_rocks)
+                self.rock_x, self.rock_z = self._at_clusters(cc.num_rocks, material=True)
             else:
                 self.rock_x, self.rock_z = self._scatter(cc.num_rocks)
             self.rock_stone = np.full(cc.num_rocks, cc.rock_stone, dtype=np.int64)
@@ -483,6 +572,15 @@ class World:
         self.household_active = np.zeros(n_house, dtype=bool)
         self.household_active[:n_house0] = True
         self.household_fission_tick = np.full(n_house, -10 ** 9, dtype=np.int64)
+        # --- ISLAND 4.0: conquest. Per HOUSEHOLD, because a site is what
+        # changes hands: `siege_progress` is consecutive ticks of sustained
+        # foreign superiority at that site, and `siege_by` is whose.
+        self.siege_progress = np.zeros(n_house, dtype=np.int64)
+        self.siege_by = np.full(n_house, -1, dtype=np.int64)
+        self.household_conquest_tick = np.full(n_house, -10 ** 9, dtype=np.int64)
+        self._conquests = 0
+        self._tech_conquered = 0
+        self.last_conquests: list[tuple[int, int, int]] = []
         self._fissions = 0
         if sc.enabled:
             if cc.enabled and cc.num_sites < n_house0:
@@ -566,7 +664,16 @@ class World:
         self._life_ticks_row = np.zeros(cfg.world.num_agents, dtype=np.int64)
         self._death_tick = np.full(cfg.world.num_agents, -1, dtype=np.int64)
         self._reuses = 0
+        self._slots_grown = 0
+        self._slot_cap_hits = 0
+        # --- ISLAND 4.0: SKILL. Proficiency per agent per resource (berries,
+        # wood, stone) and the fractional CARRY that turns a fractional bonus
+        # into whole units without touching an rng -- see SkillConfig for why a
+        # die-roll here would have broken replay reproduction.
+        self.skill = np.zeros((cfg.world.num_agents, N_SKILLS))
+        self._skill_carry = np.zeros((cfg.world.num_agents, N_SKILLS))
         self.last_births: list[tuple[int, int, int]] = []
+        self.last_fissions: list[tuple[int, int]] = []
         self.stock_food = np.zeros(n_house, dtype=np.int64)
         # Material is tracked BY KIND even though the observation reports the sum.
         # With fungible sites the split is cosmetic; without them it is
@@ -623,6 +730,104 @@ class World:
         # is right: a predator walking home does not care.
         self._last_sheltered = np.zeros(cfg.world.num_agents, dtype=bool)
         return self.observations()
+
+    # --- ISLAND 4.0: THE ARRAY GROWS --------------------------------------
+    #
+    # Every per-agent array in a World, with the value a NEW row starts at.
+    # EXPLICIT rather than discovered by shape, and that is a correction paid
+    # for in advance: "widen every array whose first axis equals num_agents"
+    # sweeps up the bushes the moment a world has as many bushes as agents, and
+    # a growth routine that quietly widens the wrong array surfaces 8,000 ticks
+    # later as a shape error nobody can place. A missing entry here is caught by
+    # `test_island4.py::test_every_per_agent_array_is_in_the_growth_registry`,
+    # which builds a world whose agent count matches nothing else and compares
+    # the registry against what is actually on the object.
+    _GROWTH_FILL: dict[str, Any] = {
+        "_alive_ticks": 0, "_attacks": 0, "_builds": 0, "_contested": 0,
+        "_crafted": 0, "_death_tick": -1, "_deposits": 0, "_gathered": 0,
+        "_gave": 0, "_last_sheltered": False, "_life_ticks_row": 0, "_meals": 0,
+        "_planted": 0, "_raids": 0, "_received": 0, "_robbed": 0, "_stole": 0,
+        "_stone": 0, "_withdrawals": 0, "_wood": 0, "household": 0,
+        "night_exposed_agent": 0, "night_sheltered_agent": 0, "tribe": 0,
+    }
+
+    @property
+    def slots(self) -> int:
+        """How many rows the world currently has. `num_agents` is only the START."""
+        return int(self.pool.n)
+
+    def _grow_slots(self, extra: int) -> int:
+        """Widen every per-agent array by `extra` inert rows. Returns rows added.
+
+        A new row is UNBORN, not dead: `born` False keeps it out of every
+        per-agent statistic (lifespan, the Gini, the goal histogram), exactly as
+        an unused founding slot already is. That is the whole reason growth is
+        cheap to reason about -- an unborn row is a state the world has had
+        since Island 3.0 and every consumer already handles it.
+        """
+        if extra <= 0:
+            return 0
+        old = int(self.pool.n)
+        cap = int(self.cfg.world.max_slots)
+        if cap > 0 and old + extra > cap:
+            extra = cap - old
+            if extra <= 0:
+                self._slot_cap_hits += 1
+                return 0
+        pool = self.pool
+        fill_pool: dict[str, Any] = {
+            "x": 0.0, "z": 0.0, "hunger": self.cfg.hunger.max, "food": 0,
+            "wood": 0, "stone": 0, "alive": False, "last_action": IDLE,
+            "axe": 0, "age": 0, "born": False,
+        }
+        for name, value in fill_pool.items():
+            arr = getattr(pool, name)
+            setattr(pool, name, np.concatenate(
+                [arr, np.full(extra, value, dtype=arr.dtype)]))
+        for name, value in self._GROWTH_FILL.items():
+            arr = getattr(self, name)
+            setattr(self, name, np.concatenate(
+                [arr, np.full(extra, value, dtype=arr.dtype)]))
+        # The grudge matrix is the one 2-D per-agent array, and the one that
+        # decides how far this can go: (n, n) float64 is 3.2GB at 20,000 rows,
+        # which is why `world.max_slots` exists and why it is documented as a
+        # memory guard rather than a design cap.
+        g = self.grudge
+        self.grudge = np.zeros((old + extra, old + extra), dtype=g.dtype)
+        self.grudge[:old, :old] = g
+        # The two (n, N_SKILLS) arrays. A new row starts unskilled, which is
+        # what being newborn means; nothing is inherited, deliberately -- a
+        # skill you were born with is a trait, and this world already has those.
+        for name in ("skill", "_skill_carry"):
+            arr = getattr(self, name)
+            setattr(self, name, np.concatenate(
+                [arr, np.zeros((extra, arr.shape[1]), dtype=arr.dtype)]))
+        self._slots_grown += extra
+        return extra
+
+    def _maybe_grow(self) -> int:
+        """Grow if next tick's births could run out of rows. Returns rows added.
+
+        Called AFTER the step's own arrays are finished (phase 7d) rather than
+        before the births that need the room, because every array inside `step`
+        is sized from `pool.n` at the top of it -- growing mid-step would leave
+        `rewards` one width and `hunger` another. So a tick's births use the rows
+        the PREVIOUS tick provided, and the headroom is one tick of maximum
+        demand: at most one birth per household per tick.
+        """
+        pool = self.pool
+        rc = self.cfg.reproduction
+        free = int((~pool.born).sum())
+        if rc.reuse_slots:
+            free += int((pool.born & ~pool.alive & (self._death_tick >= 0)
+                         & (self.tick - self._death_tick >= rc.reuse_delay)).sum())
+        headroom = int(self.stock_x.shape[0])
+        if free >= headroom:
+            return 0
+        old = int(pool.n)
+        want = max(int(round(old * (self.cfg.world.slot_growth - 1.0))),
+                   headroom - free)
+        return self._grow_slots(want)
 
     def construction_view(self) -> ConstructionView | None:
         if not self.cfg.construction.enabled:
@@ -713,6 +918,10 @@ class World:
             fields=self.household_fields,
             granary=self.household_granary,
             stock_food_capacity=self.stock_food_capacity,
+            household_active=self.household_active,
+            siege_progress=self.siege_progress,
+            siege_by=self.siege_by,
+            skill=self.skill,
         )
 
     def predator_view(self) -> PredatorView | None:
@@ -826,10 +1035,27 @@ class World:
                 # wild bush. Counted here because a field IS a bush everywhere
                 # else, so this is the only place the two can be told apart.
                 self._field_berries += 1
-            self.bush_berries[target] -= 1
-            pool.food[i] += 1
-            rewards[i] += cfg.reward.gather
-            gathered[i] = 1
+            # ISLAND 4.0: a practised forager strips a bush faster. Same carry
+            # as the material harvest, and bounded by the SAME two things a
+            # normal gather is -- what the bush holds and what the agent can
+            # carry -- so a skill can never overfill an inventory or empty a
+            # bush past zero.
+            take = 1
+            skc = cfg.skills
+            if skc.enabled:
+                self._skill_carry[i, SKILL_FOOD] += (
+                    self.skill[i, SKILL_FOOD] * skc.max_bonus)
+                if self._skill_carry[i, SKILL_FOOD] >= 1.0:
+                    self._skill_carry[i, SKILL_FOOD] -= 1.0
+                    take = 2
+                take = min(take, int(self.bush_berries[target]),
+                           cfg.food.capacity - int(pool.food[i]))
+                self.skill[i, SKILL_FOOD] = min(
+                    self.skill[i, SKILL_FOOD] + skc.rate, 1.0)
+            self.bush_berries[target] -= take
+            pool.food[i] += take
+            rewards[i] += cfg.reward.gather * take
+            gathered[i] = take
 
         # 1c. stealing (Milestone 3). Deliberately pays NO reward: the brief asks
         #     for no reward terms beyond survival, so theft has to earn its place
@@ -877,7 +1103,9 @@ class World:
         built = np.zeros(n, dtype=np.int64)
         cc = cfg.construction
         if cc.enabled:
-            def harvest(action, ex, ez, stock, per_take=None):
+            skc = cfg.skills
+
+            def harvest(action, ex, ez, stock, per_take=None, skill_k=None):
                 out = np.zeros(n, dtype=np.int64)
                 for i in np.flatnonzero(acted & (actions == action)):
                     room = cc.material_capacity - (pool.wood[i] + pool.stone[i])
@@ -895,11 +1123,29 @@ class World:
                     # technology's name. `per_take` defaults to 1, so mining and
                     # every tool-free world take exactly the old path.
                     take = 1 if per_take is None else int(per_take[i])
+                    # ISLAND 4.0: A PRACTISED HAND BRINGS BACK MORE. The bonus
+                    # is fractional and a yield is an integer, so it banks in a
+                    # per-agent carry and pays a whole extra unit when it
+                    # crosses 1.0 -- deterministic, where rolling for it would
+                    # have put an rng stream inside the harvest phase.
+                    if skc.enabled and skill_k is not None:
+                        self._skill_carry[i, skill_k] += (
+                            self.skill[i, skill_k] * skc.max_bonus)
+                        if self._skill_carry[i, skill_k] >= 1.0:
+                            self._skill_carry[i, skill_k] -= 1.0
+                            take += 1
                     take = min(take, int(room), int(stock[target]))
                     if take <= 0:
                         continue
                     stock[target] -= take
                     out[i] = take
+                    # Practice comes from a SUCCESSFUL harvest, not from the
+                    # attempt: swinging at an empty tree teaches nothing, and
+                    # paying for the attempt would make standing at a stump a
+                    # way to get good at chopping.
+                    if skc.enabled and skill_k is not None:
+                        self.skill[i, skill_k] = min(
+                            self.skill[i, skill_k] + skc.rate, 1.0)
                 return out
 
             chop_take = None
@@ -909,10 +1155,11 @@ class World:
                 # buys ticks rather than wood (see ToolsConfig and sim.economy).
                 chop_take = 1 + pool.axe * (cfg.tools.chop_multiplier - 1)
             wood_got = harvest(CHOP, self.tree_x, self.tree_z, self.tree_wood,
-                               chop_take)
+                               chop_take, SKILL_WOOD)
             pool.wood += wood_got
             rewards += wood_got * cfg.reward.wood
-            stone_got = harvest(MINE, self.rock_x, self.rock_z, self.rock_stone)
+            stone_got = harvest(MINE, self.rock_x, self.rock_z, self.rock_stone,
+                                None, SKILL_STONE)
             pool.stone += stone_got
             rewards += stone_got * cfg.reward.stone
 
@@ -1684,6 +1931,7 @@ class World:
         #     no house -- so it cannot have children of its own until it has
         #     built one, because a birth needs a bed.
         fc = cfg.fission
+        self.last_fissions = []
         if fc.enabled and sc.enabled and cc.enabled:
             dormant = np.flatnonzero(~self.household_active)
             if dormant.size:
@@ -1751,6 +1999,102 @@ class World:
                     self.household_fission_tick[h] = self.tick
                     self.household_fission_tick[s_new] = self.tick
                     self._fissions += 1
+                    self.last_fissions.append((h, s_new))
+
+        # 6h. ISLAND 4.0: CONQUEST. A site changes hands when adults of another
+        #     tribe outnumber its defenders, inside `radius`, for `hold_ticks`
+        #     consecutive ticks. Nothing is paid for it, there is no action for
+        #     it and there is no combat: what a siege measures is PRESENCE, and
+        #     presence is something a household has to spend grown members on.
+        #
+        #     WHY THIS EXISTS. Tribes have now been refuted three times as a
+        #     source of inequality, and the third refutation named the reason:
+        #     expansion here is SYMMETRIC -- every household that fills its house
+        #     founds a daughter, so the ratios between tribes never move, and
+        #     raiding moves berries but cannot move a SITE. This is the first
+        #     asymmetric channel in the project: a tribe that fields more adults
+        #     takes ground, and ground compounds.
+        #
+        #     Deterministic and vectorised over households; no rng is touched,
+        #     so a conquest world replays exactly like every other one.
+        qc = cfg.conquest
+        self.last_conquests = []
+        if qc.enabled and sc.enabled and cfg.tribes.enabled and self.stock_x.size:
+            nh_q = self.stock_x.shape[0]
+            grown_q = pool.alive & pool.adult(cfg)
+            if grown_q.any():
+                who = np.flatnonzero(grown_q)
+                d2q = ((self.stock_x[None, :] - pool.x[who, None]) ** 2
+                       + (self.stock_z[None, :] - pool.z[who, None]) ** 2)
+                near = d2q <= qc.radius ** 2                      # (adults, households)
+                # Heads per (household, tribe). One bincount over a flattened
+                # (household, tribe) key, which is the vectorised form of "who is
+                # standing at whose door and whose side are they on".
+                n_tribes_q = int(cfg.tribes.num_tribes)
+                hh_idx, ad_idx = np.nonzero(near.T)
+                present = np.zeros((nh_q, n_tribes_q), dtype=np.int64)
+                if hh_idx.size:
+                    key = hh_idx * n_tribes_q + self.tribe[who[ad_idx]]
+                    present = np.bincount(
+                        key, minlength=nh_q * n_tribes_q).reshape(nh_q, n_tribes_q)
+                owner = self.tribe_of_household[:nh_q]
+                defenders = present[np.arange(nh_q), owner]
+                # The largest FOREIGN contingent. Masking the owner's own column
+                # before the argmax is what makes "foreign" mean foreign.
+                foreign = present.copy()
+                foreign[np.arange(nh_q), owner] = -1
+                challenger = np.argmax(foreign, axis=1)
+                attackers = foreign[np.arange(nh_q), challenger]
+                pressing = (self.household_active[:nh_q] & (attackers > 0)
+                            & (attackers >= qc.superiority * np.maximum(defenders, 1)))
+                # Progress accumulates only while the SAME tribe keeps pressing.
+                # A different challenger restarts the clock, so two tribes taking
+                # turns at one village never add up to a capture between them.
+                same = pressing & (self.siege_by[:nh_q] == challenger)
+                self.siege_progress[:nh_q] = np.where(
+                    same, self.siege_progress[:nh_q] + 1,
+                    np.where(pressing, 1,
+                             np.maximum(self.siege_progress[:nh_q] - qc.decay, 0)))
+                self.siege_by[:nh_q] = np.where(
+                    pressing, challenger,
+                    np.where(self.siege_progress[:nh_q] > 0, self.siege_by[:nh_q], -1))
+                taken = np.flatnonzero(
+                    (self.siege_progress[:nh_q] >= qc.hold_ticks)
+                    & (self.tick - self.household_conquest_tick[:nh_q] >= qc.cooldown))
+                for h in (int(v) for v in taken):
+                    new_tribe = int(self.siege_by[h])
+                    old_tribe = int(self.tribe_of_household[h])
+                    if new_tribe < 0 or new_tribe == old_tribe:
+                        continue
+                    self.tribe_of_household[h] = new_tribe
+                    self.household_conquest_tick[h] = self.tick
+                    self.siege_progress[h] = 0
+                    self.siege_by[h] = -1
+                    if qc.assimilate:
+                        # The people change flag with the ground. Authored, and
+                        # the write-up says so: a mechanic that killed them would
+                        # be measuring a massacre, and this one measures a border.
+                        self.tribe[np.flatnonzero(self.household == h)] = new_tribe
+                    if qc.capture_tech:
+                        # THE PRIZE. Every household that had an adult at the
+                        # gate carries home what the village knew -- the fourth
+                        # way a technology travels, after invention, teaching and
+                        # migration. This is the channel that lets a tribe which
+                        # cannot invent catch one that can.
+                        besiegers = np.unique(self.household[
+                            who[near[:, h] & (self.tribe[who] == new_tribe)]])
+                        for tech, holder in ((TECH_FARMING, self.household_farming),
+                                             (TECH_GRANARY, self.household_granary)):
+                            if not holder[h]:
+                                continue
+                            for b in (int(v) for v in besiegers):
+                                if holder[b]:
+                                    continue
+                                holder[b] = True
+                                self._tech_source[b, tech] = TECH_CONQUERED
+                                self._tech_conquered += 1
+                    self._conquests += 1
+                    self.last_conquests.append((h, old_tribe, new_tribe))
 
         # 7. clock and termination
         self.tick += 1
@@ -1820,15 +2164,21 @@ class World:
                     self._damaged += int(done.size)
                     self.last_storm = int(done.size)
                 self._storms += 1
+        # 7d. ISLAND 4.0: THE ARRAY GROWS. Last thing in the tick, so every
+        #     array built from `n` at the top of `step` is already finished and
+        #     cannot end up half a width. The rows added here are what NEXT
+        #     tick's births will use; see `_maybe_grow` for why the headroom is
+        #     one tick of maximum demand rather than one row.
+        grew = 0
+        if cfg.world.grow_slots and rc.enabled and sc.enabled:
+            grew = self._maybe_grow()
+
         truncated = self.tick >= cfg.world.max_ticks
         all_dead = not bool(pool.alive.any())
-        return StepResult(
-            obs=self.observations(),
+        out: dict[str, Any] = dict(
             rewards=rewards,
             terminated=died,
             acted=acted,
-            episode_done=truncated or all_dead,
-            truncated=truncated and not all_dead,
             gathered=gathered,
             ate=ate,
             stole=stole,
@@ -1838,11 +2188,24 @@ class World:
             built=built,
             gave=gave,
             received=received,
-            transfers=transfers,
             deposited=deposited,
             withdrew=withdrew,
             raided=raided,
+        )
+        if grew:
+            # Everything the caller receives is one width -- the NEW one. A
+            # StepResult whose `rewards` and `obs` disagreed by `grew` rows would
+            # be a shape error in whichever consumer happened to zip them first,
+            # which is a bad way to find out the world got bigger.
+            out = {k: np.concatenate([v, np.zeros(grew, dtype=v.dtype)])
+                   for k, v in out.items()}
+        return StepResult(
+            obs=self.observations(),
+            episode_done=truncated or all_dead,
+            truncated=truncated and not all_dead,
+            transfers=transfers,
             raids=raids,
+            **out,
         )
 
     # --- reporting --------------------------------------------------------
@@ -1882,7 +2245,16 @@ class World:
         n_born = max(int(born.sum()) + len(ledger), 1)
         life_total = float(self._alive_ticks[born].sum() + sum(ledger))
         n_house = self.stock_x.shape[0]
-        n_tribes = int(self.tribe_of_household.max()) + 1 if self.tribe_of_household.size else 1
+        # From the CONFIG when tribes are on, not from the data. Deriving the
+        # width from `max() + 1` was fine while tribe membership never changed;
+        # with conquest a tribe can be wiped off the map entirely, and a
+        # per-tribe array that silently loses its last column would report the
+        # annihilated tribe's zero as the NEXT tribe's total.
+        if self.cfg.tribes.enabled and self.tribe_of_household.size:
+            n_tribes = int(self.cfg.tribes.num_tribes)
+        else:
+            n_tribes = (int(self.tribe_of_household.max()) + 1
+                        if self.tribe_of_household.size else 1)
         tribe_pop = np.bincount(self.tribe[pool.alive], minlength=n_tribes)
         tribe_ever = np.bincount(self.tribe[born], minlength=n_tribes)
         tribe_births = np.zeros(n_tribes, dtype=np.int64)
@@ -1914,6 +2286,24 @@ class World:
             tech_taught=(self._tech_source == TECH_TAUGHT).sum(axis=0).astype(np.int64),
             granary_households=int(self.household_granary.sum()),
             stock_food_capacity=self.stock_food_capacity.copy(),
+            slots_final=int(pool.n),
+            slots_grown=self._slots_grown,
+            slot_cap_hits=self._slot_cap_hits,
+            conquests=self._conquests,
+            tech_conquered=(self._tech_source == TECH_CONQUERED).sum(axis=0).astype(np.int64),
+            skill_mean=(self.skill[:pool.n][pool.alive & pool.born].mean(axis=0)
+                        if bool((pool.alive & pool.born).any()) else np.zeros(N_SKILLS)),
+            skill_max=(self.skill[:pool.n][pool.alive & pool.born].max(axis=0)
+                       if bool((pool.alive & pool.born).any()) else np.zeros(N_SKILLS)),
+            skill_best_counts=(
+                np.bincount(self.skill[:pool.n][pool.alive & pool.born].argmax(axis=1),
+                            minlength=N_SKILLS).astype(np.int64)
+                if bool((pool.alive & pool.born).any()) and self.skill.any()
+                else np.zeros(N_SKILLS, dtype=np.int64)),
+            fertility=self.fertility.copy(),
+            tribe_households=np.bincount(
+                self.tribe_of_household[self.household_active],
+                minlength=n_tribes).astype(np.int64),
             population_final=int(pool.alive.sum()),
             house_expansions=self._expansions,
             rooms_final=self.site_rooms.copy(),

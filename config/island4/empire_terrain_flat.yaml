@@ -1,0 +1,9 @@
+# THE ONE-KEY CONTROL FOR TERRAIN. Same island, same conquest, same growth, same
+# seeds; the ground is uniform, as it has been in every world before this one.
+#
+# `empire.yaml` would ALSO be this control, and it is not used as one on purpose:
+# it is the file everything else extends, so a later edit to it would silently
+# move the control. A control that can drift is not a control.
+extends: empire.yaml
+terrain:
+  enabled: false

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .agents import (bush_channels, neighbour_channels, observation_layout,
+from .agents import (SKILL_NAMES, bush_channels, neighbour_channels, observation_layout,
                      site_channels)
 from .config import Config
 
@@ -190,6 +190,32 @@ class ObsView:
             self.farming = np.zeros(self.n, dtype=bool)
             self.field_room = np.zeros(self.n)
 
+        # --- Island 4.0. Absent for every world without conquest, and read as
+        # "there is nowhere to take", so an arbiter written for a 4.0 world runs
+        # unchanged in a 3.0 one and simply never finds a village to besiege.
+        if cfg.conquest.enabled and cfg.tribes.enabled and cfg.society.enabled:
+            self.conquest_found = obs[:, col["conquest.found"]] > 0.5
+            self.conquest_dx = obs[:, col["conquest.dx"]] * self.scale
+            self.conquest_dz = obs[:, col["conquest.dz"]] * self.scale
+            self.conquest_prize = obs[:, col["conquest.prize"]] > 0.5
+            self.conquest_pressure = obs[:, col["conquest.pressure"]]
+            self.conquest_threat = obs[:, col["conquest.threat"]]
+        else:
+            self.conquest_found = np.zeros(self.n, dtype=bool)
+            self.conquest_dx = np.zeros(self.n)
+            self.conquest_dz = np.zeros(self.n)
+            self.conquest_prize = np.zeros(self.n, dtype=bool)
+            self.conquest_pressure = np.zeros(self.n)
+            self.conquest_threat = np.zeros(self.n)
+
+        # --- Island 4.0: skill. Read as "unskilled" in a world without it, so
+        # an arbiter written for a skill world runs unchanged in one without.
+        if cfg.skills.enabled and cfg.skills.observe_skill:
+            self.skill = np.stack(
+                [obs[:, col[f"own.skill_{k}"]] for k in SKILL_NAMES], axis=1)
+        else:
+            self.skill = np.zeros((self.n, len(SKILL_NAMES)))
+
         self.edge_room = obs[:, col["edge.room"]]
         self.outward_x = obs[:, col["edge.outward_x"]]
         self.outward_z = obs[:, col["edge.outward_z"]]
@@ -268,6 +294,19 @@ class ObsView:
         if not self.cfg.society.enabled or self.cfg.society.num_households < 2:
             return np.full(self.n, np.inf)
         return np.hypot(self.raid_dx, self.raid_dz)
+
+    @property
+    def conquest_distance(self) -> np.ndarray:
+        """Distance to the nearest village of ANOTHER tribe; ``inf`` if none.
+
+        Reported off the `found` CHANNEL rather than off the offsets, for the
+        reason `raid_distance` checks the household count: zero offsets are the
+        padding value and would read as a village underfoot. An agent whose
+        tribe holds every inhabited site genuinely has nowhere to go, and that
+        has to be representable.
+        """
+        return np.where(self.conquest_found,
+                        np.hypot(self.conquest_dx, self.conquest_dz), np.inf)
 
     def _neighbour_society_col(self, want_grudge: bool) -> int:
         """Index into ``neighbours.extra`` of a stage-4 neighbour channel."""

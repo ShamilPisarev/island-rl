@@ -232,6 +232,185 @@ Reproduce:
 .venv/bin/python -m sim.society --config config/island3/village.yaml --ticks 3000 --replay
 ```
 
+## Island 4.0 is BUILT — read `ISLAND4_DESIGN.md`
+
+Written 2026-08-30. **The array stops being the ceiling, a tribe can take ground
+off another tribe, and the island stops being the same everywhere.** Five
+config-gated blocks, every one off by default, with every 2.0 and 3.0 checksum
+reproducing exactly. **Nothing here is trained** — scripted utility arbiter, as
+the whole of 3.0 was.
+
+**The working rule this stage was built under, and it is worth keeping:
+mechanics first, scripted and measured; training LAST, once the mechanic set is
+frozen.** 3.0's one training run used 600-tick episodes and never reached
+agriculture, teaching or the granary — that is what training an unfinished world
+buys you.
+
+| block | key | one line |
+|---|---|---|
+| growth | `world.grow_slots` | a birth with no free row WIDENS every per-agent array |
+| conquest | `conquest.enabled` | a site changes hands under sustained foreign pressure, and the conqueror learns what it knew |
+| terrain | `terrain.enabled` | clusters get a fertility; material is dealt to the poor half |
+| culture | `reproduction.culture_weight` | a child's traits blend its parents' with its VILLAGE's |
+| skill | `skills.enabled` | you get better at what you do |
+
+### The bug that had made a whole mechanic invisible
+
+`sites` was written off `world.site_x`, where a DORMANT site is parked at `inf`.
+Python writes `Infinity`, `JSON.parse` rejects it, so **every frontier replay ever
+written was unloadable in a browser and village fission — stage 3's headline —
+had never once been watched.** Same trap the fields fix caught, in the one place
+that fix did not reach. Sites now come off `site_layout_*`; pinned by a test that
+asserts on the serialised TEXT, because the dict was always fine.
+
+### Every read, with its control
+
+* **S1, growth. The array was costing 49 agents.** `empire.yaml` vs
+  `empire_capped.yaml`, one key, 5 paired episodes of 8,000 ticks: **alive
+  106.6 vs 58.0 (+48.6 ± 8.1, 5/5)**, villages 26.0 vs 21.2, ever born 285 vs 180,
+  farming households 20.6 vs 13.6, fissions 6.0 vs 1.2. **Honest cost, in the same
+  breath: mean lifespan −437 ± 58 (0/5)** — a population twice the size is a
+  hungrier one, and growth makes there be MORE of them rather than making anybody
+  better off. `slot_cap_hits = 0` in every episode, so the memory guard never
+  bound and the island is what limited the population.
+  **The sizing is the part to read first.** `empire.yaml` starts at **60 rows,
+  deliberately below the measured carrying capacity of ~98 sheltered / ~65
+  exposed**, so the array binds in the control. At the frontier world's own 200
+  rows neither arm reaches the ceiling and `grow_slots` correctly does nothing —
+  a fact, not an experiment.
+* **S2, conquest. The tribe claim survives its control for the first time.**
+  `empire.yaml` vs `empire_nocon.yaml`, 5 paired episodes: **village Gini 0.31 vs
+  0.22 (+0.09 ± 0.04, 4/5)**, top tribe's share of villages 0.46 vs 0.39, 19.6
+  captures an episode against 0, and 4.4 households holding a technology BECAUSE
+  they took a village. Read that first row against the three before it — stage 1
+  +0.04 ± 0.03, stage 2 +0.03 ± 0.08, stage 3 −0.02 ± 0.04. **Honest size:
+  +0.09 ± 0.04 is ~2.2 SE on five seeds; larger than all three previous attempts
+  together, and not yet settled — re-run at ten seeds.** Two rows say what
+  conquest is NOT: population +0.6 ± 6.8 and total villages +0.0 ± 1.8, so it
+  moves ground between tribes without creating any.
+* **S3, did they go on purpose. Mostly -- and the KNOWLEDGE channel entirely.**
+  `empire.yaml` vs `empire_nogoal.yaml` (conquest on in both, the `conquer` goal
+  off in the control; raiding already puts enemy adults at enemy stockpiles, so
+  captures can happen unintentionally). **19.6 captures against 5.4
+  (+14.2 +- 3.7, 5/5), so 73% are deliberate** -- and **households holding a
+  technology BY CONQUEST are 4.4 against 0.0, exactly.** Accidental conquest
+  moves ground and no knowledge at all. Note the honest deflation of S2 that
+  comes with it: village Gini reads 0.28 with accidental conquest alone against
+  0.22 with none and 0.31 with the goal, so **roughly two thirds of S2's +0.09
+  comes from captures nobody intended** -- do not credit the scorer for it.
+* **S4, the prize. It does NOT motivate conquest -- it decides who wins.** The
+  config header pre-registered "if capture rates are the same in both arms, the
+  technology transfer is decoration". The rate IS the same
+  (19.6 vs 16.6, +3.0 +- 2.9, inside noise) and the conclusion is wrong: with the
+  transfer off, **village Gini 0.37 against 0.31 and the top tribe's share 0.51
+  against 0.46, both 0/5 at ~2.5 SE -- the tightest numbers in this stage.**
+  **Capturing technology is a CATCH-UP mechanism, not a motive**: a weak tribe
+  that takes a farming village closes the gap, and without the channel the leader
+  runs away. That is the user-facing question -- "the others have to take their
+  technology to beat them" -- measured, and the answer is subtler than the
+  question.
+* **S5, terrain. A 69% richer island that supports 17 FEWER people, and no
+  inequality at all.** `empire_terrain.yaml` vs `empire_terrain_flat.yaml`. The
+  pre-registered assumption ("multiplicative about 1.0, so the island holds
+  roughly what it did") is **wrong**: a cluster's rate goes as **f^2**, so
+  measured berry supply is **6.75/tick against 4.00 (+69%)**. And yet: **alive
+  88.8 vs 106.6 (-17.8 +- 15.7, 1/5)**, rows grown 148.6 vs 203.0
+  (-54.4 +- 13.6, **0/5**), ever born 239 vs 285. **The mechanism is
+  CONCENTRATION, not quantity** -- per-bush rates span 0.0035 to 0.125, a factor
+  of 36, and supply nobody can reach is not supply.
+  **Village Gini +0.02 +- 0.07 (3/5): nothing.** The reason is worth more than
+  the result -- **fertility is drawn per cluster INDEPENDENTLY, so it is
+  spatially uncorrelated, and a tribe is an angular arc**, so every arc holds a
+  mix. For terrain to make tribes unequal it has to be a fertile REGION, not a
+  fertile patch. Verified regardless: fertility spans 0.35-2.50 against a uniform
+  1.00, and material lands on ground of mean fertility **0.59 (trees) / 0.44
+  (rocks) against an island mean of 0.98** -- M5's own prescription ("a relay
+  needs its chain shortened by GEOGRAPHY") in place for the first time.
+* **CULTURE: the pre-registered prediction is REFUTED, and interestingly.**
+  Blending a child's traits toward its village's mean was supposed to make
+  villages diverge from each other while staying uniform inside. Measured (one
+  seed, 4,000 ticks): between-village trait variance **0.081 -> 0.047** and the
+  between/within ratio **4.04 -> 2.89**. Culture made villages more uniform
+  inside AND more like each other. The mechanism is arithmetic: blending toward
+  a mean is a SHRINKAGE operator -- a child of two parents carries a lineage's
+  random walk, a child of a seven-person average carries a seventh of it, so
+  villages drift less far. **Averaging cannot create distinctness. Divergence
+  needs selection that differs BY PLACE, which nothing here supplies.** One
+  seed; enough to refute a direction, not enough to quote.
+* **SKILL: the mechanic fires and the specialisation does not appear.** Practice
+  raises yield, competence ends up very unevenly spread (skill Gini 0.34 / 0.54 /
+  **0.73**) -- and **all 111 surviving agents are best at foraging**. One
+  profession, not a division of labour, because hunger is tier 0 so everybody
+  forages most of the time and practice accumulates where the time already goes.
+  `corr(trait_forage, skill_forage) = +0.21`, `corr(trait_wood, skill_wood) =
+  +0.05`. Same shape as the construction wall: the world's time budget decides
+  what can emerge. The report says so out loud
+  (`[ONE PROFESSION -- no division of labour]`).
+
+**The graphics, and the bug is the headline.** **Replay schema v9.** Sites are
+written off `site_layout_*` instead of `site_x`, which is the `Infinity` fix
+above. Five new sparse per-tick keys (`hh` household state, `hm` membership
+moves, `cq` captures, `fs` foundings, `sg` sieges) plus `y`/`yt`, the per-tick
+aggregate series -- a civilisation is a TRAJECTORY and every number the viewer
+showed before was one tick's. A tick's agent list may now be SHORTER than the
+header's, because the world grows mid-episode; four call sites are guarded.
+The viewer gained: **colour by TRIBE (the default when a world has tribes, and
+switchable to agent or village)**, a **territory field** -- a 72x72
+vertex-coloured plane tinting every patch by the nearest inhabited village's
+tribe, so a tribe taking villages visibly spreads -- a **siege drawn as a red arc
+that closes**, a **history strip** with a clickable playhead, an **event feed**
+(foundings, captures, technology unlocks), and **dormant sites hidden** so a
+daughter settlement reads as appearing. Verified in a browser on a real 1,500-tick
+frontier replay: loads, scrubs, no console errors.
+
+**Ten corrections, all pinned by tests named after the symptom.** The four worth
+carrying: the `Infinity` sites; the agent table sized from `cfg.world.num_agents`
+when growth means that is only where the array STARTED; `n_tribes` derived as
+`max() + 1`, which with conquest reports an annihilated tribe's zero as the next
+tribe's total; and `material_anticorrelated` as first written, which biased only
+the round-robin SURPLUS and measured fertility-at-trees ABOVE the island mean --
+a rounding error wearing a geography's clothes.
+
+**What is still missing to behave like a real civilisation**, as mechanisms and
+not a wish list (ISLAND4_DESIGN.md §8): something that pushes a village's average
+somewhere (culture cannot, §5); a task budget not dominated by hunger, or
+specialisation cannot appear (§6); trade with a PRICE (the geography is now in
+place, the mechanic is not); a technology that changes a RULE rather than a
+number; defence (`conquest.threat` is observed and no scripted goal reads it, on
+purpose); and death by violence -- nothing in this project can kill an agent
+except hunger and old age, so "war" is a word the world does not support.
+
+New: `world.grow_slots`/`slot_growth`/`max_slots`, `ConquestConfig`,
+`TerrainConfig`, `SkillConfig`, `reproduction.culture_weight`, one appended goal
+(`conquer`, 18 -- no action: a siege is PRESENCE) and one need (`territory`),
+`N_GOALS_ISLAND3` freezing the 3.0 trait draw and head width, six conquest and
+three skill observation channels, **replay schema v9**, `config/island4/`
+(7 configs), `tests/test_island4.py` (33 tests). **503 tests green.**
+
+Reproduce:
+
+```bash
+.venv/bin/python -m sim.economy --config config/island4/empire.yaml
+.venv/bin/python -m sim.society --config config/island4/empire.yaml --episodes 5 --ticks 8000
+.venv/bin/python -m sim.society --config config/island4/empire_capped.yaml --episodes 5 --ticks 8000
+.venv/bin/python -m sim.society --config config/island3/village_frontier.yaml --ticks 1500 --replay
+./watch.sh          # serve viewer/ and open it -- file:// blocks fetch, so
+                    # double-clicking index.html gives a page that cannot read
+                    # its own replay list
+```
+
+**The viewer had two usability bugs and both are fixed.** Every society replay
+was labelled `island2 ...` regardless of the config, so an Island 4.0 empire was
+filed under Island 2.0 in a 321-entry dropdown -- indistinguishable from the file
+not being there. The label now comes from `world_stage(cfg)`, read off the blocks
+that are ON. And the panel now opens on a **START HERE** row of five worlds
+(newest STAGE first, not newest file), each saying what to watch for and what
+command records it if it is missing; the full list is collapsed behind it.
+
+**Do not re-run S1.** Its mechanism is arithmetic and its sizing is documented.
+**S2 is the one worth extending, and the extension is TEN SEEDS, not another
+configuration** -- +0.09 +- 0.04 on five is ~2.2 SE.
+
 ## Island 2.0 -- read `ISLAND2_DESIGN.md` first
 
 Decided 2026-08-25: the next likely direction is a watchable 50–100-agent
@@ -1190,6 +1369,12 @@ and the heat for no loss of signal — the curves are flat long before the end.
 
 Two related notes for anyone running this on a laptop:
 
+* **`pytest tests/` in one process can STALL on this machine, and it is memory,
+  not a hang.** With a browser holding a 20MB replay in a WebGL scene there is
+  ~64MB of free RAM left, and the torch import in `test_ppo`/`test_arbiter` sits
+  at 0% CPU waiting for pages that never come. It looks exactly like an infinite
+  loop. Run the files one at a time (`for f in tests/test_*.py; do pytest $f -q;
+  done`) or close the viewer first; a stalled run is not a failing run.
 * **`ppo.threads` defaults to 4, and that is not a compromise.** Measured, 4
   threads is as fast as 8 (40.0s vs 40.8s over 20 updates): these nets are small
   enough that the numpy env step dominates, so extra cores produce heat and

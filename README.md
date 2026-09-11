@@ -192,8 +192,35 @@ delivered and handed over.
 In a Milestone 5 replay, every transfer is drawn in the scene as the item arcing
 from giver to receiver, colour-coded by what changed hands.
 
+In an Island 4.0 replay (schema v9) the panel gains three blocks the earlier
+schemas had nothing to fill: a **colour toggle** (agent / tribe / village, and it
+opens on tribe when a world has them, because four tribes wearing four
+golden-angle agent hues read as one crowd), a **history strip** of population,
+villages and technology adoption over the whole episode with a clickable
+playhead, and an **event feed** of settlements founded, villages captured and
+technologies unlocked. In the scene, the ground is tinted by which tribe's
+village is nearest, a siege is a red arc closing round the village under it, and
+a site nobody has settled yet is not drawn at all — so a daughter settlement
+reads as appearing rather than as a foundation slowly filling in.
+
 All three pages refuse to render a file whose schema version they do not
 recognise, rather than drawing something plausible and wrong.
+
+**Two scripts, and they are the whole of "how do I run this".**
+
+```bash
+./record.sh    # record the worlds worth watching, from scratch (a few minutes;
+               # nothing here is trained, it is all the scripted arbiter)
+./watch.sh     # serve viewer/ and open it
+```
+
+**To open it, run `./watch.sh`.** It serves `viewer/` over http and opens the
+page — which it has to, because the viewer is a static page and `fetch` is
+blocked on `file://`, so double-clicking `index.html` gives you a page that
+cannot read its own replay list and looks broken rather than unserved. The panel
+opens on the newest world with a **START HERE** row at the top; the full list of
+every recorded run is collapsed underneath it, because 300-odd training
+snapshots in a flat dropdown is a dropdown nobody scrolls.
 
 To get something to look at before training anything:
 
@@ -212,7 +239,7 @@ was verified before any policy existed.
 ```
 
 230 tests covering world stepping, hunger and death, resource regrowth,
-observation shape and bounds, replay round-trip and schema versioning (v1 to v3),
+observation shape and bounds, replay round-trip and schema versioning (v1 to v9),
 seed determinism, GAE correctness, dead-agent masking, action masking, per-agent
 brain dispatch and gradient isolation, cross-milestone policy growth by feature
 name, bush contention and theft, construction and the night hazard, transfers and

@@ -136,6 +136,28 @@ export function createPopulation(count, colors, opts = {}) {
   for (const name of PART_NAMES) parts[name].instanceColor.needsUpdate = true;
   actionPip.instanceColor.needsUpdate = true;
 
+  // ISLAND 4.0: recolour the whole population in place.
+  //
+  // The rig used to take its colours once, at construction, because identity was
+  // fixed for an episode. It is not any more -- a settler changes household, a
+  // conquered village changes tribe, and a reused row changes person -- and
+  // rebuilding 8 InstancedMeshes to answer "colour them by tribe instead" would
+  // throw away the whole reason this file exists. Writing the instance colour
+  // buffer is the cheap operation instancing was for.
+  const recolour = (colorsNext) => {
+    for (let i = 0; i < count; i++) {
+      base.set(colorsNext[i] ?? '#8899aa');
+      parts.torso.setColorAt(i, base);
+      const limb = base.clone().lerp(tint, 0.45);
+      parts.head.setColorAt(i, limb);
+      parts.armL.setColorAt(i, limb);
+      parts.armR.setColorAt(i, limb);
+      parts.legL.setColorAt(i, limb);
+      parts.legR.setColorAt(i, limb);
+    }
+    for (const name of PART_NAMES) parts[name].instanceColor.needsUpdate = true;
+  };
+
   // Reusable temporaries: this runs count x parts times per frame, and allocating
   // a Matrix4 in that loop is exactly how a viewer starts stuttering at 100.
   const M = new THREE.Matrix4();
@@ -293,6 +315,7 @@ export function createPopulation(count, colors, opts = {}) {
     setPose,
     commit,
     dispose,
+    recolour,
     // Raycast against the torsos: an InstancedMesh hit reports `instanceId`,
     // which is the agent index, so picking survives the move to instancing.
     pickTarget: parts.torso,
