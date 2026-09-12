@@ -1,7 +1,7 @@
 """Fair duel over seeds: A vs B on both sides, A vs A, B vs B, and the scripted arbiter on the same island. Run from the repo root: .venv/bin/python -m sim.duel_seeds"""
 import json, re, subprocess, sys
 import numpy as np
-PY = ".venv/bin/python"
+PY = sys.executable        # the interpreter running this file, not a POSIX venv path
 A, B = "checkpoints/arb7-village/latest.pt", "checkpoints/arb5-hh/latest.pt"
 SEEDS = list(range(10000, 10005))
 rows = []

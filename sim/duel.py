@@ -5,7 +5,7 @@ import argparse
 from datetime import datetime
 import json
 from pathlib import Path
-import resource
+import sys
 import time
 
 import numpy as np
@@ -16,6 +16,21 @@ from .config import load_config
 from .replay import ReplayRecorder
 from .utility import GOAL_NAMES, OptionRunner, agent_traits
 from .world import World
+
+
+def peak_memory_mb():
+    """Peak resident set of this process, or None where the platform cannot say.
+
+    `resource` is Unix-only. Windows reports nothing rather than earning one
+    diagnostic line a dependency the rest of the project does not need.
+    """
+    try:
+        import resource
+    except ModuleNotFoundError:
+        return None
+    # macOS reports bytes; Linux reports KiB.
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return round(peak / (1024 ** 2 if sys.platform == "darwin" else 1024), 1)
 
 
 class TribeArbiter:
@@ -130,15 +145,13 @@ def main():
         report["replay"] = str(path)
         reports.append(report)
         print(json.dumps(report), flush=True)
-    # macOS reports bytes; Linux reports KiB.
-    import sys
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    out = {"matches": reports, "peak_process_memory_mb": round(
-        peak / (1024 ** 2 if sys.platform == "darwin" else 1024), 1)}
+    out = {"matches": reports, "peak_process_memory_mb": peak_memory_mb()}
     target = Path("viewer/reports") / f"duel-{stamp}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(out, indent=2) + "\n")
-    print(f"Report: {target}; peak process memory: {out['peak_process_memory_mb']} MB")
+    peak = out["peak_process_memory_mb"]
+    print(f"Report: {target}; peak process memory: "
+          + (f"{peak} MB" if peak is not None else "not measured on this platform"))
 
 
 if __name__ == "__main__":
