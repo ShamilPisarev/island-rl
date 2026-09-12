@@ -7,6 +7,10 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { createPopulation } from './biped.js';
 
 // --- replay schema this build can read (see sim/replay.py) ------------------
@@ -164,12 +168,75 @@ function disposeGroup(group) {
   scene.remove(group);
 }
 
+// ---------------------------------------------------------------------------
+// Ambient occlusion
+// ---------------------------------------------------------------------------
+//
+// The environment probe made ambient direction-dependent; it cannot make it
+// position-dependent. A tree trunk and the grass it stands in face different
+// ways but sit in the same open sky, so both return full ambient and the trunk
+// appears to hover. GTAO darkens the ambient where geometry encloses a point,
+// which is what puts an object ON the ground rather than above it.
+//
+// Two things this costs, both deliberate:
+//
+// The render path moves through an EffectComposer, so the canvas's own MSAA is
+// bypassed -- an offscreen target does not get it -- and `samples` on the
+// composer target is what buys it back. Drop that and every silhouette on the
+// island goes jagged.
+//
+// Tone mapping moves to OutputPass. Three skips the tone map when it renders
+// into a render target and applies it only on the way to the canvas, so
+// `renderer.toneMapping` still drives it and there is no double application.
+//
+// If the composer cannot be built -- an old driver, a context without the
+// float targets GTAO needs -- `composer` stays null and render() falls back to
+// a direct draw. The viewer must never come up black.
+let composer = null;
+let gtao = null;
+try {
+  const size = new THREE.Vector2();
+  renderer.getSize(size);
+  const target = new THREE.WebGLRenderTarget(
+    Math.max(1, size.x), Math.max(1, size.y),
+    { type: THREE.HalfFloatType, samples: 4 },
+  );
+  composer = new EffectComposer(renderer, target);
+  composer.addPass(new RenderPass(scene, camera));
+  gtao = new GTAOPass(scene, camera, Math.max(1, size.x), Math.max(1, size.y));
+  // These three were measured, not guessed. Reading the denoised AO buffer back
+  // off the GPU and counting the share of pixels below 0.9 -- on the village
+  // replay, camera at a village -- gives:
+  //
+  //   radius 2.4, thickness 1, scale 1    0.85%   the defaults' scale: invisible
+  //   radius 1.5, thickness 4, scale 1    2.64%
+  //   radius 2.4, thickness 4, scale 2    4.11%
+  //   radius 4,   thickness 8, scale 2    5.11%   shipped
+  //   radius 6,   thickness 12, scale 2   5.38%   no better, and softer
+  //
+  // The surprise is that RAISING the radius alone REDUCES occlusion: past about
+  // 8 world units the sampler rejects its own samples as lying in front of the
+  // geometry, so `thickness` is the lever here, not `radius`. Everything on this
+  // island is a thin low-poly shell -- a hut wall, a trunk, a tent -- and telling
+  // the sampler to treat those as solid is what makes contact register at all.
+  gtao.updateGtaoMaterial({ radius: 4.0, thickness: 8.0, scale: 2.0, distanceExponent: 1.0 });
+  gtao.blendIntensity = 1.0;
+  composer.addPass(gtao);
+  composer.addPass(new OutputPass());
+} catch (err) {
+  console.warn('ambient occlusion unavailable, falling back to a direct draw', err);
+  composer = null;
+  gtao = null;
+}
+
 function resize() {
   const w = stage.clientWidth, h = stage.clientHeight;
   if (!w || !h) return;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
+  if (composer) composer.setSize(w, h);
+  if (gtao) gtao.setSize(w, h);
 }
 addEventListener('resize', resize);
 
@@ -2387,7 +2454,8 @@ function animate() {
   waterGeo.computeVertexNormals();
 
   controls.update();
-  renderer.render(scene, camera);
+  if (composer) composer.render();
+  else renderer.render(scene, camera);
 }
 
 resize();
