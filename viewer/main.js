@@ -67,6 +67,12 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// Without a tone map the renderer writes linear values straight out, so the lit
+// side of every surface clips to white and the shaded side crushes to the fog
+// colour. ACES rolls both ends off instead. Exposure is above 1 because the
+// curve darkens midtones and the island is mostly midtone.
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.95;
 stage.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -83,9 +89,49 @@ controls.maxPolarAngle = Math.PI * 0.49;   // don't let the camera go under the 
 controls.minDistance = 8;
 controls.maxDistance = 320;
 
-const hemi = new THREE.HemisphereLight(0xbcd8ff, 0x3d5a32, 0.75);
+// Image-based lighting. Every surface here is MeshStandardMaterial lit by one
+// sun and one hemisphere light, which gives a single flat bounce -- the reason
+// the low-poly facets read as painted rather than lit. An environment map gives
+// each facet a direction-dependent ambient instead, so a roof slope and a wall
+// stop returning the same grey.
+//
+// RoomEnvironment was the obvious candidate and is wrong here: it is a white
+// studio box, and it floods an outdoor scene until the island loses its shading
+// entirely. This is a sky/ground gradient instead -- cool above, warm bounce off
+// the ground, one brighter patch where the sun is -- which is what an island
+// actually sits in. Generated in code, so no asset is fetched.
+function buildEnvProbe() {
+  const geo = new THREE.SphereGeometry(1, 32, 24);
+  const pos = geo.attributes.position;
+  const colours = new Float32Array(pos.count * 3);
+  const sky = new THREE.Color(0x6f9ad6), ground = new THREE.Color(0x4a5230);
+  const sunDir = new THREE.Vector3(70, 110, 45).normalize();
+  const v = new THREE.Vector3(), c = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i).normalize();
+    c.copy(ground).lerp(sky, THREE.MathUtils.smoothstep(v.y, -0.35, 0.45));
+    // A soft hotspot where the sun is, so a surface facing it picks up warmth
+    // from the ambient as well as from the directional light.
+    const s = Math.max(0, v.dot(sunDir));
+    c.lerp(new THREE.Color(0xfff3dd), Math.pow(s, 8) * 0.85);
+    colours[i * 3] = c.r; colours[i * 3 + 1] = c.g; colours[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colours, 3));
+  const probe = new THREE.Scene();
+  probe.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    vertexColors: true, side: THREE.BackSide,
+  })));
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const texture = pmrem.fromScene(probe, 0.0).texture;
+  geo.dispose();
+  pmrem.dispose();
+  return texture;
+}
+scene.environment = buildEnvProbe();
+
+const hemi = new THREE.HemisphereLight(0xbcd8ff, 0x3d5a32, 0.30);
 scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xfff0d5, 1.5);
+const sun = new THREE.DirectionalLight(0xfff0d5, 1.7);
 sun.position.set(70, 110, 45);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -787,6 +833,9 @@ function loadReplay(replay, origin) {
   state.headings = new Float64Array(state.agentCount);
   state.agentPos = new Float64Array(state.agentCount * 2);
 
+  collectEnvMaterials();
+  applyNight(0);
+
   camera.position.set(0, radius * 1.55, radius * 2.3);
   controls.target.set(0, 0, 0);
   controls.update();
@@ -1319,18 +1368,42 @@ function nightFactor(t) {
 }
 
 const DAY = {
-  sun: 1.5, sunColor: new THREE.Color(0xfff0d5),
-  hemi: 0.75, water: new THREE.Color(0x2f86bd), bg: new THREE.Color(0x0d1117),
+  sun: 1.7, sunColor: new THREE.Color(0xfff0d5),
+  hemi: 0.30, env: 0.55, water: new THREE.Color(0x2f86bd), bg: new THREE.Color(0x0d1117),
 };
 const NIGHT = {
-  sun: 0.22, sunColor: new THREE.Color(0x7fa3d8),
-  hemi: 0.18, water: new THREE.Color(0x123049), bg: new THREE.Color(0x05070c),
+  sun: 0.24, sunColor: new THREE.Color(0x7fa3d8),
+  hemi: 0.08, env: 0.10, water: new THREE.Color(0x123049), bg: new THREE.Color(0x05070c),
 };
+
+// Three r160 has no `scene.environmentIntensity`, so the night curve has to be
+// written into each material instead. Collected once per load: the world is
+// rebuilt wholesale, so there is nothing to invalidate between replays. Leaving
+// the environment at full strength through the night would light the island as
+// brightly at midnight as at noon and undo the whole day/night read.
+const envMaterials = [];
+function collectEnvMaterials() {
+  envMaterials.length = 0;
+  const seen = new Set();
+  for (const root of [worldGroup, water]) {
+    root.traverse((o) => {
+      if (!o.material) return;
+      for (const mat of Array.isArray(o.material) ? o.material : [o.material]) {
+        if (mat.isMeshStandardMaterial && !seen.has(mat.uuid)) {
+          seen.add(mat.uuid);
+          envMaterials.push(mat);
+        }
+      }
+    });
+  }
+}
 
 function applyNight(f) {
   sun.intensity = DAY.sun + (NIGHT.sun - DAY.sun) * f;
   sun.color.copy(DAY.sunColor).lerp(NIGHT.sunColor, f);
   hemi.intensity = DAY.hemi + (NIGHT.hemi - DAY.hemi) * f;
+  const env = DAY.env + (NIGHT.env - DAY.env) * f;
+  for (const mat of envMaterials) mat.envMapIntensity = env;
   water.material.color.copy(DAY.water).lerp(NIGHT.water, f);
   scene.background.copy(DAY.bg).lerp(NIGHT.bg, f);
   scene.fog.color.copy(scene.background);
