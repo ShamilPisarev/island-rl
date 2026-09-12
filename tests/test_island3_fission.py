@@ -84,6 +84,10 @@ def test_no_world_before_stage3_has_a_dormant_slot():
                               # claim under test is "nothing written BEFORE
                               # stage 3 has a dormant slot", and a stage-4 world
                               # is not evidence against it.
+        if Path(path).name == "duel.yaml":
+            continue          # also later: the duel world shipped with Island
+                              # 4.0 and sits outside island4/, so the directory
+                              # rule above misses it. Same argument.
         cfg = load_config(path)
         if not (cfg.society.enabled and cfg.construction.enabled):
             continue
