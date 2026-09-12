@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "viewer",
-      "runtimeExecutable": ".venv/bin/python",
+      "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "8777", "--directory", "viewer"],
       "port": 8777
     }
